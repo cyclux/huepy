@@ -1,0 +1,14 @@
+archive/
+.venv/
+config.json
+.sync-exclude.lst
+
+__pycache__/
+*.pyc
+dist/
+*.egg-info/
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.ruff_cache/

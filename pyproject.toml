@@ -1,0 +1,154 @@
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
+
+[project]
+name = "huepy"
+version = "0.2.0"
+description = "A modern async Python wrapper for the Philips Hue v2 CLIP API"
+readme = "README.md"
+requires-python = ">=3.13"
+license = "MIT"
+license-files = ["LICENSE.txt"]
+keywords = ["philips-hue", "hue", "clip-v2", "home-automation", "asyncio"]
+authors = [{ name = "cyclux", email = "nevermind@cyclux.de" }]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Framework :: AsyncIO",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.13",
+  "Typing :: Typed",
+  "Topic :: Home Automation",
+]
+dependencies = [
+    "aiohttp>=3.14.3",
+    "pydantic>=2.13.4",
+]
+
+[project.urls]
+Documentation = "https://github.com/cyclux/huepy#readme"
+Issues = "https://github.com/cyclux/huepy/issues"
+Source = "https://github.com/cyclux/huepy"
+
+[dependency-groups]
+dev = [
+    "basedpyright>=1.39.10",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.16.4",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# Integration tests drive a real bridge and physically change the lights, so
+# they never run by accident: `pytest` excludes them, `pytest -m integration`
+# opts in. They also refuse to run unless HUEPY_INTEGRATION=1 is set.
+addopts = "-m 'not integration'"
+markers = [
+    "integration: talks to a real Hue bridge and changes light state",
+]
+
+[tool.basedpyright]
+venvPath = "."
+venv = ".venv"
+include = ["src", "tests"]
+reportMissingTypeStubs = false
+
+# A bridge payload genuinely *is* arbitrary JSON, so `Any` is the honest type at
+# that boundary; values are narrowed the moment they reach a model. Tightening
+# this to JsonValue was tried and reverted: dict and list are invariant, so it
+# rejected ordinary literals like {"on": {"on": True}} at every call site.
+reportAny = false
+reportExplicitAny = false
+
+# Test doubles and pytest fixture parameters are deliberately loose: demanding
+# an annotation on every `def test_x(self, hue, http)` buries real findings.
+[[tool.basedpyright.executionEnvironments]]
+root = "tests"
+reportMissingParameterType = false
+reportUnknownParameterType = false
+reportUnknownMemberType = false
+reportUnknownArgumentType = false
+reportUnknownVariableType = false
+reportUnknownLambdaType = false
+reportUnannotatedClassAttribute = false
+reportPrivateUsage = false
+reportUnusedCallResult = false
+reportUnusedParameter = false
+reportUnusedFunction = false
+reportUnreachable = false
+reportAny = false
+reportExplicitAny = false
+
+[tool.coverage.run]
+source_pkgs = ["huepy", "tests"]
+branch = true
+parallel = true
+
+[tool.coverage.paths]
+huepy = ["src/huepy", "*/huepy/src/huepy"]
+tests = ["tests", "*/huepy/tests"]
+
+[tool.coverage.report]
+exclude_lines = ["no cov", "if __name__ == .__main__.:", "if TYPE_CHECKING:"]
+
+[tool.ruff]
+line-length = 88
+exclude = ["archive"]
+
+[tool.ruff.format]
+preview = false
+quote-style = "double"
+line-ending = "auto"
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    # Allow non-abstract empty methods in abstract base classes
+    "B027",
+    # Allow for string literals in exceptions
+    "EM",
+    # Allow boolean positional values in function calls, like dict.get(... True)
+    "FBT003",
+    # Allow boolean default positional arguments in function definitions
+    "FBT002",
+    # Allow boolean-typed positional arguments in function definitions
+    "FBT001",
+    # Allow missing copyright notice at top of files
+    "CPY001",
+    # Allow missing docstrings in public packages
+    "D104",
+    # Allow docstrings without blank line before class docstring
+    "D203",
+    # Allow multi-line docstring summary to start at second line
+    "D213",
+    # Allow first-party imports outside type-checking blocks
+    "TC001",
+    # Allow third-party imports outside type-checking blocks
+    "TC002",
+    # Allow standard library imports outside type-checking blocks
+    "TC003",
+    # Conflicts with the formatter
+    "COM812",
+]
+fixable = ["ALL"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert, use magic values, reach into internals, and take fixtures
+# they never name in the body.
+"tests/**" = [
+    "S101",
+    "PLR2004",
+    "D1",
+    "ANN",
+    "ARG",
+    "SLF001",
+    "INP001",
+    "PYI034",
+]
+# Examples are scripts: they print, and are not an importable package
+"examples/**" = ["T201", "INP001", "D100", "D103", "ANN"]

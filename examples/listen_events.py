@@ -1,0 +1,54 @@
+"""Print events as the bridge pushes them, parsed into models.
+
+    python examples/listen_events.py
+
+Runs until interrupted. The stream reconnects on its own with exponential
+backoff if the connection drops, and drops an event it cannot parse rather
+than ending. For the raw decoded payloads instead, use
+hue.http.subscribe_events().
+"""
+
+import asyncio
+import logging
+
+from huepy import Hue, models
+
+NAME_WIDTH = 24
+
+
+def describe(resource: models.EventResource) -> str:
+    """Summarise whichever pieces of state this event actually carries."""
+    parts: list[str] = []
+    if resource.on is not None:
+        parts.append("on" if resource.on.on else "off")
+    if resource.dimming is not None:
+        parts.append(f"{resource.dimming.brightness:.0f}%")
+    if resource.color_temperature is not None:
+        mirek = resource.color_temperature.mirek
+        if mirek is not None:
+            parts.append(f"{mirek} mirek")
+    if resource.color is not None:
+        parts.append(f"xy ({resource.color.xy.x:.3f}, {resource.color.xy.y:.3f})")
+    return ", ".join(parts)
+
+
+async def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+
+    async with Hue() as hue:
+        print("Listening for events. Press Ctrl-C to stop.\n")
+        async for event in hue.get_event_stream():
+            if not event.is_update:
+                # An add, a delete or an error: the ids are all there is.
+                print(f"{event.type:16} {', '.join(event.resource_ids)}")
+                continue
+            for resource in event.data:
+                name = hue.get_name(resource.id)
+                print(f"{resource.type:16} {name:{NAME_WIDTH}} {describe(resource)}")
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nStopped.")
