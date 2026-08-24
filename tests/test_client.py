@@ -1,6 +1,7 @@
 """Tests for the Hue client: lifecycle, name lookup, authentication guard."""
 
 import logging
+from typing import Any, cast
 
 import pytest
 
@@ -21,6 +22,37 @@ class TestLifecycle:
         await hue.close()
         with pytest.raises(RuntimeError, match="Client not initialized"):
             _ = hue.http
+
+    async def test_close_releases_all_resources_before_surfacing_an_error(
+        self, hue, http
+    ):
+        class Stream:
+            def __init__(self, error: BaseException | None = None) -> None:
+                self.error = error
+                self.closed = False
+
+            async def aclose(self) -> None:
+                self.closed = True
+                if self.error is not None:
+                    raise self.error
+
+        failing = Stream(RuntimeError("already running"))
+        healthy = Stream()
+        hue._event_streams.update(
+            {
+                cast("Any", failing),
+                cast("Any", healthy),
+            }
+        )
+
+        with pytest.raises(RuntimeError, match="already running"):
+            await hue.close()
+
+        assert failing.closed is True
+        assert healthy.closed is True
+        assert http.closed is True
+        assert hue._http is None
+        assert not hue._event_streams
 
     async def test_context_manager_starts_and_closes(self, tmp_path, monkeypatch):
         started: list[str] = []
@@ -342,12 +374,12 @@ class TestEventStreamCleanup:
         async for _event in hue.get_event_stream():
             break  # abandon it mid-iteration
 
-        assert hue._event_stream is not None, "stream should still be tracked"
+        assert hue._event_streams, "stream should still be tracked"
         await hue.close()
-        assert hue._event_stream is None, "close() should finalise the stream"
+        assert not hue._event_streams, "close() should finalise the stream"
 
     async def test_exhausting_the_stream_clears_the_reference(self, hue, http):
         http.events = [{"data": []}]
         received = [event async for event in hue.get_event_stream()]
         assert len(received) == 1
-        assert hue._event_stream is None
+        assert not hue._event_streams

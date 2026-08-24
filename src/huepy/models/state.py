@@ -28,6 +28,7 @@ BRIGHTNESS_MAX = 100.0
 """Highest brightness percentage the bridge accepts."""
 
 MILLISECONDS_PER_SECOND = 1000
+MAX_TRANSITION_MILLISECONDS = 6_000_000
 """Transitions are given in seconds but sent to the bridge in milliseconds."""
 
 
@@ -107,7 +108,7 @@ def _resolve_xy(
     return xy
 
 
-def build_light_payload(  # noqa: PLR0913 - one PUT carries the whole state
+def build_light_payload(  # noqa: C901, PLR0913 - one PUT carries the whole state
     *,
     on: bool | None = None,
     brightness: float | None = None,
@@ -148,7 +149,7 @@ def build_light_payload(  # noqa: PLR0913 - one PUT carries the whole state
         ValueError: If more than one colour or more than one colour
             temperature is given, if a colour is combined with a colour
             temperature, if a colour value is malformed, or if ``transition``
-            is negative.
+            is negative or longer than 6,000 seconds.
 
     """
     # Colour conversions belong here, ahead of the checks below: an rgb, hex
@@ -168,9 +169,15 @@ def build_light_payload(  # noqa: PLR0913 - one PUT carries the whole state
     if kelvin is not None:
         mirek = kelvin_to_mirek(kelvin)
 
-    if transition is not None and transition < 0:
-        msg = f"transition must not be negative, got {transition}"
-        raise ValueError(msg)
+    duration: int | None = None
+    if transition is not None:
+        if transition < 0:
+            msg = f"transition must not be negative, got {transition}"
+            raise ValueError(msg)
+        duration = int(transition * MILLISECONDS_PER_SECOND)
+        if duration > MAX_TRANSITION_MILLISECONDS:
+            msg = "transition must not exceed 6000 seconds"
+            raise ValueError(msg)
 
     payload: dict[str, Any] = {}
     if on is not None:
@@ -181,7 +188,6 @@ def build_light_payload(  # noqa: PLR0913 - one PUT carries the whole state
         payload["color"] = {"xy": {"x": xy[0], "y": xy[1]}}
     if mirek is not None:
         payload["color_temperature"] = {"mirek": mirek}
-    if transition is not None:
-        duration = int(transition * MILLISECONDS_PER_SECOND)
+    if duration is not None:
         payload["dynamics"] = {"duration": duration}
     return payload

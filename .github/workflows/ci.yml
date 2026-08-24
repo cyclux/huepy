@@ -41,8 +41,11 @@ jobs:
 
       - name: Verify the wheel imports and ships its typing marker
         run: |
-          uv run --no-project --isolated --with dist/*.whl python -c "
-          import huepy, importlib.util, pathlib
+          project_version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
+          wheel_path=$(find "$PWD/dist" -maxdepth 1 -name "huepy-${project_version}-*.whl" -print -quit)
+          test -n "$wheel_path"
+          uv run --no-project --isolated --with="$wheel_path" python -c "
+          import huepy, huepy.state, importlib.util, pathlib
           root = pathlib.Path(importlib.util.find_spec('huepy').origin).parent
           assert (root / 'py.typed').is_file(), 'py.typed missing from the wheel'
           print('huepy', huepy.__all__)

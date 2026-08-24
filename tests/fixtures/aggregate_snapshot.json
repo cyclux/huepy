@@ -1,0 +1,436 @@
+{
+  "data": [
+    {
+      "id": "resource-001",
+      "type": "behavior_instance"
+    },
+    {
+      "id": "resource-002",
+      "type": "behavior_script"
+    },
+    {
+      "bridge_id": "resource-003",
+      "id": "resource-004",
+      "owner": {
+        "rid": "resource-005",
+        "rtype": "device"
+      },
+      "time_zone": {
+        "time_zone": "UTC"
+      },
+      "type": "bridge"
+    },
+    {
+      "children": [
+        {
+          "rid": "resource-006",
+          "rtype": "device"
+        }
+      ],
+      "id": "resource-007",
+      "id_v1": "/scrubbed/resource",
+      "services": [
+        {
+          "rid": "resource-008",
+          "rtype": "grouped_light"
+        }
+      ],
+      "type": "bridge_home"
+    },
+    {
+      "button": {
+        "button_report": {
+          "event": "long_release",
+          "updated": "2020-01-01T00:00:00.000Z"
+        },
+        "event_values": [
+          "initial_press",
+          "repeat",
+          "short_release",
+          "long_release",
+          "long_press"
+        ],
+        "last_event": "long_release",
+        "repeat_interval": 800
+      },
+      "id": "resource-009",
+      "id_v1": "/scrubbed/resource",
+      "metadata": {
+        "control_id": 2
+      },
+      "owner": {
+        "rid": "resource-010",
+        "rtype": "device"
+      },
+      "type": "button"
+    },
+    {
+      "id": "resource-011",
+      "type": "clip"
+    },
+    {
+      "id": "resource-006",
+      "id_v1": "/scrubbed/resource",
+      "metadata": {
+        "archetype": "unknown_archetype",
+        "name": "Scrubbed"
+      },
+      "product_data": {
+        "certified": true,
+        "hardware_platform_type": "100b-11b",
+        "manufacturer_name": "Scrubbed",
+        "model_id": "Scrubbed",
+        "product_archetype": "Scrubbed",
+        "product_name": "Scrubbed",
+        "software_version": "Scrubbed"
+      },
+      "services": [
+        {
+          "rid": "resource-012",
+          "rtype": "zigbee_connectivity"
+        }
+      ],
+      "type": "device"
+    },
+    {
+      "id": "resource-013",
+      "id_v1": "/scrubbed/resource",
+      "owner": {
+        "rid": "resource-014",
+        "rtype": "device"
+      },
+      "power_state": {
+        "battery_level": 100,
+        "battery_state": "normal"
+      },
+      "type": "device_power"
+    },
+    {
+      "id": "resource-015",
+      "type": "device_software_update"
+    },
+    {
+      "id": "resource-016",
+      "type": "entertainment"
+    },
+    {
+      "id": "resource-017",
+      "type": "geolocation"
+    },
+    {
+      "color": {},
+      "color_temperature": {},
+      "dimming": {
+        "brightness": 90.16
+      },
+      "id": "resource-008",
+      "id_v1": "/scrubbed/resource",
+      "on": {
+        "on": true
+      },
+      "owner": {
+        "rid": "resource-007",
+        "rtype": "bridge_home"
+      },
+      "type": "grouped_light"
+    },
+    {
+      "enabled": true,
+      "id": "resource-018",
+      "light": {
+        "light_level_report": {
+          "changed": "2020-01-01T00:00:00.001Z",
+          "light_level": 0
+        }
+      },
+      "owner": {
+        "rid": "resource-007",
+        "rtype": "bridge_home"
+      },
+      "type": "grouped_light_level"
+    },
+    {
+      "enabled": true,
+      "id": "resource-019",
+      "motion": {
+        "motion_report": {
+          "changed": "2020-01-01T00:00:00.002Z",
+          "motion": false
+        }
+      },
+      "owner": {
+        "rid": "resource-020",
+        "rtype": "room"
+      },
+      "type": "grouped_motion"
+    },
+    {
+      "id": "resource-021",
+      "type": "homekit"
+    },
+    {
+      "color_temperature": {
+        "mirek": 156,
+        "mirek_schema": {
+          "mirek_maximum": 454,
+          "mirek_minimum": 153
+        },
+        "mirek_valid": true
+      },
+      "dimming": {
+        "brightness": 100.0,
+        "min_dim_level": 0.2
+      },
+      "effects": {
+        "effect_values": [
+          "no_effect",
+          "candle",
+          "sparkle",
+          "glisten"
+        ],
+        "status": "no_effect",
+        "status_values": [
+          "no_effect",
+          "candle",
+          "sparkle",
+          "glisten"
+        ]
+      },
+      "id": "resource-022",
+      "id_v1": "/scrubbed/resource",
+      "metadata": {
+        "archetype": "spot_bulb",
+        "function": "mixed",
+        "name": "Scrubbed"
+      },
+      "mode": "normal",
+      "on": {
+        "on": true
+      },
+      "owner": {
+        "rid": "resource-023",
+        "rtype": "device"
+      },
+      "powerup": {
+        "color": {
+          "mode": "previous"
+        },
+        "configured": true,
+        "dimming": {
+          "mode": "previous"
+        },
+        "on": {
+          "mode": "on",
+          "on": {
+            "on": true
+          }
+        },
+        "preset": "last_on_state"
+      },
+      "signaling": {
+        "signal_values": [
+          "no_signal",
+          "on_off"
+        ]
+      },
+      "timed_effects": {
+        "effect_values": [
+          "no_effect",
+          "sunrise",
+          "sunset"
+        ],
+        "status": "no_effect",
+        "status_values": [
+          "no_effect",
+          "sunrise",
+          "sunset"
+        ]
+      },
+      "type": "light"
+    },
+    {
+      "enabled": true,
+      "id": "resource-024",
+      "id_v1": "/scrubbed/resource",
+      "light": {
+        "light_level": 0,
+        "light_level_report": {
+          "changed": "2020-01-01T00:00:00.003Z",
+          "light_level": 0
+        },
+        "light_level_valid": true
+      },
+      "owner": {
+        "rid": "resource-025",
+        "rtype": "device"
+      },
+      "type": "light_level"
+    },
+    {
+      "id": "resource-026",
+      "type": "matter"
+    },
+    {
+      "enabled": true,
+      "id": "resource-027",
+      "id_v1": "/scrubbed/resource",
+      "motion": {
+        "motion": false,
+        "motion_report": {
+          "changed": "2020-01-01T00:00:00.004Z",
+          "motion": false
+        },
+        "motion_valid": true
+      },
+      "owner": {
+        "rid": "resource-025",
+        "rtype": "device"
+      },
+      "sensitivity": {
+        "sensitivity": 3,
+        "sensitivity_max": 4,
+        "status": "set"
+      },
+      "type": "motion"
+    },
+    {
+      "children": [
+        {
+          "rid": "resource-028",
+          "rtype": "device"
+        }
+      ],
+      "id": "resource-029",
+      "id_v1": "/scrubbed/resource",
+      "metadata": {
+        "archetype": "kitchen",
+        "name": "Scrubbed"
+      },
+      "services": [
+        {
+          "rid": "resource-030",
+          "rtype": "grouped_light"
+        }
+      ],
+      "type": "room"
+    },
+    {
+      "actions": [
+        {
+          "action": {
+            "color_temperature": {
+              "mirek": 370
+            },
+            "dimming": {
+              "brightness": 100.0
+            },
+            "on": {
+              "on": true
+            }
+          },
+          "target": {
+            "rid": "resource-022",
+            "rtype": "light"
+          }
+        }
+      ],
+      "auto_dynamic": false,
+      "group": {
+        "rid": "resource-031",
+        "rtype": "room"
+      },
+      "id": "resource-032",
+      "id_v1": "/scrubbed/resource",
+      "metadata": {
+        "image": {
+          "rid": "resource-033",
+          "rtype": "public_image"
+        },
+        "name": "Scrubbed"
+      },
+      "speed": 0.603,
+      "status": {
+        "active": "inactive",
+        "last_recall": "2020-01-01T00:00:00.005Z"
+      },
+      "type": "scene"
+    },
+    {
+      "children": [
+        {
+          "rid": "resource-034",
+          "rtype": "motion"
+        }
+      ],
+      "id": "resource-035",
+      "metadata": {
+        "name": "Scrubbed"
+      },
+      "services": [
+        {
+          "rid": "resource-036",
+          "rtype": "grouped_motion"
+        }
+      ],
+      "type": "service_group"
+    },
+    {
+      "id": "resource-037",
+      "type": "smart_scene"
+    },
+    {
+      "enabled": false,
+      "id": "resource-038",
+      "id_v1": "/scrubbed/resource",
+      "owner": {
+        "rid": "resource-006",
+        "rtype": "device"
+      },
+      "temperature": {
+        "temperature_valid": false
+      },
+      "type": "temperature"
+    },
+    {
+      "channel": {
+        "status": "set",
+        "value": "channel_25"
+      },
+      "extended_pan_id": "Scrubbed",
+      "id": "resource-039",
+      "mac_address": "Scrubbed",
+      "owner": {
+        "rid": "resource-005",
+        "rtype": "device"
+      },
+      "status": "connected",
+      "type": "zigbee_connectivity"
+    },
+    {
+      "id": "resource-040",
+      "type": "zigbee_device_discovery"
+    },
+    {
+      "children": [
+        {
+          "rid": "resource-041",
+          "rtype": "light"
+        }
+      ],
+      "id": "resource-042",
+      "id_v1": "/scrubbed/resource",
+      "metadata": {
+        "archetype": "home",
+        "name": "Scrubbed"
+      },
+      "services": [
+        {
+          "rid": "resource-043",
+          "rtype": "grouped_light"
+        }
+      ],
+      "type": "zone"
+    }
+  ],
+  "errors": []
+}

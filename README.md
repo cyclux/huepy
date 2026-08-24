@@ -14,6 +14,8 @@ A modern async Python wrapper for the **Philips Hue v2 CLIP API**.
   gamut the bulb itself reports
 - Transitions in seconds on every light command
 - Every response is a validated **pydantic** model, not a bare dict
+- An opt-in `hue.state()` view keeps a last-reported resource graph current
+  from the event stream
 - Models tolerate unknown fields, so bridge firmware updates don't break parsing
 - Failures reported in the response body (HTTP 200 with `errors[]`) are raised, not silently ignored
 - Ships `py.typed` -- your type checker sees the annotations
@@ -205,7 +207,8 @@ costs nothing.
 `hue.light`, `hue.light_group`, `hue.light_level`, `hue.light_level_group`,
 `hue.room`, `hue.zone`, `hue.scene`, `hue.device`, `hue.device_power`,
 `hue.bridge`, `hue.bridge_home`, `hue.service_group`, `hue.motion`,
-`hue.motion_group`, `hue.temperature`, `hue.button`, `hue.contact`.
+`hue.motion_group`, `hue.temperature`, `hue.button`, `hue.contact`,
+`hue.relative_rotary`, `hue.zigbee_connectivity`.
 
 Each exposes `get_all()` (or `all()`), `get(resource_id)`,
 `update(resource_id, data)` and `delete(resource_id)`, plus type-specific
@@ -233,6 +236,37 @@ with exponential backoff, and drops an unparseable event with a warning rather
 than ending. For the raw decoded payloads, `hue.http.subscribe_events()` is
 the escape hatch.
 
+Event deltas are typed for lights, motion, temperature, ambient light, buttons,
+contact sensors, battery state and relative rotary input. Unknown future
+sections remain available through `model_extra`.
+
+### Last-reported state
+
+For a continuously maintained local view, enter `hue.state()` inside the open
+client. Startup takes an aggregate snapshot while buffering the event stream,
+so the returned view has no snapshot/event gap. It reports what the bridge
+last sent, not a guarantee of a light's physical state.
+
+```python
+async with Hue() as hue:
+    async with hue.state() as state:
+        desk = state.lights["Desk lamp"]
+        print(state.connected, desk.brightness)
+        print(state.room_of(desk.id))
+```
+
+The local `lights`, `rooms`, `zones`, `scenes` and `devices` views provide
+synchronous `get`, `all`, `by_name`, `names` and `[...]` lookup. `resources`,
+`get(id)`, `all(Model)`, `lights_in`, `room_of`, `zones_of`, `device_of` and
+`name_of` support generic and topology queries. Returned models are fresh,
+bound copies and cannot mutate the canonical state.
+
+`state.changes()` yields `huepy.state.Change` records plus `Resync` markers.
+Each subscriber has bounded independent history; a marker records reconnect,
+inconsistency, or lag where complete history cannot be proved. State does not
+apply writes optimistically. Changes from this client may be correlated as
+`origin="self"`; `state.fading` exposes active locally issued fades.
+
 ### Errors
 
 All errors derive from `HueError`:
@@ -245,6 +279,10 @@ All errors derive from `HueError`:
 | `HueResponseError` | HTTP 200 with errors in the body (carries `errors`) |
 | `ResourceNotFoundError` | No resource carries the requested name (carries `name` and `known`) |
 | `DetachedResourceError` | A command was issued on a model that was never fetched |
+
+The transport limits itself to three concurrent connections per bridge. It
+retries GET responses with status 429 or 503 up to three times; mutating PUT,
+POST and DELETE requests are never replayed automatically.
 
 ## Development
 

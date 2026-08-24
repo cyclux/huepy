@@ -1,6 +1,7 @@
 """Resource handlers, one per v2 CLIP resource type."""
 
 from huepy.resources.base import BaseResource, NamedResourceHandler
+from huepy.resources.connectivity import ZigbeeConnectivity
 from huepy.resources.device import Bridge, Device
 from huepy.resources.group import (
     BridgeHome,
@@ -23,6 +24,7 @@ from huepy.resources.sensor import (
     DevicePower,
     GroupedMotion,
     Motion,
+    RelativeRotary,
     Temperature,
     ToggleableSensorMixin,
 )
@@ -44,10 +46,12 @@ __all__ = [
     "LightLevel",
     "Motion",
     "NamedResourceHandler",
+    "RelativeRotary",
     "Room",
     "Scene",
     "ServiceGroup",
     "Temperature",
     "ToggleableSensorMixin",
+    "ZigbeeConnectivity",
     "Zone",
 ]

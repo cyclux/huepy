@@ -10,8 +10,11 @@ import pytest
 from huepy import models
 from huepy.client.http import (
     DELAY_MAX,
+    GET_RETRIES_MAX,
     RETRIES_MAX,
     HueHttpClient,
+    PendingWrite,
+    SSEFrame,
     backoff_delay,
 )
 from huepy.config import HueConfig
@@ -49,10 +52,17 @@ class FakeResponse:
 class FakeSession:
     """Stands in for aiohttp.ClientSession for the request methods."""
 
-    def __init__(self, response: FakeResponse) -> None:
-        self.response = response
+    def __init__(self, response: FakeResponse | list[FakeResponse]) -> None:
+        self.responses = response if isinstance(response, list) else [response]
         self.calls: list[tuple[str, str, Any]] = []
         self.headers: dict[str, str] = {}
+
+    @property
+    def response(self) -> FakeResponse:
+        """Return each queued response once, then retain the final response."""
+        if len(self.responses) > 1:
+            return self.responses.pop(0)
+        return self.responses[0]
 
     def request(
         self, method: str, path: str, json: Any = None, **_: Any
@@ -74,7 +84,7 @@ def config(tmp_path):
 
 def make_client(
     config,
-    response: FakeResponse,
+    response: FakeResponse | list[FakeResponse],
 ) -> tuple[HueHttpClient, FakeSession]:
     """Build a client wired to a fake session, returning both."""
     client = HueHttpClient(config)
@@ -109,11 +119,114 @@ class TestRequests:
         client, _session = make_client(config, FakeResponse(200))
         assert await client.get(PATH) is None
 
+    async def test_get_retries_429_and_503_then_returns_payload(
+        self, config, monkeypatch
+    ):
+        async def no_wait(_delay: float) -> None:
+            return None
+
+        monkeypatch.setattr(asyncio, "sleep", no_wait)
+        client, session = make_client(
+            config,
+            [
+                FakeResponse(429, text="busy"),
+                FakeResponse(503, text="starting"),
+                FakeResponse(200, {"data": [{"id": "a"}]}),
+            ],
+        )
+
+        assert await client.get(PATH) == {"data": [{"id": "a"}]}
+        assert len(session.calls) == 3
+
+    async def test_get_retry_is_bounded(self, config, monkeypatch):
+        async def no_wait(_delay: float) -> None:
+            return None
+
+        monkeypatch.setattr(asyncio, "sleep", no_wait)
+        client, session = make_client(config, FakeResponse(429, text="busy"))
+
+        with pytest.raises(HueAPIError) as excinfo:
+            await client.get(PATH)
+
+        assert excinfo.value.status_code == 429
+        assert len(session.calls) == GET_RETRIES_MAX + 1
+
+    @pytest.mark.parametrize("method", ["put", "post", "delete"])
+    async def test_mutating_requests_are_never_retried(self, config, method):
+        client, session = make_client(config, FakeResponse(503, text="unavailable"))
+        call = {
+            "put": lambda: client.put(PATH, {}),
+            "post": lambda: client.post(PATH, {}),
+            "delete": lambda: client.delete(PATH),
+        }[method]
+
+        with pytest.raises(HueAPIError):
+            await call()
+
+        assert len(session.calls) == 1
+
+
+class TestWriteObserver:
+    async def test_put_publishes_pending_then_accepted(self, config):
+        client, _session = make_client(
+            config,
+            FakeResponse(200, {"errors": [], "data": [{"rid": "a"}]}),
+        )
+        observed: list[PendingWrite] = []
+        unsubscribe = client.add_write_observer(observed.append)
+        await client.put(f"{PATH}/a", {"on": {"on": True}})
+        await asyncio.sleep(0)
+        unsubscribe()
+
+        assert [write.status for write in observed] == ["pending", "accepted"]
+        assert observed[0].command_id == observed[1].command_id
+        assert observed[0].payload == {"on": {"on": True}}
+        assert observed[1].completed_at is not None
+
+    async def test_blocking_envelope_error_is_reported_as_rejected(self, config):
+        client, _session = make_client(
+            config,
+            FakeResponse(
+                207,
+                {
+                    "errors": [{"error_code": "client_error"}],
+                    "data": [{"rid": "a"}],
+                },
+            ),
+        )
+        observed: list[PendingWrite] = []
+        _ = client.add_write_observer(observed.append)
+        _ = await client.put(f"{PATH}/a", {"on": {"on": True}})
+        await asyncio.sleep(0)
+        assert [write.status for write in observed] == ["pending", "rejected"]
+
+    @pytest.mark.parametrize(
+        "payload",
+        [None, [], {"data": []}, {"errors": []}],
+        ids=["null", "list", "missing-errors", "missing-data"],
+    )
+    async def test_malformed_success_body_has_unknown_write_outcome(
+        self, config, payload
+    ):
+        client, _session = make_client(config, FakeResponse(200, payload))
+        observed: list[PendingWrite] = []
+        _ = client.add_write_observer(observed.append)
+
+        _ = await client.put(f"{PATH}/a", {"on": {"on": True}})
+
+        assert [write.status for write in observed] == ["pending", "unknown"]
+
 
 class TestErrorMapping:
     @pytest.mark.parametrize("status", [400, 401, 403, 404, 429, 500, 503])
     @pytest.mark.parametrize("method", ["get", "put", "post", "delete"])
-    async def test_non_200_raises_hue_api_error(self, config, status, method):
+    async def test_non_200_raises_hue_api_error(
+        self, config, status, method, monkeypatch
+    ):
+        async def no_wait(_delay: float) -> None:
+            return None
+
+        monkeypatch.setattr(asyncio, "sleep", no_wait)
         client, _session = make_client(config, FakeResponse(status, text="nope"))
         call = {
             "get": lambda: client.get(PATH),
@@ -141,6 +254,14 @@ class TestSessionLifecycle:
             assert session is not None
             assert "hue-application-key" not in session.headers
 
+    async def test_session_caps_connections_per_bridge(self, config):
+        async with HueHttpClient(config) as client:
+            session = client.session
+            assert session is not None
+            connector = session.connector
+            assert connector is not None
+            assert connector.limit_per_host == 3
+
     async def test_session_is_cleared_on_exit(self, config):
         """Leaving a closed session in place made post-close calls fail obscurely."""
         client = HueHttpClient(config)
@@ -155,6 +276,41 @@ class TestSessionLifecycle:
         await client.__aexit__(None, None, None)
         with pytest.raises(RuntimeError, match="Client not initialized"):
             await client.get(PATH)
+
+
+class TestEventConnections:
+    async def test_closing_unconsumed_connection_closes_response(self, config):
+        class StreamingResponse:
+            status = 200
+
+            def __init__(self) -> None:
+                self.closed = False
+
+            async def text(self) -> str:
+                return ""
+
+            def close(self) -> None:
+                self.closed = True
+
+        class StreamingSession:
+            def __init__(self, response: StreamingResponse) -> None:
+                self.response = response
+
+            async def get(self, *_args: object, **_kwargs: object):
+                return self.response
+
+        response = StreamingResponse()
+        client = HueHttpClient(config)
+        client.session = cast(
+            "aiohttp.ClientSession",
+            cast("object", StreamingSession(response)),
+        )
+        connections = client.event_connections(max_retries=0)
+
+        _ = await anext(connections)
+        await connections.aclose()
+
+        assert response.closed is True
 
     @pytest.mark.parametrize(
         "call",
@@ -225,8 +381,9 @@ class TestBackoff:
 
 
 class TestEventStream:
-    async def test_a_clean_close_still_backs_off(self, config, monkeypatch):
-        """A bridge that closes immediately must not cause a reconnect storm."""
+    async def test_establishment_failure_raises_after_finite_retries(
+        self, config, monkeypatch
+    ):
         slept: list[float] = []
 
         async def fake_sleep(delay: float) -> None:
@@ -234,23 +391,27 @@ class TestEventStream:
 
         monkeypatch.setattr(asyncio, "sleep", fake_sleep)
 
+        class FailingSession:
+            async def get(self, *_args, **_kwargs):
+                raise aiohttp.ClientConnectionError("offline")
+
         client = HueHttpClient(config)
-        client.session = cast(
-            "aiohttp.ClientSession", cast("object", FakeSession(FakeResponse(200)))
+        client.session = cast("aiohttp.ClientSession", cast("object", FailingSession()))
+
+        with pytest.raises(BridgeConnectionError, match="after 2 retries"):
+            _ = [frame async for frame in client.subscribe_event_frames(max_retries=2)]
+
+        assert slept == [1.0, 2.0]
+
+    def test_complete_frame_preserves_cursor_and_batch(self, config):
+        client = HueHttpClient(config)
+        frame = client._decode_sse_frame(
+            "1700000000:4",
+            ['[{"id":"event-1","type":"update"}]'],
         )
-
-        async def empty_stream(_session):
-            return
-            yield  # pragma: no cover - makes this an async generator
-
-        monkeypatch.setattr(client, "_read_event_stream", empty_stream)
-
-        events = [event async for event in client.subscribe_events()]
-
-        assert events == []
-        assert len(slept) == RETRIES_MAX
-        assert slept[0] > 0
-        assert slept == sorted(slept), "backoff must be non-decreasing"
+        assert isinstance(frame, SSEFrame)
+        assert frame.event_id == "1700000000:4"
+        assert frame.events == [{"id": "event-1", "type": "update"}]
 
 
 class TestMultiStatus:

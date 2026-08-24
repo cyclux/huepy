@@ -7,13 +7,16 @@ bodies (``{"errors": [...], "data": [...]}``) so the envelope handling is
 exercised too.
 """
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
+from datetime import UTC, datetime
 from types import TracebackType
 from typing import Any, Self
+from uuid import uuid4
 
 import pytest
 
 from huepy.client.base import Hue
+from huepy.client.http import EventConnection, PendingWrite, SSEFrame, WriteObserver
 
 Call = tuple[str, str, dict[str, Any] | None]
 
@@ -37,6 +40,7 @@ class FakeHttp:
         self.write_result: Any = envelope({"rid": "updated-id", "rtype": "light"})
         self.closed = False
         self.events: list[dict[str, Any]] = []
+        self._write_observers: set[WriteObserver] = set()
 
     def queue(self, path: str, payload: Any) -> None:
         """Register the body returned for a GET on ``path``."""
@@ -65,6 +69,23 @@ class FakeHttp:
 
     async def put(self, path: str, data: dict[str, Any]) -> Any:
         self.calls.append(("PUT", path, data))
+        write = PendingWrite(
+            command_id=uuid4(),
+            path=path,
+            payload=data,
+            sent_at=datetime.now(UTC),
+        )
+        for observer in tuple(self._write_observers):
+            observer(write.model_copy(deep=True))
+        completed = write.model_copy(
+            update={
+                "completed_at": datetime.now(UTC),
+                "status": "accepted",
+            },
+            deep=True,
+        )
+        for observer in tuple(self._write_observers):
+            observer(completed.model_copy(deep=True))
         return self.write_result
 
     async def post(self, path: str, data: dict[str, Any]) -> Any:
@@ -83,9 +104,47 @@ class FakeHttp:
         self.calls.append(("AUTH", app_name, {"timeout": timeout}))
         return "fake-app-key"
 
-    async def subscribe_events(self) -> AsyncGenerator[dict[str, Any]]:
+    async def subscribe_events(
+        self,
+        *,
+        max_retries: int | None = 10,
+    ) -> AsyncGenerator[dict[str, Any]]:
+        del max_retries
         for event in self.events:
             yield event
+
+    async def subscribe_event_frames(
+        self,
+        *,
+        max_retries: int | None = 10,
+    ) -> AsyncGenerator[SSEFrame]:
+        del max_retries
+        for index, event in enumerate(self.events):
+            yield SSEFrame(
+                event_id=f"fake:{index}",
+                received_at=datetime.now(UTC),
+                events=[event],
+            )
+
+    async def event_connections(
+        self,
+        *,
+        max_retries: int | None = 10,
+    ) -> AsyncGenerator[EventConnection]:
+        del max_retries
+        yield EventConnection(
+            opened_at=datetime.now(UTC),
+            resumed_from=None,
+            frames=self.subscribe_event_frames(),
+        )
+
+    def add_write_observer(self, observer: WriteObserver) -> Callable[[], None]:
+        self._write_observers.add(observer)
+
+        def unsubscribe() -> None:
+            self._write_observers.discard(observer)
+
+        return unsubscribe
 
     async def __aenter__(self) -> Self:
         return self

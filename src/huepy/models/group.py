@@ -1,11 +1,12 @@
 """Models for resources that group other resources: rooms, zones, homes, scenes."""
 
-from typing import override
+from typing import Any, override
 
-from pydantic import Field
+from pydantic import AwareDatetime, Field
 
 from huepy.models.common import (
     RESOURCE_ROOT,
+    HueModel,
     HueResource,
     NamedResource,
     ResourceIdentifier,
@@ -84,6 +85,21 @@ class ServiceGroup(NamedResource):
     """A named group of arbitrary services."""
 
     children: list[ResourceIdentifier] = Field(default_factory=list)
+    services: list[ResourceIdentifier] = Field(default_factory=list)
+
+
+class SceneAction(HueModel):
+    """One resource target and its stored scene action."""
+
+    target: ResourceIdentifier | None = None
+    action: dict[str, Any] = Field(default_factory=dict)
+
+
+class SceneStatus(HueModel):
+    """The bridge-reported activation state of a scene."""
+
+    active: str | None = None
+    last_recall: AwareDatetime | None = None
 
 
 class Scene(NamedResource):
@@ -92,6 +108,8 @@ class Scene(NamedResource):
     group: ResourceIdentifier | None = None
     speed: float | None = None
     auto_dynamic: bool | None = None
+    actions: list[SceneAction] = Field(default_factory=list)
+    status: SceneStatus | None = None
 
     async def activate(self) -> list[ResourceIdentifier]:
         """Recall this scene, applying it to the room or zone it belongs to.

@@ -1,7 +1,10 @@
 """Tests for the event-stream models."""
 
+from datetime import UTC, datetime
+
 import pytest
 
+from huepy import models
 from huepy.models.event import EventResource, EventType, HueEvent, parse_events
 
 BRIDGE_PAYLOAD = [
@@ -31,7 +34,7 @@ class TestParseEvents:
         assert isinstance(event, HueEvent)
         assert event.id == "evt-1"
         assert event.type == "update"
-        assert event.creationtime == "2026-08-22T10:00:00Z"
+        assert event.creationtime == datetime(2026, 8, 22, 10, tzinfo=UTC)
 
         resource = event.data[0]
         assert isinstance(resource, EventResource)
@@ -145,3 +148,71 @@ class TestConveniences:
         assert (update.is_update, update.is_delete) == (True, False)
         assert (delete.is_update, delete.is_delete) == (False, True)
         assert (add.is_update, add.is_delete) == (False, False)
+
+
+class TestTypedDeltas:
+    def test_grouped_light_empty_color_section_is_valid(self):
+        resource = EventResource.model_validate(
+            {"id": "group-1", "type": "grouped_light", "color": {}}
+        )
+
+        assert isinstance(resource.color, models.GroupedColor)
+        assert resource.color.xy is None
+
+    def test_sensor_and_input_sections_parse_to_existing_reading_models(self):
+        resource = EventResource.model_validate(
+            {
+                "id": "sensor-1",
+                "motion": {
+                    "motion": True,
+                    "motion_report": {
+                        "changed": "2026-08-24T14:16:45.498Z",
+                        "motion": True,
+                    },
+                },
+                "temperature": {
+                    "temperature_report": {
+                        "changed": "2026-08-24T14:16:45.499Z",
+                        "temperature": 21.5,
+                    },
+                },
+                "light": {
+                    "light_level_report": {
+                        "changed": "2026-08-24T14:16:45.500Z",
+                        "light_level": 3578,
+                    },
+                },
+                "button": {
+                    "button_report": {
+                        "updated": "2026-08-24T14:16:45.501Z",
+                        "event": "initial_press",
+                    },
+                },
+                "contact_report": {
+                    "changed": "2026-08-24T14:16:45.502Z",
+                    "state": "contact",
+                },
+                "power_state": {"battery_level": 87},
+                "relative_rotary": {
+                    "rotary_report": {
+                        "updated": "2026-08-24T14:16:45.503Z",
+                        "action": "start",
+                        "rotation": {
+                            "direction": "clock_wise",
+                            "steps": 25,
+                            "duration": 40,
+                        },
+                    },
+                },
+            }
+        )
+
+        assert isinstance(resource.motion, models.MotionReading)
+        assert isinstance(resource.temperature, models.TemperatureReading)
+        assert isinstance(resource.light, models.LightLevelReading)
+        assert isinstance(resource.button, models.ButtonReading)
+        assert isinstance(resource.contact_report, models.ContactReport)
+        assert isinstance(resource.power_state, models.PowerState)
+        assert isinstance(resource.relative_rotary, models.RelativeRotaryReading)
+        assert resource.relative_rotary.value is not None
+        assert resource.relative_rotary.value.rotation.steps == 25

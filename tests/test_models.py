@@ -1,6 +1,7 @@
 """Tests for the pydantic model layer and the response envelope."""
 
 import logging
+from datetime import UTC, datetime
 from typing import ClassVar
 
 import pytest
@@ -134,6 +135,30 @@ class TestLight:
     def test_device_id_is_none_without_owner(self):
         assert models.Light.model_validate({"id": "a"}).device_id is None
 
+    def test_human_unit_fields_are_computed_and_serialized(self):
+        light = models.Light.model_validate(
+            {
+                "id": "light-1",
+                "dimming": {"brightness": 50},
+                "color": {"xy": {"x": 0.4, "y": 0.4}},
+                "color_temperature": {"mirek": 300, "mirek_valid": True},
+            }
+        )
+        assert light.kelvin == color.mirek_to_kelvin(300)
+        assert light.rgb == color.xy_to_rgb((0.4, 0.4), 50)
+        dumped = light.model_dump()
+        assert dumped["kelvin"] == light.kelvin
+        assert dumped["rgb"] == light.rgb
+
+    def test_invalid_colour_temperature_has_no_kelvin(self):
+        light = models.Light.model_validate(
+            {
+                "id": "light-1",
+                "color_temperature": {"mirek": 300, "mirek_valid": False},
+            }
+        )
+        assert light.kelvin is None
+
 
 class TestGroup:
     def test_service_id_finds_grouped_light(self):
@@ -196,6 +221,89 @@ class TestSensors:
             {"id": "p-1", "power_state": {"battery_level": 87}},
         )
         assert power.battery_level == 87
+
+    def test_button_reads_nested_real_bridge_shape(self):
+        button = models.Button.model_validate(
+            {
+                "id": "button-1",
+                "button": {
+                    "button_report": {
+                        "event": "long_release",
+                        "updated": "2026-08-22T20:38:49.591Z",
+                    },
+                    "event_values": ["initial_press", "long_release"],
+                    "last_event": "long_release",
+                    "repeat_interval": 800,
+                },
+            }
+        )
+
+        assert button.last_event == "long_release"
+        assert button.button is not None
+        assert button.button.button_report is not None
+        assert button.button.button_report.updated == datetime(
+            2026, 8, 22, 20, 38, 49, 591000, tzinfo=UTC
+        )
+
+    def test_zigbee_connectivity_parses_fixture_shape(self):
+        connectivity = models.parse_resource(
+            {
+                "id": "zigbee-1",
+                "type": "zigbee_connectivity",
+                "owner": {"rid": "device-1", "rtype": "device"},
+                "status": "connected",
+                "mac_address": "00:11:22:33:44:55:66:77",
+            }
+        )
+
+        assert isinstance(connectivity, models.ZigbeeConnectivity)
+        assert connectivity.is_connected is True
+
+    def test_relative_rotary_prefers_timestamped_report(self):
+        rotary = models.parse_resource(
+            {
+                "id": "rotary-1",
+                "type": "relative_rotary",
+                "relative_rotary": {
+                    "rotary_report": {
+                        "updated": "2026-08-24T14:16:45.503Z",
+                        "action": "repeat",
+                        "rotation": {
+                            "direction": "counter_clock_wise",
+                            "steps": 12,
+                            "duration": 20,
+                        },
+                    },
+                },
+            }
+        )
+
+        assert isinstance(rotary, models.RelativeRotary)
+        assert rotary.relative_rotary is not None
+        assert rotary.relative_rotary.value is rotary.relative_rotary.rotary_report
+
+    @pytest.mark.parametrize(
+        ("valid", "expected"),
+        [(True, pytest.approx(10 ** ((3578 - 1) / 10_000))), (False, None)],
+    )
+    def test_light_level_converts_only_valid_readings(self, valid, expected):
+        sensor = models.LightLevel.model_validate(
+            {
+                "id": "lux-1",
+                "light": {
+                    "light_level": 3578,
+                    "light_level_valid": valid,
+                    "light_level_report": {
+                        "changed": "2026-08-24T14:16:45.498Z",
+                        "light_level": 3578,
+                    },
+                },
+            }
+        )
+        assert sensor.lux == expected
+        assert sensor.light is not None
+        assert sensor.light.light_level_report is not None
+        assert sensor.light.light_level_report.changed is not None
 
 
 class TestEnvelope:
@@ -277,6 +385,31 @@ class TestScene:
 
     def test_name_defaults_to_empty(self):
         assert models.Scene.model_validate({"id": "s-1"}).name == ""
+
+    def test_actions_status_and_service_group_services_parse(self):
+        scene = models.Scene.model_validate(
+            {
+                "id": "s-1",
+                "actions": [
+                    {
+                        "target": {"rid": "light-1", "rtype": "light"},
+                        "action": {"on": {"on": True}},
+                    }
+                ],
+                "status": {"active": "static"},
+            }
+        )
+        group = models.ServiceGroup.model_validate(
+            {
+                "id": "group-1",
+                "services": [{"rid": "light-1", "rtype": "light"}],
+            }
+        )
+        assert scene.actions[0].target is not None
+        assert scene.actions[0].target.rid == "light-1"
+        assert scene.status is not None
+        assert scene.status.active == "static"
+        assert group.services[0].rid == "light-1"
 
 
 class TestBinding:
@@ -386,6 +519,13 @@ class TestBuildLightPayload:
     def test_a_negative_transition_is_rejected(self):
         with pytest.raises(ValueError, match="must not be negative"):
             build_light_payload(transition=-1.0)
+
+    def test_transition_above_the_measured_bridge_ceiling_is_rejected(self):
+        assert build_light_payload(transition=6000) == {
+            "dynamics": {"duration": 6_000_000}
+        }
+        with pytest.raises(ValueError, match="must not exceed 6000"):
+            build_light_payload(transition=6000.001)
 
     def test_colour_and_colour_temperature_together_are_rejected(self):
         """The bridge takes one or the other; silently dropping one is a trap."""
@@ -594,6 +734,14 @@ class TestLightColorCommands:
         )
         await group.set_rgb((0, 255, 0))
         assert sent_xy(http) == color.rgb_to_xy((0, 255, 0))
+
+    def test_a_group_may_report_an_empty_aggregate_colour(self):
+        group = models.GroupedLight.model_validate(
+            {"id": "g1", "type": "grouped_light", "color": {}}
+        )
+
+        assert isinstance(group.color, models.GroupedColor)
+        assert group.color.xy is None
 
 
 class TestLightServices:

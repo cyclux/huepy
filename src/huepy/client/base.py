@@ -8,19 +8,23 @@ HTTP session and loads the id-to-name lookup:
             print(hue.get_name(light.id), light.is_on)
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self
 
 from pydantic import ValidationError
 
 from huepy._version import package_version
-from huepy.client.http import HueHttpClient, Transport
+from huepy.client.http import HueHttpClient
+from huepy.client.protocol import Transport
 from huepy.config import HueConfig, default_config_path
 from huepy.exceptions import AuthenticationError
+from huepy.models import AnyResource, HueResponse
 from huepy.models.event import HueEvent, parse_events
 from huepy.resources import (
     Bridge,
@@ -35,13 +39,18 @@ from huepy.resources import (
     Light,
     LightLevel,
     Motion,
+    RelativeRotary,
     Room,
     Scene,
     ServiceGroup,
     Temperature,
+    ZigbeeConnectivity,
     Zone,
 )
 from huepy.utils.naming import build_name_map
+
+if TYPE_CHECKING:
+    from huepy.state import HueState
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +80,8 @@ class Hue:
         temperature: Handler for temperature sensors.
         button: Handler for switch and dimmer buttons.
         contact: Handler for contact sensors.
+        relative_rotary: Handler for relative rotary input services.
+        zigbee_connectivity: Handler for Zigbee reachability services.
 
     """
 
@@ -104,7 +115,7 @@ class Hue:
         )
         self._http: Transport | None = None
         self._names: dict[str, str] = {}
-        self._event_stream: AsyncGenerator[dict[str, Any]] | None = None
+        self._event_streams: set[AsyncGenerator[Any]] = set()
 
         self.light: Light = Light(self)
         self.light_group: GroupedLight = GroupedLight(self)
@@ -123,6 +134,8 @@ class Hue:
         self.temperature: Temperature = Temperature(self)
         self.button: Button = Button(self)
         self.contact: Contact = Contact(self)
+        self.relative_rotary: RelativeRotary = RelativeRotary(self)
+        self.zigbee_connectivity: ZigbeeConnectivity = ZigbeeConnectivity(self)
 
         # Plural aliases for the same handler objects, not copies. The singular
         # names are the raw, id-based surface; the plural ones read naturally
@@ -206,12 +219,24 @@ class Hue:
         suspended, still holding the streaming response. Finalising it here
         releases that socket instead of leaving it to the garbage collector.
         """
-        if self._event_stream is not None:
-            stream, self._event_stream = self._event_stream, None
-            await stream.aclose()
-        if self._http is not None:
-            await self._http.__aexit__(None, None, None)
-            self._http = None
+        streams = tuple(self._event_streams)
+        self._event_streams.clear()
+        errors = [
+            result
+            for result in await asyncio.gather(
+                *(stream.aclose() for stream in streams),
+                return_exceptions=True,
+            )
+            if isinstance(result, BaseException)
+        ]
+        http, self._http = self._http, None
+        if http is not None:
+            try:
+                await http.__aexit__(None, None, None)
+            except BaseException as exc:  # noqa: BLE001 - cleanup every resource first
+                errors.append(exc)
+        if errors:
+            raise errors[0]
 
     async def refresh_names(self) -> dict[str, str]:
         """Reload the id-to-display-name lookup from the bridge.
@@ -247,6 +272,20 @@ class Hue:
 
         """
         return self._names.get(resource_id, UNKNOWN_NAME)
+
+    async def snapshot(self) -> list[AnyResource]:
+        """Fetch the bridge's aggregate-visible resource graph in one request."""
+        response = HueResponse[AnyResource].model_validate(
+            await self.http.get("/clip/v2/resource")
+        )
+        response.raise_for_errors()
+        return [resource.bind(self, resource.type) for resource in response.data]
+
+    def state(self) -> HueState:
+        """Create an opt-in, event-updated view of the bridge state."""
+        from huepy.state import HueState  # noqa: PLC0415 - keeps imports acyclic
+
+        return HueState(self)
 
     def ensure_authenticated(self) -> None:
         """Check that an application key is available.
@@ -300,21 +339,21 @@ class Hue:
 
         """
         self.ensure_authenticated()
-        stream = self.http.subscribe_events()
-        self._event_stream = stream
+        stream = self.http.subscribe_event_frames()
+        self._event_streams.add(stream)
         try:
-            async for payload in stream:
+            async for frame in stream:
                 # A stream meant to run for weeks must not die on one
                 # malformed event, so a payload that will not parse is
                 # dropped with a warning rather than raised through.
                 try:
-                    events = parse_events(payload)
+                    events = parse_events(frame.events)
                 except ValidationError:
-                    logger.warning("Discarding unparseable event: %r", payload)
+                    logger.warning("Discarding unparseable event: %r", frame.events)
                     continue
                 for event in events:
+                    event.sse_id = frame.event_id
                     yield event
         finally:
-            if self._event_stream is stream:
-                self._event_stream = None
+            self._event_streams.discard(stream)
             await stream.aclose()

@@ -16,7 +16,7 @@ from huepy import Hue, models
 NAME_WIDTH = 24
 
 
-def describe(resource: models.EventResource) -> str:
+def describe(resource: models.EventResource) -> str:  # noqa: C901, PLR0912
     """Summarise whichever pieces of state this event actually carries."""
     parts: list[str] = []
     if resource.on is not None:
@@ -27,8 +27,45 @@ def describe(resource: models.EventResource) -> str:
         mirek = resource.color_temperature.mirek
         if mirek is not None:
             parts.append(f"{mirek} mirek")
-    if resource.color is not None:
+    if resource.color is not None and resource.color.xy is not None:
         parts.append(f"xy ({resource.color.xy.x:.3f}, {resource.color.xy.y:.3f})")
+    if resource.motion is not None:
+        report = resource.motion.motion_report
+        detected = report.motion if report is not None else resource.motion.motion
+        if detected is not None:
+            parts.append("motion" if detected else "clear")
+    if resource.temperature is not None:
+        report = resource.temperature.temperature_report
+        value = (
+            report.temperature
+            if report is not None
+            else resource.temperature.temperature
+        )
+        if value is not None:
+            parts.append(f"{value:.1f} °C")
+    if resource.light is not None:
+        report = resource.light.light_level_report
+        level = report.light_level if report is not None else resource.light.light_level
+        if level is not None:
+            parts.append(f"light level {level}")
+    if resource.button is not None and resource.button.button_report is not None:
+        event = resource.button.button_report.event
+        if event is not None:
+            parts.append(event)
+    if (
+        resource.contact_report is not None
+        and resource.contact_report.state is not None
+    ):
+        parts.append(resource.contact_report.state)
+    if (
+        resource.power_state is not None
+        and resource.power_state.battery_level is not None
+    ):
+        parts.append(f"battery {resource.power_state.battery_level}%")
+    if resource.relative_rotary is not None:
+        rotary = resource.relative_rotary.value
+        if rotary is not None:
+            parts.append(f"{rotary.rotation.direction} {rotary.rotation.steps} steps")
     return ", ".join(parts)
 
 

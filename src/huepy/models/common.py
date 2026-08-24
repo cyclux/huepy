@@ -183,11 +183,13 @@ class ResourceType(StrEnum):
     LIGHT = "light"
     LIGHT_LEVEL = "light_level"
     MOTION = "motion"
+    RELATIVE_ROTARY = "relative_rotary"
     ROOM = "room"
     SCENE = "scene"
     SERVICE_GROUP = "service_group"
     TEMPERATURE = "temperature"
     ZONE = "zone"
+    ZIGBEE_CONNECTIVITY = "zigbee_connectivity"
 
 
 class ResourceIdentifier(HueModel):

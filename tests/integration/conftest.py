@@ -23,6 +23,7 @@ import pytest
 from pydantic import JsonValue
 
 from huepy import BridgeConnectionError, Hue, models
+from huepy.client.http import WriteObserver
 
 OPT_IN_ENV = "HUEPY_INTEGRATION"
 
@@ -34,54 +35,6 @@ class Sent:
     method: str
     path: str
     data: dict[str, Any] | None
-
-
-@dataclass(frozen=True)
-class LightState:
-    """Everything needed to put one light back exactly as it was."""
-
-    light_id: str
-    name: str
-    on: bool
-    brightness: float | None
-    mirek: int | None
-    xy: tuple[float, float] | None
-
-    @classmethod
-    def capture(cls, light: models.Light) -> "LightState":
-        """Snapshot a light's restorable state.
-
-        A light is in colour-temperature mode or colour mode, never both, and
-        `set()` rejects being given both. `mirek_valid` is how the bridge says
-        which one is live.
-        """
-        temperature = light.color_temperature
-        in_ct_mode = temperature is not None and bool(temperature.mirek_valid)
-        return cls(
-            light_id=light.id,
-            name=light.name,
-            on=light.is_on,
-            brightness=light.brightness,
-            mirek=temperature.mirek if in_ct_mode and temperature else None,
-            xy=(
-                (light.color.xy.x, light.color.xy.y)
-                if light.color is not None and not in_ct_mode
-                else None
-            ),
-        )
-
-    async def restore(self, hue: Hue) -> None:
-        """Put the light back, tolerating a bulb that has gone unreachable."""
-        light = await hue.light.get(self.light_id)
-        try:
-            await light.set(
-                on=self.on,
-                brightness=self.brightness,
-                mirek=self.mirek,
-                xy=self.xy,
-            )
-        except BridgeConnectionError:  # pragma: no cover - hardware dependent
-            pytest.fail(f"could not restore {self.name}: bridge unreachable")
 
 
 def _require_opt_in() -> None:
@@ -125,12 +78,16 @@ suite run.
 async def restore_all_lights(hue: Hue) -> AsyncIterator[None]:
     """Snapshot every light and put them all back when the test ends."""
     await asyncio.sleep(SETTLE_BEFORE_SNAPSHOT)
-    before = [LightState.capture(light) for light in await hue.light.get_all()]
+    before = [light.capture() for light in await hue.light.get_all()]
     try:
         yield
     finally:
         for state in before:
-            await state.restore(hue)
+            light = await hue.light.get(state.light_id)
+            try:
+                await light.restore(state)
+            except BridgeConnectionError:  # pragma: no cover - hardware dependent
+                pytest.fail(f"could not restore light {state.light_id}")
         await asyncio.sleep(SETTLE_BEFORE_SNAPSHOT)
 
 
@@ -143,7 +100,11 @@ async def a_light(hue: Hue, restore_all_lights: None) -> models.Light:
     the bridge says a light can actually dim.
     """
     lights = await hue.light.get_all()
-    usable = [light for light in lights if light.dimming is not None]
+    usable = [
+        light
+        for light in lights
+        if light.dimming is not None and "bad" not in light.name.casefold()
+    ]
     if not usable:
         pytest.skip("no dimmable lights on this bridge")
     return usable[0]
@@ -174,10 +135,10 @@ async def a_room(hue: Hue, restore_all_lights: None) -> models.Room:
 
 
 @pytest.fixture
-def request_counter() -> Callable[[Hue], list[Sent]]:
+def request_counter() -> Callable[[Hue], list[Sent]]:  # noqa: C901
     """Wrap a client's transport so a test can inspect what it really sent."""
 
-    def install(hue: Hue) -> list[Sent]:
+    def install(hue: Hue) -> list[Sent]:  # noqa: C901
         calls: list[Sent] = []
         inner = hue.http
 
@@ -201,8 +162,17 @@ def request_counter() -> Callable[[Hue], list[Sent]]:
             async def authenticate(self, app_name: str = "huepy", timeout: int = 60):  # noqa: ASYNC109 - mirrors the Transport protocol
                 return await inner.authenticate(app_name, timeout)
 
-            def subscribe_events(self):
-                return inner.subscribe_events()
+            def subscribe_events(self, *, max_retries: int | None = 10):
+                return inner.subscribe_events(max_retries=max_retries)
+
+            def subscribe_event_frames(self, *, max_retries: int | None = 10):
+                return inner.subscribe_event_frames(max_retries=max_retries)
+
+            def event_connections(self, *, max_retries: int | None = 10):
+                return inner.event_connections(max_retries=max_retries)
+
+            def add_write_observer(self, observer: WriteObserver) -> Callable[[], None]:
+                return inner.add_write_observer(observer)
 
             async def __aexit__(
                 self,

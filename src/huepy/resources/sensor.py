@@ -139,3 +139,10 @@ class DevicePower(BaseResource[device_models.DevicePower]):
 
     resource_type: ClassVar[ResourceType] = ResourceType.DEVICE_POWER
     model: ClassVar[type[common_models.HueModel]] = device_models.DevicePower
+
+
+class RelativeRotary(BaseResource[sensor_models.RelativeRotary]):
+    """Handler for relative rotary input services."""
+
+    resource_type: ClassVar[ResourceType] = ResourceType.RELATIVE_ROTARY
+    model: ClassVar[type[common_models.HueModel]] = sensor_models.RelativeRotary

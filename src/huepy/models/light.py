@@ -13,16 +13,24 @@ bridge decides to substitute:
     await light.set_rgb((255, 136, 0))
 """
 
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, cast, override
 
-from pydantic import Field, ValidationInfo, field_validator
+from pydantic import (
+    AwareDatetime,
+    Field,
+    ValidationInfo,
+    computed_field,
+    field_validator,
+)
 
-from huepy.color import Gamut, gamut_for
+from huepy.color import Gamut, gamut_for, mirek_to_kelvin, xy_to_rgb
 from huepy.models.common import (
     Color,
     ColorGamut,
     ColorTemperature,
+    ColorXY,
     Dimming,
     HueModel,
     HueResource,
@@ -34,6 +42,17 @@ from huepy.models.state import build_light_payload
 
 BREATHE = "breathe"
 """The one alert action the v2 API documents: a single slow pulse."""
+
+
+@dataclass(frozen=True)
+class LightState:
+    """A restorable snapshot of one light's active state."""
+
+    light_id: str
+    on: bool
+    brightness: float | None
+    mirek: int | None
+    xy: tuple[float, float] | None
 
 
 def _as_gamut(gamut: ColorGamut) -> Gamut:
@@ -260,7 +279,8 @@ class LightCommands(HueResource):
             DetachedResourceError: If this resource is not bound to a client.
             ValueError: If more than one colour or more than one colour
                 temperature is given, if a colour is combined with a colour
-                temperature, or if ``transition`` is negative.
+                temperature, or if ``transition`` is negative or longer than
+                6,000 seconds.
             HueResponseError: If the bridge rejects the change.
 
         """
@@ -452,6 +472,64 @@ class Light(LightCommands, NamedResource):
             return None
         return self.color_temperature.mirek
 
+    @computed_field
+    @property
+    def kelvin(self) -> int | None:
+        """Current valid colour temperature in kelvin, when available."""
+        temperature = self.color_temperature
+        if (
+            temperature is None
+            or not temperature.mirek_valid
+            or temperature.mirek is None
+        ):
+            return None
+        return mirek_to_kelvin(temperature.mirek)
+
+    @computed_field
+    @property
+    def rgb(self) -> tuple[int, int, int] | None:
+        """Current colour in RGB, when colour and brightness are available."""
+        if self.color is None or self.brightness is None:
+            return None
+        return xy_to_rgb(
+            (self.color.xy.x, self.color.xy.y),
+            brightness=self.brightness,
+        )
+
+    def capture(self) -> LightState:
+        """Capture the valid active state needed to restore this light."""
+        temperature = self.color_temperature
+        in_ct_mode = temperature is not None and bool(temperature.mirek_valid)
+        return LightState(
+            light_id=self.id,
+            on=self.is_on,
+            brightness=self.brightness,
+            mirek=temperature.mirek if in_ct_mode and temperature is not None else None,
+            xy=(
+                (self.color.xy.x, self.color.xy.y)
+                if self.color is not None and not in_ct_mode
+                else None
+            ),
+        )
+
+    async def restore(
+        self,
+        state: LightState,
+        *,
+        transition: float | None = None,
+    ) -> list[ResourceIdentifier]:
+        """Restore a state captured from this same light."""
+        if state.light_id != self.id:
+            msg = f"state belongs to light {state.light_id}, not {self.id}"
+            raise ValueError(msg)
+        return await self.set(
+            on=state.on,
+            brightness=state.brightness,
+            mirek=state.mirek,
+            xy=state.xy,
+            transition=transition,
+        )
+
     @property
     def effect(self) -> str | None:
         """Name of the effect running now, or None if the light runs none.
@@ -569,6 +647,12 @@ class Light(LightCommands, NamedResource):
         return await self._put(self._command_path(), payload)
 
 
+class GroupedColor(HueModel):
+    """A group's aggregate colour, which the bridge may report as empty."""
+
+    xy: ColorXY | None = None
+
+
 class GroupedLight(LightCommands):
     """The aggregate light service of a room or zone.
 
@@ -577,6 +661,7 @@ class GroupedLight(LightCommands):
 
     on: On | None = None
     dimming: Dimming | None = None
+    color: GroupedColor | None = None
     color_temperature: ColorTemperature | None = None
 
     @property
@@ -585,11 +670,19 @@ class GroupedLight(LightCommands):
         return self.on is not None and self.on.on
 
 
+class LightLevelReport(HueModel):
+    """The most recent ambient-light reading and bridge timestamp."""
+
+    changed: AwareDatetime | None = None
+    light_level: int | None = None
+
+
 class LightLevelReading(HueModel):
     """A light-level measurement in 10000*log10(lux) + 1 units."""
 
     light_level: int | None = None
     light_level_valid: bool | None = None
+    light_level_report: LightLevelReport | None = None
 
 
 class LightLevel(HueResource):
@@ -602,6 +695,18 @@ class LightLevel(HueResource):
     def level(self) -> int | None:
         """The current raw light level, or None if unavailable."""
         return self.light.light_level if self.light is not None else None
+
+    @computed_field
+    @property
+    def lux(self) -> float | None:
+        """Current illuminance in lux, or None for an invalid reading."""
+        if (
+            self.light is None
+            or not self.light.light_level_valid
+            or self.light.light_level is None
+        ):
+            return None
+        return 10 ** ((self.light.light_level - 1) / 10_000)
 
 
 class GroupedLightLevel(HueResource):

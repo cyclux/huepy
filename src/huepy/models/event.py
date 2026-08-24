@@ -20,7 +20,7 @@ Typical usage example:
 from enum import StrEnum
 from typing import cast
 
-from pydantic import Field
+from pydantic import AwareDatetime, Field
 
 from huepy.models.common import (
     Color,
@@ -29,6 +29,15 @@ from huepy.models.common import (
     HueModel,
     On,
     ResourceIdentifier,
+)
+from huepy.models.device import PowerState
+from huepy.models.light import GroupedColor, LightLevelReading
+from huepy.models.sensor import (
+    ButtonReading,
+    ContactReport,
+    MotionReading,
+    RelativeRotaryReading,
+    TemperatureReading,
 )
 
 
@@ -56,8 +65,15 @@ class EventResource(HueModel):
     owner: ResourceIdentifier | None = None
     on: On | None = None
     dimming: Dimming | None = None
-    color: Color | None = None
+    color: Color | GroupedColor | None = None
     color_temperature: ColorTemperature | None = None
+    motion: MotionReading | None = None
+    temperature: TemperatureReading | None = None
+    light: LightLevelReading | None = None
+    button: ButtonReading | None = None
+    contact_report: ContactReport | None = None
+    power_state: PowerState | None = None
+    relative_rotary: RelativeRotaryReading | None = None
 
 
 class HueEvent(HueModel):
@@ -72,7 +88,8 @@ class HueEvent(HueModel):
 
     id: str = ""
     type: str = ""
-    creationtime: str | None = None
+    creationtime: AwareDatetime | None = None
+    sse_id: str | None = Field(default=None, exclude=True)
     data: list[EventResource] = Field(default_factory=list)
 
     @property

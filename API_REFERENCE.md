@@ -28,6 +28,7 @@ already hold an id, or need a resource type the models do not cover.
 - [Scenes](#scenes)
 - [Models](#models)
 - [Events](#events)
+- [Last-reported state](#last-reported-state)
 - [huepy.color](#huepycolor)
 - [Resource handlers](#resource-handlers)
 - [Configuration](#configuration)
@@ -80,6 +81,8 @@ async with Hue(bridge_ip="192.168.1.100") as hue:
 | `ensure_authenticated() -> None` | Raise `AuthenticationError` if no key is available. Never prompts. |
 | `async authenticate(app_name="huepy", timeout=60) -> str` | Obtain a key. The bridge link button must be pressed while this runs. |
 | `async get_event_stream() -> AsyncGenerator[models.HueEvent]` | Yield typed events pushed by the bridge. See [Events](#events). |
+| `async snapshot() -> list[models.AnyResource]` | Fetch all aggregate-visible resources in one request. Known types use their concrete model; future types use `models.HueResource`. |
+| `state() -> huepy.state.HueState` | Create a stopped, opt-in last-reported state view. Enter it as an async context manager. |
 
 #### Attributes
 
@@ -278,7 +281,7 @@ await light.turn_off(transition=0.4)
 await light.set(on=True, transition=-1)  # raises ValueError
 ```
 
-A negative transition raises `ValueError`. Omitting it lets the bridge use its
+A negative transition or a duration over 6,000 seconds raises `ValueError`. Omitting it lets the bridge use its
 own default fade. The [effect, gradient, powerup and alert](#lights-only)
 commands take no transition, and neither do the id-based handler commands.
 
@@ -406,6 +409,10 @@ scene, which applies it to the room or zone in its `group` field. Scene names
 repeat across rooms far more often than room names do, so when several match,
 the first in bridge order wins.
 
+The model also exposes stored `actions` (`models.SceneAction`) and optional
+bridge `status` (`models.SceneStatus`), including `active` and the aware
+`last_recall` timestamp when reported.
+
 ## Models
 
 All models allow unknown fields, so a firmware update that adds a key cannot
@@ -417,14 +424,14 @@ available in `model_extra`.
 | Model | Fields beyond `id`, `type`, `id_v1`, `owner` | Commands beyond `update` / `delete` / `refresh` |
 | --- | --- | --- |
 | `models.Light` | `metadata`, `on`, `dimming`, `color`, `color_temperature`, `mode`, `effects`, `timed_effects`, `gradient`, `powerup`, `alert_actions`, `signaling` | light commands, `set_effect`, `set_gradient`, `set_powerup`, `alert` |
-| `models.GroupedLight` | `on`, `dimming`, `color_temperature` | light commands |
+| `models.GroupedLight` | `on`, `dimming`, `color` (`GroupedColor`, whose `xy` may be absent), `color_temperature` | light commands |
 | `models.Room` | `metadata`, `children`, `services` | light commands, `service_id`, `contains_device` |
 | `models.Zone` | `metadata`, `children`, `services` | light commands, `service_id`, `contains_device` |
-| `models.Scene` | `metadata`, `group`, `speed`, `auto_dynamic` | `activate` |
+| `models.Scene` | `metadata`, `group`, `speed`, `auto_dynamic`, `actions`, `status` | `activate` |
 | `models.Device` | `metadata`, `product_data`, `services` | `service_id` |
 | `models.Bridge` | `bridge_id`, `time_zone` | — |
 | `models.BridgeHome` | `children`, `services` | — |
-| `models.ServiceGroup` | `metadata`, `children` | — |
+| `models.ServiceGroup` | `metadata`, `children`, `services` | — |
 | `models.DevicePower` | `power_state` | — |
 | `models.Motion` | `enabled`, `motion`, `sensitivity` | — |
 | `models.GroupedMotion` | as `Motion` | — |
@@ -433,6 +440,8 @@ available in `model_extra`.
 | `models.GroupedLightLevel` | `enabled`, `light` | — |
 | `models.Button` | `metadata`, `button` | — |
 | `models.Contact` | `enabled`, `contact_report` | — |
+| `models.RelativeRotary` | `relative_rotary` | — |
+| `models.ZigbeeConnectivity` | `status`, `mac_address`, `channel`, `extended_pan_id` | — |
 
 "Light commands" is `set`, `turn_on`, `turn_off`, `set_brightness`,
 `set_color`, `set_rgb`, `set_color_temperature`, `set_kelvin`.
@@ -447,6 +456,8 @@ available in `model_extra`.
 | `Light`, `GroupedLight` | `is_on` | `bool` |
 | `Light` | `brightness` | `float \| None` |
 | `Light` | `mirek` | `int \| None` |
+| `Light` | `kelvin` | `int \| None`; only when the reported mirek value is valid |
+| `Light` | `rgb` | `tuple[int, int, int] \| None`; only when xy colour and brightness are available |
 | `Light` | `effect` | `str \| None` |
 | `Light` | `is_gradient` | `bool` |
 | `Motion` | `motion_detected` | `bool` |
@@ -456,6 +467,9 @@ available in `model_extra`.
 | `Button` | `last_event` | `str \| None` |
 | `Contact` | `is_contact` | `bool` |
 | `LightLevel` | `level` | `int \| None` |
+| `LightLevel` | `lux` | `float \| None`; only when the reported reading is valid |
+| `RelativeRotaryReading` | `value` | `RelativeRotaryReport \| RelativeRotaryEvent \| None`; prefers the timestamped report |
+| `ZigbeeConnectivity` | `is_connected` | `bool` |
 
 ### Payload models
 
@@ -465,16 +479,30 @@ building payloads by hand.
 | Area | Names |
 | --- | --- |
 | Shared | `HueModel`, `HueResource`, `NamedResource`, `Metadata`, `ResourceIdentifier`, `ResourceType` |
-| Light state | `On`, `Dimming`, `Color`, `ColorXY`, `ColorGamut`, `ColorTemperature`, `MirekSchema` |
+| Light state | `On`, `Dimming`, `Color`, `GroupedColor`, `ColorXY`, `ColorGamut`, `ColorTemperature`, `MirekSchema` |
 | Light services | `Effect`, `Effects`, `TimedEffects`, `Gradient`, `GradientPoint`, `Powerup`, `Alert`, `Signaling`, `LightCommands` |
-| Sensors | `MotionReading`, `MotionReport`, `Sensitivity`, `TemperatureReading`, `TemperatureReport`, `ButtonReport`, `ContactReport`, `LightLevelReading` |
+| Sensors and input | `MotionReading`, `MotionReport`, `Sensitivity`, `TemperatureReading`, `TemperatureReport`, `ButtonReading`, `ButtonReport`, `ContactReport`, `LightLevelReading`, `LightLevelReport`, `RelativeRotaryReading`, `RelativeRotaryReport`, `RelativeRotaryEvent`, `RelativeRotaryRotation` |
 | Devices | `ProductData`, `PowerState`, `TimeZone` |
-| Groups | `ResourceGroup` |
+| Connectivity | `ZigbeeConnectivity`, `ZigbeeChannel` |
+| Groups | `ResourceGroup`, `SceneAction`, `SceneStatus` |
 | Events | `HueEvent`, `EventResource`, `EventType`, `parse_events` |
 | Envelope | `HueResponse`, `HueErrorDetail`, `unwrap`, `unwrap_one` |
 | Payload builder | `build_light_payload` |
+| Aggregate resources | `AnyResource`, `RESOURCE_MODELS`, `RESOURCE_LIST`, `parse_resource` |
 
 `ResourceType` is a `StrEnum` of every v2 `rtype`.
+
+`AnyResource` is the aggregate-resource union used by `Hue.snapshot()` and the
+state layer. `parse_resource(payload)` returns the concrete model for a known
+`type`, or a generic `HueResource` for a future type. `RESOURCE_MODELS` maps
+known type strings to models and `RESOURCE_LIST` validates a list of aggregate
+resources.
+
+`Light.capture()` returns detached `models.LightState` with valid power,
+brightness and active colour-mode state. `await light.restore(state,
+transition=None)` restores it only to the light that captured it; another
+light raises `ValueError`. `kelvin`, `rgb` and `lux` are computed fields, so
+they are included in normal `model_dump()` output.
 
 ### Envelope
 
@@ -511,17 +539,21 @@ async for event in hue.get_event_stream():
 | --- | --- | --- |
 | `event.id` | `str` | The event's own id. |
 | `event.type` | `str` | Raw type, kept as a string so an unknown one cannot kill the stream. |
-| `event.creationtime` | `str \| None` | ISO timestamp from the bridge. |
+| `event.creationtime` | `datetime \| None` | Aware timestamp from the bridge. |
+| `event.sse_id` | `str \| None` | SSE frame id used for ordering; excluded from serialization. |
 | `event.data` | `list[models.EventResource]` | The changed resources. |
 | `event.event_type` | `models.EventType \| None` | The type as an enum, or `None` if unrecognised. |
 | `event.resource_ids` | `list[str]` | Ids of every resource in the event. |
 | `event.is_update` | `bool` | Whether this reports changed state. |
 | `event.is_delete` | `bool` | Whether this reports resources that no longer exist. |
 
-An `EventResource` carries `id`, `type`, `id_v1`, `owner`, and whichever of
-`on`, `dimming`, `color` and `color_temperature` changed; anything else the
-bridge sent is on `model_extra`. Events are payloads, not resources: they are
-*not* bound and cannot issue commands. Fetch the resource by id to act on it.
+An `EventResource` carries `id`, `type`, `id_v1`, `owner`, and whichever typed
+sections changed: light state (`on`, `dimming`, `color`, `color_temperature`),
+sensor state (`motion`, `temperature`, `light`, `contact_report`,
+`power_state`), or input state (`button`, `relative_rotary`). Future sections
+remain on `model_extra`. Grouped and ungrouped sensor reports share the same
+reading models. Events are payloads, not resources: they are *not* bound and
+cannot issue commands. Fetch the resource by id to act on it.
 
 A payload that will not parse is logged at warning level and skipped — a
 stream meant to run for weeks must not die on one malformed event. The stream
@@ -535,6 +567,51 @@ async for payload in hue.http.subscribe_events():
 ```
 
 `models.parse_events(payload)` turns such a payload into `list[HueEvent]`.
+
+`hue.http.subscribe_event_frames()` yields complete `SSEFrame` objects. Each
+has `event_id`, an aware `received_at`, and decoded `events`; multi-line SSE
+data stays one frame. `hue.http.event_connections()` additionally yields an
+`EventConnection` with `opened_at`, `resumed_from`, and its `frames` iterator.
+Both resume reconnects with the last event id. The compatibility
+`subscribe_events()` iterator continues to yield individual decoded event dictionaries.
+
+## Last-reported state
+
+`hue.state()` creates a `huepy.state.HueState`; it does nothing until entered.
+The context establishes the stream, buffers it during a one-request aggregate
+snapshot, folds the buffered frames without publishing startup history, and
+then returns a last-reported view. The bridge gives the snapshot no cursor, so
+an event already represented by the snapshot can briefly regress one field;
+the next event or reconnect reconciliation repairs it.
+
+```python
+from huepy import models
+
+async with hue.state() as state:
+    desk = state.lights["Desk lamp"]
+    print(state.connected, desk.kelvin)
+    all_lights = state.all(models.Light)
+```
+
+`state.lights`, `rooms`, `zones`, `scenes` and `devices` are synchronous local
+views with `get`, `all`, `by_name`, `names` and `[...]`. `state.resources`,
+`get(id)`, `all(Model)`, `lights_in(group)`, `room_of(id)`, `zones_of(id)`,
+`device_of(id)` and `name_of(id)` provide generic and topology lookup. Every
+read returns a fresh bound model; changing it cannot alter the stored graph.
+
+`state.changes(maxsize=4096)` is an async iterator of frozen
+`huepy.state.Change` and `Resync` records. A `Change` includes full before and
+after resources, raw `delta`, source timestamps, event id, and write-correlation
+fields (`origin`, `command_id`, `command_confirmed`, `observation`, and
+`transition_ends_at`). A `Resync` has `RECONNECT`, `LAGGED`, or `INCONSISTENT`
+reason and marks history whose continuity cannot be guaranteed. Subscribers are
+independent and bounded; overflow is coalesced into `Resync(LAGGED)`.
+
+State is never optimistic. Commands observed through its transport may be
+attributed to this client only after their transport outcome is known.
+`state.fading` is a read-only mapping of current locally issued
+`huepy.state.ActiveFade` records, keyed by resource id; each record includes the
+command id, normalized target, end, report-reliability end, and confirmation.
 
 ## `huepy.color`
 
@@ -599,6 +676,8 @@ Handlers in the [name-lookup table](#lookup-by-name) add `by_name(name)`,
 | `hue.temperature` | `Temperature` | `models.Temperature` | `turn_on`, `turn_off` |
 | `hue.contact` | `Contact` | `models.Contact` | `turn_on`, `turn_off` |
 | `hue.button` | `Button` | `models.Button` | — |
+| `hue.relative_rotary` | `RelativeRotary` | `models.RelativeRotary` | — |
+| `hue.zigbee_connectivity` | `ZigbeeConnectivity` | `models.ZigbeeConnectivity` | — |
 | `hue.device` | `Device` | `models.Device` | — |
 | `hue.device_power` | `DevicePower` | `models.DevicePower` | — |
 | `hue.light_level` | `LightLevel` | `models.LightLevel` | — |
@@ -698,7 +777,10 @@ an `InsecureConfigWarning` (exported from `huepy`) instead of silently leaving
 the credential world-readable.
 
 `HueHttpClient` is the concrete transport, also exported from `huepy`; the
-client builds one for you at `start()` and exposes it as `hue.http`.
+client builds one for you at `start()` and exposes it as `hue.http`. Its pool
+allows three connections per bridge. A GET that receives 429 or 503 is retried
+at most three times with bounded exponential backoff; PUT, POST and DELETE are
+never replayed automatically.
 
 ## Exceptions
 

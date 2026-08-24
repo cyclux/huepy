@@ -1,0 +1,1485 @@
+{
+  "quiet_stream": {
+    "duration_seconds": 90.01199962600367,
+    "fields": [
+      {
+        "at_seconds": 0.009231971002009232,
+        "field": "comment",
+        "value": "hi"
+      },
+      {
+        "at_seconds": 41.629680459001975,
+        "field": "id",
+        "value": "1700000000:0"
+      },
+      {
+        "at_seconds": 41.6296887339995,
+        "field": "data",
+        "value": [
+          {
+            "creationtime": "2020-01-01T00:00:00.000Z",
+            "data": [
+              {
+                "id": "resource-001",
+                "id_v1": "/scrubbed/resource",
+                "motion": {
+                  "motion": true,
+                  "motion_report": {
+                    "changed": "2020-01-01T00:00:00.001Z",
+                    "motion": true
+                  },
+                  "motion_valid": true
+                },
+                "owner": {
+                  "rid": "resource-002",
+                  "rtype": "device"
+                },
+                "type": "motion"
+              }
+            ],
+            "id": "resource-003",
+            "type": "update"
+          }
+        ]
+      },
+      {
+        "at_seconds": 42.6313522269993,
+        "field": "id",
+        "value": "1700000001:0"
+      },
+      {
+        "at_seconds": 42.63136312900315,
+        "field": "data",
+        "value": [
+          {
+            "creationtime": "2020-01-01T00:00:00.000Z",
+            "data": [
+              {
+                "id": "resource-004",
+                "motion": {
+                  "motion_report": {
+                    "changed": "2020-01-01T00:00:00.002Z",
+                    "motion": true
+                  }
+                },
+                "owner": {
+                  "rid": "resource-005",
+                  "rtype": "room"
+                },
+                "type": "grouped_motion"
+              }
+            ],
+            "id": "resource-006",
+            "type": "update"
+          }
+        ]
+      },
+      {
+        "at_seconds": 55.95699639400118,
+        "field": "id",
+        "value": "1700000014:0"
+      },
+      {
+        "at_seconds": 55.95700555300573,
+        "field": "data",
+        "value": [
+          {
+            "creationtime": "2020-01-01T00:00:00.003Z",
+            "data": [
+              {
+                "id": "resource-001",
+                "id_v1": "/scrubbed/resource",
+                "motion": {
+                  "motion": false,
+                  "motion_report": {
+                    "changed": "2020-01-01T00:00:00.004Z",
+                    "motion": false
+                  },
+                  "motion_valid": true
+                },
+                "owner": {
+                  "rid": "resource-002",
+                  "rtype": "device"
+                },
+                "type": "motion"
+              }
+            ],
+            "id": "resource-007",
+            "type": "update"
+          }
+        ]
+      },
+      {
+        "at_seconds": 56.970771173000685,
+        "field": "id",
+        "value": "1700000015:0"
+      },
+      {
+        "at_seconds": 56.970778431001236,
+        "field": "data",
+        "value": [
+          {
+            "creationtime": "2020-01-01T00:00:00.003Z",
+            "data": [
+              {
+                "id": "resource-004",
+                "motion": {
+                  "motion_report": {
+                    "changed": "2020-01-01T00:00:00.005Z",
+                    "motion": false
+                  }
+                },
+                "owner": {
+                  "rid": "resource-005",
+                  "rtype": "room"
+                },
+                "type": "grouped_motion"
+              }
+            ],
+            "id": "resource-008",
+            "type": "update"
+          }
+        ]
+      },
+      {
+        "at_seconds": 69.48754387000372,
+        "field": "id",
+        "value": "1700000028:0"
+      },
+      {
+        "at_seconds": 69.48755150800571,
+        "field": "data",
+        "value": [
+          {
+            "creationtime": "2020-01-01T00:00:00.006Z",
+            "data": [
+              {
+                "id": "resource-001",
+                "id_v1": "/scrubbed/resource",
+                "motion": {
+                  "motion": true,
+                  "motion_report": {
+                    "changed": "2020-01-01T00:00:00.007Z",
+                    "motion": true
+                  },
+                  "motion_valid": true
+                },
+                "owner": {
+                  "rid": "resource-002",
+                  "rtype": "device"
+                },
+                "type": "motion"
+              }
+            ],
+            "id": "resource-009",
+            "type": "update"
+          }
+        ]
+      },
+      {
+        "at_seconds": 70.5030027899993,
+        "field": "id",
+        "value": "1700000029:0"
+      },
+      {
+        "at_seconds": 70.50301055700402,
+        "field": "data",
+        "value": [
+          {
+            "creationtime": "2020-01-01T00:00:00.006Z",
+            "data": [
+              {
+                "id": "resource-004",
+                "motion": {
+                  "motion_report": {
+                    "changed": "2020-01-01T00:00:00.008Z",
+                    "motion": true
+                  }
+                },
+                "owner": {
+                  "rid": "resource-005",
+                  "rtype": "room"
+                },
+                "type": "grouped_motion"
+              }
+            ],
+            "id": "resource-010",
+            "type": "update"
+          }
+        ]
+      },
+      {
+        "at_seconds": 83.52057030900323,
+        "field": "id",
+        "value": "1700000042:0"
+      },
+      {
+        "at_seconds": 83.52057695500116,
+        "field": "data",
+        "value": [
+          {
+            "creationtime": "2020-01-01T00:00:00.009Z",
+            "data": [
+              {
+                "id": "resource-001",
+                "id_v1": "/scrubbed/resource",
+                "motion": {
+                  "motion": false,
+                  "motion_report": {
+                    "changed": "2020-01-01T00:00:00.010Z",
+                    "motion": false
+                  },
+                  "motion_valid": true
+                },
+                "owner": {
+                  "rid": "resource-002",
+                  "rtype": "device"
+                },
+                "type": "motion"
+              }
+            ],
+            "id": "resource-011",
+            "type": "update"
+          }
+        ]
+      },
+      {
+        "at_seconds": 84.52314615900104,
+        "field": "id",
+        "value": "1700000043:0"
+      },
+      {
+        "at_seconds": 84.52315365500544,
+        "field": "data",
+        "value": [
+          {
+            "creationtime": "2020-01-01T00:00:00.009Z",
+            "data": [
+              {
+                "id": "resource-004",
+                "motion": {
+                  "motion_report": {
+                    "changed": "2020-01-01T00:00:00.011Z",
+                    "motion": false
+                  }
+                },
+                "owner": {
+                  "rid": "resource-005",
+                  "rtype": "room"
+                },
+                "type": "grouped_motion"
+              }
+            ],
+            "id": "resource-012",
+            "type": "update"
+          }
+        ]
+      },
+      {
+        "at_seconds": 89.17791900400334,
+        "field": "id",
+        "value": "1700000047:0"
+      },
+      {
+        "at_seconds": 89.1779258470051,
+        "field": "data",
+        "value": [
+          {
+            "creationtime": "2020-01-01T00:00:00.012Z",
+            "data": [
+              {
+                "id": "resource-001",
+                "id_v1": "/scrubbed/resource",
+                "motion": {
+                  "motion": true,
+                  "motion_report": {
+                    "changed": "2020-01-01T00:00:00.013Z",
+                    "motion": true
+                  },
+                  "motion_valid": true
+                },
+                "owner": {
+                  "rid": "resource-002",
+                  "rtype": "device"
+                },
+                "type": "motion"
+              }
+            ],
+            "id": "resource-013",
+            "type": "update"
+          }
+        ]
+      }
+    ]
+  },
+  "replay_overflow": {
+    "cursor_before_gap": "1700000148:0",
+    "final_light": {
+      "alert_actions": {
+        "action_values": [
+          "breathe"
+        ]
+      },
+      "color": null,
+      "color_temperature": {
+        "mirek": 222,
+        "mirek_schema": {
+          "mirek_maximum": 454,
+          "mirek_minimum": 222
+        },
+        "mirek_valid": true
+      },
+      "color_temperature_delta": {},
+      "dimming": {
+        "brightness": 79.84,
+        "min_dim_level": 2.0
+      },
+      "dimming_delta": {},
+      "dynamics": {
+        "speed": 0.0,
+        "speed_valid": false,
+        "status": "none",
+        "status_values": [
+          "none"
+        ]
+      },
+      "effects": {
+        "effect_values": [
+          "no_effect",
+          "candle",
+          "sparkle",
+          "glisten"
+        ],
+        "status": "no_effect",
+        "status_values": [
+          "no_effect",
+          "candle",
+          "sparkle",
+          "glisten"
+        ]
+      },
+      "effects_v2": {
+        "action": {
+          "effect_values": [
+            "no_effect",
+            "candle",
+            "sparkle",
+            "glisten"
+          ]
+        },
+        "status": {
+          "effect": "no_effect",
+          "effect_values": [
+            "no_effect",
+            "candle",
+            "sparkle",
+            "glisten"
+          ]
+        }
+      },
+      "gradient": null,
+      "id": "resource-014",
+      "id_v1": "/scrubbed/resource",
+      "identify": {},
+      "kelvin": 4505,
+      "metadata": {
+        "archetype": "vintage_bulb",
+        "function": "mixed",
+        "name": "Scrubbed"
+      },
+      "mode": "normal",
+      "on": {
+        "on": true
+      },
+      "owner": {
+        "rid": "resource-015",
+        "rtype": "device"
+      },
+      "powerup": {
+        "color": {
+          "mode": "previous"
+        },
+        "configured": true,
+        "dimming": null,
+        "on": {
+          "on": true
+        },
+        "preset": "last_on_state"
+      },
+      "product_data": {
+        "function": "mixed"
+      },
+      "rgb": null,
+      "service_id": 0,
+      "signaling": {
+        "signal_values": [
+          "no_signal",
+          "on_off"
+        ],
+        "status": null
+      },
+      "timed_effects": {
+        "duration": null,
+        "effect_values": [
+          "no_effect",
+          "sunrise",
+          "sunset"
+        ],
+        "status": "no_effect",
+        "status_values": [
+          "no_effect",
+          "sunrise",
+          "sunset"
+        ]
+      },
+      "type": "light"
+    },
+    "replayed_frames": [
+      {
+        "event_id": "1700000161:0",
+        "events": [
+          {
+            "creationtime": "2020-01-01T00:00:00.014Z",
+            "data": [
+              {
+                "dimming": {
+                  "brightness": 79.84
+                },
+                "id": "resource-014",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-015",
+                  "rtype": "device"
+                },
+                "service_id": 0,
+                "type": "light"
+              }
+            ],
+            "id": "resource-016",
+            "type": "update"
+          },
+          {
+            "creationtime": "2020-01-01T00:00:00.014Z",
+            "data": [
+              {
+                "dimming": {
+                  "brightness": 79.84
+                },
+                "id": "resource-017",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-018",
+                  "rtype": "room"
+                },
+                "type": "grouped_light"
+              },
+              {
+                "dimming": {
+                  "brightness": 85.23
+                },
+                "id": "resource-019",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-020",
+                  "rtype": "bridge_home"
+                },
+                "type": "grouped_light"
+              },
+              {
+                "dimming": {
+                  "brightness": 79.84
+                },
+                "id": "resource-021",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-022",
+                  "rtype": "zone"
+                },
+                "type": "grouped_light"
+              }
+            ],
+            "id": "resource-023",
+            "type": "update"
+          }
+        ],
+        "received_at": "2020-01-01T00:00:00.015Z"
+      },
+      {
+        "event_id": "1700000162:0",
+        "events": [
+          {
+            "creationtime": "2020-01-01T00:00:00.016Z",
+            "data": [
+              {
+                "dimming": {
+                  "brightness": 20.16
+                },
+                "id": "resource-014",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-015",
+                  "rtype": "device"
+                },
+                "service_id": 0,
+                "type": "light"
+              }
+            ],
+            "id": "resource-024",
+            "type": "update"
+          },
+          {
+            "creationtime": "2020-01-01T00:00:00.016Z",
+            "data": [
+              {
+                "dimming": {
+                  "brightness": 59.95
+                },
+                "id": "resource-017",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-018",
+                  "rtype": "room"
+                },
+                "type": "grouped_light"
+              },
+              {
+                "dimming": {
+                  "brightness": 79.81
+                },
+                "id": "resource-019",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-020",
+                  "rtype": "bridge_home"
+                },
+                "type": "grouped_light"
+              },
+              {
+                "dimming": {
+                  "brightness": 64.92
+                },
+                "id": "resource-021",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-022",
+                  "rtype": "zone"
+                },
+                "type": "grouped_light"
+              }
+            ],
+            "id": "resource-025",
+            "type": "update"
+          }
+        ],
+        "received_at": "2020-01-01T00:00:00.017Z"
+      },
+      {
+        "event_id": "1700000163:0",
+        "events": [
+          {
+            "creationtime": "2020-01-01T00:00:00.018Z",
+            "data": [
+              {
+                "dimming": {
+                  "brightness": 79.84
+                },
+                "id": "resource-014",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-015",
+                  "rtype": "device"
+                },
+                "service_id": 0,
+                "type": "light"
+              }
+            ],
+            "id": "resource-026",
+            "type": "update"
+          },
+          {
+            "creationtime": "2020-01-01T00:00:00.018Z",
+            "data": [
+              {
+                "dimming": {
+                  "brightness": 79.84
+                },
+                "id": "resource-017",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-018",
+                  "rtype": "room"
+                },
+                "type": "grouped_light"
+              },
+              {
+                "dimming": {
+                  "brightness": 85.23
+                },
+                "id": "resource-019",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-020",
+                  "rtype": "bridge_home"
+                },
+                "type": "grouped_light"
+              },
+              {
+                "dimming": {
+                  "brightness": 79.84
+                },
+                "id": "resource-021",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-022",
+                  "rtype": "zone"
+                },
+                "type": "grouped_light"
+              }
+            ],
+            "id": "resource-027",
+            "type": "update"
+          }
+        ],
+        "received_at": "2020-01-01T00:00:00.019Z"
+      },
+      {
+        "event_id": "1700000164:0",
+        "events": [
+          {
+            "creationtime": "2020-01-01T00:00:00.020Z",
+            "data": [
+              {
+                "dimming": {
+                  "brightness": 20.16
+                },
+                "id": "resource-014",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-015",
+                  "rtype": "device"
+                },
+                "service_id": 0,
+                "type": "light"
+              }
+            ],
+            "id": "resource-028",
+            "type": "update"
+          },
+          {
+            "creationtime": "2020-01-01T00:00:00.020Z",
+            "data": [
+              {
+                "dimming": {
+                  "brightness": 59.95
+                },
+                "id": "resource-017",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-018",
+                  "rtype": "room"
+                },
+                "type": "grouped_light"
+              },
+              {
+                "dimming": {
+                  "brightness": 79.81
+                },
+                "id": "resource-019",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-020",
+                  "rtype": "bridge_home"
+                },
+                "type": "grouped_light"
+              },
+              {
+                "dimming": {
+                  "brightness": 64.92
+                },
+                "id": "resource-021",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-022",
+                  "rtype": "zone"
+                },
+                "type": "grouped_light"
+              }
+            ],
+            "id": "resource-029",
+            "type": "update"
+          }
+        ],
+        "received_at": "2020-01-01T00:00:00.021Z"
+      },
+      {
+        "event_id": "1700000165:0",
+        "events": [
+          {
+            "creationtime": "2020-01-01T00:00:00.022Z",
+            "data": [
+              {
+                "dimming": {
+                  "brightness": 79.84
+                },
+                "id": "resource-014",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-015",
+                  "rtype": "device"
+                },
+                "service_id": 0,
+                "type": "light"
+              }
+            ],
+            "id": "resource-030",
+            "type": "update"
+          },
+          {
+            "creationtime": "2020-01-01T00:00:00.022Z",
+            "data": [
+              {
+                "dimming": {
+                  "brightness": 79.84
+                },
+                "id": "resource-017",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-018",
+                  "rtype": "room"
+                },
+                "type": "grouped_light"
+              },
+              {
+                "dimming": {
+                  "brightness": 85.23
+                },
+                "id": "resource-019",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-020",
+                  "rtype": "bridge_home"
+                },
+                "type": "grouped_light"
+              },
+              {
+                "dimming": {
+                  "brightness": 79.84
+                },
+                "id": "resource-021",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-022",
+                  "rtype": "zone"
+                },
+                "type": "grouped_light"
+              }
+            ],
+            "id": "resource-031",
+            "type": "update"
+          }
+        ],
+        "received_at": "2020-01-01T00:00:00.023Z"
+      },
+      {
+        "event_id": "1700000166:0",
+        "events": [
+          {
+            "creationtime": "2020-01-01T00:00:00.024Z",
+            "data": [
+              {
+                "dimming": {
+                  "brightness": 20.16
+                },
+                "id": "resource-014",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-015",
+                  "rtype": "device"
+                },
+                "service_id": 0,
+                "type": "light"
+              }
+            ],
+            "id": "resource-032",
+            "type": "update"
+          },
+          {
+            "creationtime": "2020-01-01T00:00:00.024Z",
+            "data": [
+              {
+                "dimming": {
+                  "brightness": 59.95
+                },
+                "id": "resource-017",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-018",
+                  "rtype": "room"
+                },
+                "type": "grouped_light"
+              },
+              {
+                "dimming": {
+                  "brightness": 79.81
+                },
+                "id": "resource-019",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-020",
+                  "rtype": "bridge_home"
+                },
+                "type": "grouped_light"
+              },
+              {
+                "dimming": {
+                  "brightness": 64.92
+                },
+                "id": "resource-021",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-022",
+                  "rtype": "zone"
+                },
+                "type": "grouped_light"
+              }
+            ],
+            "id": "resource-033",
+            "type": "update"
+          }
+        ],
+        "received_at": "2020-01-01T00:00:00.025Z"
+      },
+      {
+        "event_id": "1700000167:0",
+        "events": [
+          {
+            "creationtime": "2020-01-01T00:00:00.026Z",
+            "data": [
+              {
+                "dimming": {
+                  "brightness": 79.84
+                },
+                "id": "resource-014",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-015",
+                  "rtype": "device"
+                },
+                "service_id": 0,
+                "type": "light"
+              }
+            ],
+            "id": "resource-034",
+            "type": "update"
+          },
+          {
+            "creationtime": "2020-01-01T00:00:00.026Z",
+            "data": [
+              {
+                "dimming": {
+                  "brightness": 79.84
+                },
+                "id": "resource-017",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-018",
+                  "rtype": "room"
+                },
+                "type": "grouped_light"
+              },
+              {
+                "dimming": {
+                  "brightness": 85.23
+                },
+                "id": "resource-019",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-020",
+                  "rtype": "bridge_home"
+                },
+                "type": "grouped_light"
+              },
+              {
+                "dimming": {
+                  "brightness": 79.84
+                },
+                "id": "resource-021",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-022",
+                  "rtype": "zone"
+                },
+                "type": "grouped_light"
+              }
+            ],
+            "id": "resource-035",
+            "type": "update"
+          }
+        ],
+        "received_at": "2020-01-01T00:00:00.027Z"
+      },
+      {
+        "event_id": "1700000168:0",
+        "events": [
+          {
+            "creationtime": "2020-01-01T00:00:00.028Z",
+            "data": [
+              {
+                "dimming": {
+                  "brightness": 20.16
+                },
+                "id": "resource-014",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-015",
+                  "rtype": "device"
+                },
+                "service_id": 0,
+                "type": "light"
+              }
+            ],
+            "id": "resource-036",
+            "type": "update"
+          },
+          {
+            "creationtime": "2020-01-01T00:00:00.028Z",
+            "data": [
+              {
+                "dimming": {
+                  "brightness": 59.95
+                },
+                "id": "resource-017",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-018",
+                  "rtype": "room"
+                },
+                "type": "grouped_light"
+              },
+              {
+                "dimming": {
+                  "brightness": 79.81
+                },
+                "id": "resource-019",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-020",
+                  "rtype": "bridge_home"
+                },
+                "type": "grouped_light"
+              },
+              {
+                "dimming": {
+                  "brightness": 64.92
+                },
+                "id": "resource-021",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-022",
+                  "rtype": "zone"
+                },
+                "type": "grouped_light"
+              }
+            ],
+            "id": "resource-037",
+            "type": "update"
+          }
+        ],
+        "received_at": "2020-01-01T00:00:00.029Z"
+      },
+      {
+        "event_id": "1700000169:0",
+        "events": [
+          {
+            "creationtime": "2020-01-01T00:00:00.030Z",
+            "data": [
+              {
+                "dimming": {
+                  "brightness": 79.84
+                },
+                "id": "resource-014",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-015",
+                  "rtype": "device"
+                },
+                "service_id": 0,
+                "type": "light"
+              }
+            ],
+            "id": "resource-038",
+            "type": "update"
+          },
+          {
+            "creationtime": "2020-01-01T00:00:00.030Z",
+            "data": [
+              {
+                "dimming": {
+                  "brightness": 79.84
+                },
+                "id": "resource-017",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-018",
+                  "rtype": "room"
+                },
+                "type": "grouped_light"
+              },
+              {
+                "dimming": {
+                  "brightness": 85.23
+                },
+                "id": "resource-019",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-020",
+                  "rtype": "bridge_home"
+                },
+                "type": "grouped_light"
+              },
+              {
+                "dimming": {
+                  "brightness": 79.84
+                },
+                "id": "resource-021",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-022",
+                  "rtype": "zone"
+                },
+                "type": "grouped_light"
+              }
+            ],
+            "id": "resource-039",
+            "type": "update"
+          }
+        ],
+        "received_at": "2020-01-01T00:00:00.031Z"
+      },
+      {
+        "event_id": "1700000170:0",
+        "events": [
+          {
+            "creationtime": "2020-01-01T00:00:00.032Z",
+            "data": [
+              {
+                "dimming": {
+                  "brightness": 20.16
+                },
+                "id": "resource-014",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-015",
+                  "rtype": "device"
+                },
+                "service_id": 0,
+                "type": "light"
+              }
+            ],
+            "id": "resource-040",
+            "type": "update"
+          },
+          {
+            "creationtime": "2020-01-01T00:00:00.032Z",
+            "data": [
+              {
+                "dimming": {
+                  "brightness": 59.95
+                },
+                "id": "resource-017",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-018",
+                  "rtype": "room"
+                },
+                "type": "grouped_light"
+              },
+              {
+                "dimming": {
+                  "brightness": 79.81
+                },
+                "id": "resource-019",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-020",
+                  "rtype": "bridge_home"
+                },
+                "type": "grouped_light"
+              },
+              {
+                "dimming": {
+                  "brightness": 64.92
+                },
+                "id": "resource-021",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-022",
+                  "rtype": "zone"
+                },
+                "type": "grouped_light"
+              }
+            ],
+            "id": "resource-041",
+            "type": "update"
+          }
+        ],
+        "received_at": "2020-01-01T00:00:00.033Z"
+      },
+      {
+        "event_id": "1700000171:0",
+        "events": [
+          {
+            "creationtime": "2020-01-01T00:00:00.034Z",
+            "data": [
+              {
+                "dimming": {
+                  "brightness": 79.84
+                },
+                "id": "resource-014",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-015",
+                  "rtype": "device"
+                },
+                "service_id": 0,
+                "type": "light"
+              }
+            ],
+            "id": "resource-042",
+            "type": "update"
+          },
+          {
+            "creationtime": "2020-01-01T00:00:00.034Z",
+            "data": [
+              {
+                "dimming": {
+                  "brightness": 79.84
+                },
+                "id": "resource-017",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-018",
+                  "rtype": "room"
+                },
+                "type": "grouped_light"
+              },
+              {
+                "dimming": {
+                  "brightness": 85.23
+                },
+                "id": "resource-019",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-020",
+                  "rtype": "bridge_home"
+                },
+                "type": "grouped_light"
+              },
+              {
+                "dimming": {
+                  "brightness": 79.84
+                },
+                "id": "resource-021",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-022",
+                  "rtype": "zone"
+                },
+                "type": "grouped_light"
+              }
+            ],
+            "id": "resource-043",
+            "type": "update"
+          }
+        ],
+        "received_at": "2020-01-01T00:00:00.035Z"
+      },
+      {
+        "event_id": "1700000172:0",
+        "events": [
+          {
+            "creationtime": "2020-01-01T00:00:00.036Z",
+            "data": [
+              {
+                "dimming": {
+                  "brightness": 20.16
+                },
+                "id": "resource-014",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-015",
+                  "rtype": "device"
+                },
+                "service_id": 0,
+                "type": "light"
+              }
+            ],
+            "id": "resource-044",
+            "type": "update"
+          },
+          {
+            "creationtime": "2020-01-01T00:00:00.036Z",
+            "data": [
+              {
+                "dimming": {
+                  "brightness": 59.95
+                },
+                "id": "resource-017",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-018",
+                  "rtype": "room"
+                },
+                "type": "grouped_light"
+              },
+              {
+                "dimming": {
+                  "brightness": 79.81
+                },
+                "id": "resource-019",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-020",
+                  "rtype": "bridge_home"
+                },
+                "type": "grouped_light"
+              },
+              {
+                "dimming": {
+                  "brightness": 64.92
+                },
+                "id": "resource-021",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-022",
+                  "rtype": "zone"
+                },
+                "type": "grouped_light"
+              }
+            ],
+            "id": "resource-045",
+            "type": "update"
+          }
+        ],
+        "received_at": "2020-01-01T00:00:00.037Z"
+      },
+      {
+        "event_id": "1700000173:0",
+        "events": [
+          {
+            "creationtime": "2020-01-01T00:00:00.038Z",
+            "data": [
+              {
+                "dimming": {
+                  "brightness": 79.84
+                },
+                "id": "resource-014",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-015",
+                  "rtype": "device"
+                },
+                "service_id": 0,
+                "type": "light"
+              }
+            ],
+            "id": "resource-046",
+            "type": "update"
+          },
+          {
+            "creationtime": "2020-01-01T00:00:00.038Z",
+            "data": [
+              {
+                "dimming": {
+                  "brightness": 79.84
+                },
+                "id": "resource-017",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-018",
+                  "rtype": "room"
+                },
+                "type": "grouped_light"
+              },
+              {
+                "dimming": {
+                  "brightness": 85.23
+                },
+                "id": "resource-019",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-020",
+                  "rtype": "bridge_home"
+                },
+                "type": "grouped_light"
+              },
+              {
+                "dimming": {
+                  "brightness": 79.84
+                },
+                "id": "resource-021",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-022",
+                  "rtype": "zone"
+                },
+                "type": "grouped_light"
+              }
+            ],
+            "id": "resource-047",
+            "type": "update"
+          }
+        ],
+        "received_at": "2020-01-01T00:00:00.039Z"
+      },
+      {
+        "event_id": "1700000174:0",
+        "events": [
+          {
+            "creationtime": "2020-01-01T00:00:00.040Z",
+            "data": [
+              {
+                "dimming": {
+                  "brightness": 59.95
+                },
+                "id": "resource-017",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-018",
+                  "rtype": "room"
+                },
+                "type": "grouped_light"
+              },
+              {
+                "dimming": {
+                  "brightness": 79.81
+                },
+                "id": "resource-019",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-020",
+                  "rtype": "bridge_home"
+                },
+                "type": "grouped_light"
+              },
+              {
+                "dimming": {
+                  "brightness": 64.92
+                },
+                "id": "resource-021",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-022",
+                  "rtype": "zone"
+                },
+                "type": "grouped_light"
+              }
+            ],
+            "id": "resource-048",
+            "type": "update"
+          },
+          {
+            "creationtime": "2020-01-01T00:00:00.040Z",
+            "data": [
+              {
+                "dimming": {
+                  "brightness": 79.84
+                },
+                "id": "resource-014",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-015",
+                  "rtype": "device"
+                },
+                "service_id": 0,
+                "type": "light"
+              }
+            ],
+            "id": "resource-049",
+            "type": "update"
+          }
+        ],
+        "received_at": "2020-01-01T00:00:00.041Z"
+      },
+      {
+        "event_id": "1700000175:0",
+        "events": [
+          {
+            "creationtime": "2020-01-01T00:00:00.040Z",
+            "data": [
+              {
+                "dimming": {
+                  "brightness": 79.84
+                },
+                "id": "resource-017",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-018",
+                  "rtype": "room"
+                },
+                "type": "grouped_light"
+              },
+              {
+                "dimming": {
+                  "brightness": 85.23
+                },
+                "id": "resource-019",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-020",
+                  "rtype": "bridge_home"
+                },
+                "type": "grouped_light"
+              },
+              {
+                "dimming": {
+                  "brightness": 79.84
+                },
+                "id": "resource-021",
+                "id_v1": "/scrubbed/resource",
+                "owner": {
+                  "rid": "resource-022",
+                  "rtype": "zone"
+                },
+                "type": "grouped_light"
+              }
+            ],
+            "id": "resource-050",
+            "type": "update"
+          }
+        ],
+        "received_at": "2020-01-01T00:00:00.042Z"
+      }
+    ],
+    "requested_resume_from": "1700000148:0",
+    "writes_during_gap": 80
+  },
+  "transition_ceiling": {
+    "-1": {
+      "http_status": 400
+    },
+    "6000000": {
+      "data": [
+        {
+          "rid": "resource-051",
+          "rtype": "light"
+        }
+      ],
+      "errors": []
+    },
+    "6000001": {
+      "data": [
+        {
+          "rid": "resource-051",
+          "rtype": "light"
+        }
+      ],
+      "errors": [
+        {
+          "description": "invalid attribute value (.dynamics.duration) for resource resource-001",
+          "error_code": "client_error"
+        }
+      ]
+    }
+  }
+}
