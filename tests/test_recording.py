@@ -568,3 +568,43 @@ class TestTerminalStream:
 
         assert sink.events == ["start", "close"]
         assert "stream stopped with an error" in caplog.text
+
+
+class TestShutdownDrain:
+    async def test_close_records_the_tail_state_close_broadcast(
+        self, state: FakeState
+    ) -> None:
+        """`Hue.close()` closes state first, filling our queue, then stops us.
+
+        Breaking on the stop event without draining would abandon that tail
+        and write nothing to say so -- the archive would claim a completeness
+        it does not have, which is the one thing this layer refuses.
+        """
+        sink = FakeSink()
+        recorder = Recorder(state, [sink], batch_size=2, flush_interval=60)
+        await recorder.start()
+        for _ in range(6):
+            state.queue.put_nowait(change())
+
+        await recorder.close()
+
+        assert len(sink.entries) == 6
+
+
+class TestStats:
+    async def test_the_reported_error_and_its_timestamp_come_from_one_sink(
+        self, state: FakeState
+    ) -> None:
+        """Pairing one sink's message with another's time describes nothing."""
+        quiet = FakeSink()
+        noisy = FakeSink(fail_writes=1)
+        recorder = Recorder(state, [quiet, noisy], batch_size=1, flush_interval=60)
+        async with recorder:
+            state.queue.put_nowait(change())
+            await settle()
+
+        stats = recorder.stats
+        assert stats.failures == 1
+        assert stats.last_error is not None
+        assert "disk is full" in stats.last_error
+        assert stats.last_error_at is not None

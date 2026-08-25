@@ -42,13 +42,15 @@ class ChangeFilter:
     resource_id: str | None = None
     kind: ChangeKind | None = None
 
-    def matches(self, change: Change, name_of: Callable[[str], str]) -> bool:
+    def matches(self, change: Change, name_for: Callable[[Change], str]) -> bool:
         """Report whether ``change`` satisfies every supplied condition.
 
         Args:
             change: The record to test.
-            name_of: Display-name resolver, consulted only when ``name`` is set
-                so an id-only filter costs no topology lookup.
+            name_for: Display-name resolver taking the whole record, so a
+                delete resolves from what it carried rather than from a graph
+                it has already been folded out of. Consulted only when ``name``
+                is set, so an id-only filter costs no topology lookup.
 
         Returns:
             True when the change should reach the handler.
@@ -66,7 +68,7 @@ class ChangeFilter:
                 return False
         if self.name is not None:
             wanted = self.name.strip().casefold()
-            return name_of(change.resource_id).strip().casefold() == wanted
+            return name_for(change).strip().casefold() == wanted
         return True
 
 
