@@ -108,7 +108,7 @@ async def test_state_tracks_a_write_and_marks_a_fade_echo(
     hue: Hue,
     a_light: models.Light,
 ):
-    async with hue.state() as state:
+    async with hue.state as state:
         current = state.lights.by_id(a_light.id)
         assert current is not None
         target = 20.0 if (current.brightness or 0) > 50 else 80.0
@@ -138,7 +138,7 @@ async def test_live_overflow_replays_marks_and_reconciles(
     gap = OverflowGapTransport(hue.http)
     hue._http = gap
 
-    async with hue.state() as state:
+    async with hue.state as state:
         current = state.lights.by_id(a_light.id)
         assert current is not None
 

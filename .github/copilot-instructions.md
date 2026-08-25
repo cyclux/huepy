@@ -107,5 +107,7 @@ applyTo: '**'
 - Route v2 envelopes through `unwrap()` / `raise_for_errors()`; HTTP 207 is a transport success
   whose `errors[]` still needs classification
 - Keep ordinary handler reads uncached. Maintained local state is explicit and opt-in through
-  `hue.state()`
+  `Hue(state=True)`
+- Keep `recording/` depending only on `state/records.py` and the models; sinks receive enriched
+  records, never the state graph, and own their own blocking work
 - One logical light command is one PUT composed by `build_light_payload()`

@@ -15,7 +15,8 @@ A modern async Python wrapper for the **Philips Hue v2 CLIP API**.
   gamut the bulb itself reports
 - Transitions in seconds on every light command
 - Every response is a validated **pydantic** model, not a bare dict
-- `Hue(live=True)` keeps high-level name lookups current from the event stream
+- `Hue(state=True)` tracks the whole resource graph in the background
+- `Hue(record=SQLiteSink(...))` persists every change to a queryable file
 - Models tolerate unknown fields, so bridge firmware updates don't break parsing
 - Failures reported in a successful response body (`errors[]`) are raised, not silently ignored
 - Ships `py.typed` -- your type checker sees the annotations
@@ -113,7 +114,7 @@ except ResourceNotFoundError as exc:
 
 In the default stateless mode, each lookup is one round trip: the bridge offers
 no server-side name filter, so huepy fetches and matches the collection locally.
-For several names, call `list()` once and match locally. With `Hue(live=True)`,
+For several names, call `list()` once and match locally. With `Hue(state=True)`,
 an application key is required; the initial aggregate snapshot and event stream
 maintain a local resource graph, so later high-level lookups use local state.
 While the event stream is reconnecting, high-level lookups raise
@@ -243,7 +244,7 @@ commands. `hue.api.raw` is the decoded-JSON transport escape hatch.
 The stream yields parsed events, not dicts:
 
 ```python
-async with Hue(live=True) as hue:
+async with Hue(state=True) as hue:
     async for event in hue.get_event_stream():
         if not event.is_update:
             continue
@@ -264,18 +265,22 @@ sections remain available through `model_extra`.
 
 ### Last-reported state
 
-For a continuously maintained local view, enter `hue.state()` inside the open
-client. Startup takes an aggregate snapshot while buffering the event stream,
-so the returned view has no snapshot/event gap. It reports what the bridge
-last sent, not a guarantee of a light's physical state.
+For a continuously maintained local view, pass `state=True`. Startup takes an
+aggregate snapshot while buffering the event stream, so the graph has no
+snapshot/event gap. It reports what the bridge last sent, not a guarantee of a
+light's physical state.
 
 ```python
-async with Hue() as hue:
-    async with hue.state() as state:
-        desk = state.lights.get("Desk lamp")
-        print(state.connected, desk.brightness)
-        print(state.room_of(desk.id))
+async with Hue(state=True) as hue:
+    desk = hue.state.lights.get("Desk lamp")
+    print(hue.state.connected, desk.brightness)
+    print(hue.state.room_of(desk.id))
 ```
+
+`hue.state` exists from construction and is never `None`, so nothing has to be
+threaded through your call stack. Reading it before tracking starts raises
+`StateNotStartedError` rather than reporting an empty bridge. To scope it
+yourself instead, `async with hue.state as state:` enters the same object.
 
 The local `lights`, `rooms`, `zones`, `scenes` and `devices` views provide
 synchronous `get(name)`, `by_id(id)`, `list()` and `names()` lookup. `resources`,
@@ -283,11 +288,44 @@ synchronous `get(name)`, `by_id(id)`, `list()` and `names()` lookup. `resources`
 `name_of` support generic and topology queries. Returned models are fresh,
 bound copies and cannot mutate the canonical state.
 
+Register a handler instead of owning the loop:
+
+```python
+hue.state.on_change(lambda change: print(change.at, change.delta), name="Desk lamp")
+hue.state.on_resync(lambda marker: print("gap", marker.reason))
+```
+
+`on_change` takes `name`, `model`, `resource_id` and `kind` filters, all ANDed,
+and returns a `Subscription` you can `cancel()` or scope with `with`. Markers
+reach `on_resync` only, so no `isinstance` guard is needed. A handler that
+raises is logged and skipped. `state.watch(...)` is the same filtering as an
+async iterator, for callers who want the loop.
+
 `state.changes()` yields `huepy.state.Change` records plus `Resync` markers.
 Each subscriber has bounded independent history; a marker records reconnect,
 inconsistency, or lag where complete history cannot be proved. State does not
 apply writes optimistically. Changes from this client may be correlated as
 `origin="self"`; `state.fading` exposes active locally issued fades.
+
+### Recording history
+
+Persisting the stream is one argument. `record=` implies `state=True`.
+
+```python
+from huepy import Hue
+from huepy.recording import SQLiteSink
+
+async with Hue(record=SQLiteSink("hue-history.sqlite3")):
+    await asyncio.Event().wait()
+```
+
+`SQLiteSink`, `JSONLSink` and `LoggingSink` ship with the library, all
+stdlib-only. The file sinks do their writing on a thread of their own, so a slow
+disk never stalls the event stream. SQLite gets `change`, `resync` and `current`
+tables, so "when was the Desk lamp last on?" and "what is it now?" are both one
+indexed query. When a sink cannot keep up or fails, the loss is written into the
+history as a `Resync` row rather than silently dropped. Write your own sink by
+satisfying the `HistorySink` protocol.
 
 ### Errors
 

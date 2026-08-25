@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import weakref
 from collections import defaultdict, deque
-from collections.abc import AsyncGenerator, Callable, Mapping
+from collections.abc import AsyncGenerator, Callable, Coroutine, Mapping
 from contextlib import aclosing, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -23,6 +24,7 @@ from huepy.exceptions import (
     HueAPIError,
     HueResponseError,
     ResourceNotFoundError,
+    StateNotStartedError,
 )
 from huepy.models import (
     AnyResource,
@@ -40,15 +42,24 @@ from huepy.models.event import EventType, HueEvent
 from huepy.state.records import (
     ActiveFade,
     Change,
+    ChangeContext,
     ChangeKind,
     Resync,
     ResyncReason,
+)
+from huepy.state.subscribe import (
+    ChangeFilter,
+    ChangeHandler,
+    ResyncHandler,
+    Subscription,
 )
 from huepy.utils.naming import build_name_map
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_SUBSCRIBER_SIZE: Final = 4096
+# How long close() lets registered handlers finish the closed stream.
+DISPATCH_DRAIN_TIMEOUT: Final = 5.0
 FADE_REPORT_ALLOWANCE: Final = timedelta(seconds=25)
 WRITE_MATCH_WINDOW: Final = timedelta(seconds=25)
 _TIMESTAMP: TypeAdapter[datetime] = TypeAdapter(AwareDatetime)
@@ -63,6 +74,14 @@ _EVENT_SOURCE_STOPPED_MESSAGE = "Event connection source stopped"
 @dataclass(frozen=True)
 class _Disconnect:
     error: BaseException | None = None
+
+
+@dataclass(frozen=True)
+class _Registration[HandlerT]:
+    """One handler and the filter that decides what reaches it."""
+
+    handler: HandlerT
+    filter: ChangeFilter
 
 
 @dataclass
@@ -214,8 +233,16 @@ class HueState:
         """Create a stopped state view composed over an open Hue client."""
         self._hue = hue
         self._raw: dict[str, dict[str, Any]] = {}
+        self._name_map: dict[str, str] | None = None
+        self._change_handlers: list[_Registration[ChangeHandler]] = []
+        self._resync_handlers: list[_Registration[ResyncHandler]] = []
+        self._dispatch_task: asyncio.Task[None] | None = None
         self._subscribers: set[_Subscriber] = set()
         self._task: asyncio.Task[None] | None = None
+        # Separate from `_task`, which close() clears: a closed graph still
+        # holds what it observed, and refusing to read it back would be a
+        # regression on a view that was always last-reported state anyway.
+        self._started = False
         self._ready: asyncio.Future[None] | None = None
         self._connected = False
         self._last_frame_at: datetime | None = None
@@ -240,8 +267,39 @@ class HueState:
         return self._connected
 
     @property
+    def tracking(self) -> bool:
+        """Whether observation has been started on this state."""
+        return self._task is not None
+
+    def _ensure_started(self) -> None:
+        """Refuse to serve a graph that has never been filled.
+
+        A stopped state holds no resources, so an unguarded read would answer
+        "no lights" when the truth is "not tracking yet" -- the one hazard of
+        exposing ``hue.state`` from construction. A *closed* state still holds
+        what it last observed and stays readable; only the never-started case
+        raises.
+
+        Raises:
+            StateNotStartedError: If observation has never started.
+
+        """
+        if not self._started:
+            msg = (
+                "Local state is not being tracked. Construct the client with "
+                "Hue(state=True), or enter `async with hue.state`."
+            )
+            raise StateNotStartedError(msg)
+
+    @property
     def resources(self) -> list[AnyResource]:
-        """Fresh bound copies of every aggregate-visible resource."""
+        """Fresh bound copies of every aggregate-visible resource.
+
+        Raises:
+            StateNotStartedError: If observation has never started.
+
+        """
+        self._ensure_started()
         return [self._public(raw) for raw in self._raw.values()]
 
     def ensure_healthy(self) -> None:
@@ -288,11 +346,15 @@ class HueState:
         self._ready = loop.create_future()
         self._unsubscribe_write = self._hue.http.add_write_observer(self._observe_write)
         self._task = asyncio.create_task(self._run(), name="huepy-state")
+        self._started = True
         try:
             await self._ready
         except BaseException:
             await self.close()
             raise
+        # After the handshake, so handlers registered before start see a graph
+        # that can already answer `name_of` for their filters.
+        self._ensure_dispatching()
         return self
 
     async def __aexit__(self, *_exc: object) -> None:
@@ -300,7 +362,12 @@ class HueState:
         await self.close()
 
     async def close(self) -> None:
-        """Stop observation and close every subscriber iterator."""
+        """Stop observation and close every subscriber iterator.
+
+        Handler dispatch is stopped *last*, after ``_CLOSED`` is broadcast, so
+        registered handlers receive the same queued tail that ``changes()``
+        consumers do instead of being cut off mid-shutdown.
+        """
         if self._unsubscribe_write is not None:
             self._unsubscribe_write()
             self._unsubscribe_write = None
@@ -315,9 +382,34 @@ class HueState:
             _ = await asyncio.gather(*self._publish_tasks, return_exceptions=True)
         self._connected = False
         await self._broadcast(_CLOSED)
+        await self._stop_dispatch()
+
+    async def _stop_dispatch(self) -> None:
+        """Let the handler reader finish the closed stream, then make sure.
+
+        Gathered with ``return_exceptions``: a terminal observer failure is
+        re-raised into the dispatch task by ``_drain``, so the task ends with
+        an exception rather than cancelled. Awaiting it bare would propagate
+        that out of ``close()`` and abandon the rest of the shutdown.
+        """
+        dispatch, self._dispatch_task = self._dispatch_task, None
+        if dispatch is None:
+            return
+        _, pending = await asyncio.wait({dispatch}, timeout=DISPATCH_DRAIN_TIMEOUT)
+        if pending:
+            # A handler that never returns must not hold the client open.
+            logger.warning("State handlers did not finish; cancelling dispatch")
+            _ = dispatch.cancel()
+        _ = await asyncio.gather(dispatch, return_exceptions=True)
 
     def by_id(self, resource_id: str) -> AnyResource | None:
-        """Return a fresh bound resource by id."""
+        """Return a fresh bound resource by id.
+
+        Raises:
+            StateNotStartedError: If observation has never started.
+
+        """
+        self._ensure_started()
         raw = self._raw.get(resource_id)
         return self._public(raw) if raw is not None else None
 
@@ -326,8 +418,41 @@ class HueState:
         return [resource for resource in self.resources if isinstance(resource, model)]
 
     def name_of(self, resource_id: str) -> str:
-        """Resolve a resource or its owner to a human-facing name."""
-        return build_name_map(self.list(NamedResource)).get(resource_id, "Unknown")
+        """Resolve a resource or its owner to a human-facing name.
+
+        Raises:
+            StateNotStartedError: If observation has never started.
+
+        """
+        return self._names_map().get(resource_id, "Unknown")
+
+    def _invalidate_names(self, raw_state: dict[str, dict[str, Any]]) -> None:
+        """Drop the memoised name map when the *live* graph changed.
+
+        Called at each mutation rather than once per frame. ``_fold_resource``
+        suspends on a point fetch for an unknown id, and a rebuild during that
+        window would cache a half-folded graph that later mutations in the same
+        frame no longer invalidate -- serving a renamed light under its old
+        name until some unrelated frame arrived, and writing that stale name
+        into recorded history. Reconnect reconciliation folds a *copy*, which
+        must not disturb the live map; hence the identity check.
+        """
+        if raw_state is self._raw:
+            self._name_map = None
+
+    def _names_map(self) -> dict[str, str]:
+        """Build the id-to-name map once per graph revision.
+
+        Building it walks :attr:`resources`, which deep-copies and revalidates
+        every resource in the graph -- 186 on the measured bridge. Rebuilding
+        per call made enriching one change with a name and a room cost two full
+        graph re-parses, so a scene recall paid it once per light.
+        """
+        cached = self._name_map
+        if cached is None:
+            cached = build_name_map(self.list(NamedResource))
+            self._name_map = cached
+        return cached
 
     def device_of(self, resource_id: str) -> Device | None:
         """Return the physical device owning a resource, when resolvable."""
@@ -384,12 +509,234 @@ class HueState:
             ]
         return [light for light in self.lights.list() if light.id in child_ids]
 
-    async def changes(
+    def changes(
         self,
         *,
         maxsize: int = DEFAULT_SUBSCRIBER_SIZE,
     ) -> AsyncGenerator[StateItem]:
-        """Yield an isolated stream of changes and continuity markers."""
+        """Yield an isolated stream of changes and continuity markers.
+
+        Deliberately not an ``async def``: the subscriber is registered when
+        this is *called*, not when the returned iterator is first advanced. An
+        async generator body does not run until its first ``__anext__``, so
+        registering there dropped everything published between building the
+        iterator and starting to consume it.
+
+        Args:
+            maxsize: Bounded newest-wins buffer depth for this subscriber.
+
+        Returns:
+            An async iterator of :class:`Change` and :class:`Resync` records.
+
+        Raises:
+            RuntimeError: If observation is not running.
+
+        """
+        return self._track(self._subscribe(maxsize))
+
+    def on_change(
+        self,
+        handler: ChangeHandler,
+        /,
+        *,
+        name: str | None = None,
+        model: type[HueResource] | None = None,
+        resource_id: str | None = None,
+        kind: ChangeKind | None = None,
+    ) -> Subscription:
+        """Call ``handler`` for every change matching every supplied filter.
+
+        The handler may be a plain function or a coroutine function. It can be
+        registered before observation starts, which is why ``hue.state`` exists
+        from construction. Continuity markers never arrive here -- register
+        :meth:`on_resync` for those.
+
+        A handler that raises is logged and skipped; one bad handler must not
+        stop a process meant to run for weeks. All handlers share one reader,
+        so a slow handler delays the other handlers but never the fold loop;
+        use :meth:`watch` in your own task when you need isolation.
+
+        Args:
+            handler: Called with each matching :class:`Change`.
+            name: Display name of the resource, matched case-insensitively.
+            model: Concrete resource model, matched against the resource after
+                the change, or before it for a delete.
+            resource_id: Exact resource id.
+            kind: Only ``UPDATE``, ``ADD`` or ``DELETE``.
+
+        Returns:
+            A :class:`Subscription` that unregisters on ``cancel()`` or on
+            exit when used as a context manager.
+
+        """
+        registration = _Registration(
+            handler, ChangeFilter(name, model, resource_id, kind)
+        )
+        self._change_handlers.append(registration)
+        self._ensure_dispatching()
+        return Subscription(lambda: self._discard(self._change_handlers, registration))
+
+    def on_resync(self, handler: ResyncHandler, /) -> Subscription:
+        """Call ``handler`` for every continuity marker.
+
+        Args:
+            handler: Called with each :class:`Resync`.
+
+        Returns:
+            A :class:`Subscription` that unregisters on ``cancel()``.
+
+        """
+        registration = _Registration(handler, ChangeFilter())
+        self._resync_handlers.append(registration)
+        self._ensure_dispatching()
+        return Subscription(lambda: self._discard(self._resync_handlers, registration))
+
+    def watch(
+        self,
+        *,
+        name: str | None = None,
+        model: type[HueResource] | None = None,
+        resource_id: str | None = None,
+        kind: ChangeKind | None = None,
+        maxsize: int = DEFAULT_SUBSCRIBER_SIZE,
+    ) -> AsyncGenerator[Change]:
+        """Yield matching changes only, discarding continuity markers.
+
+        Each discarded marker is logged at WARNING first: silently dropping a
+        gap would be the one thing this layer refuses to do. Use
+        :meth:`changes` when the gaps matter.
+
+        Args:
+            name: Display name of the resource, matched case-insensitively.
+            model: Concrete resource model.
+            resource_id: Exact resource id.
+            kind: Only ``UPDATE``, ``ADD`` or ``DELETE``.
+            maxsize: Bounded newest-wins buffer depth for this subscriber.
+
+        Returns:
+            An async iterator of matching :class:`Change` records.
+
+        Raises:
+            RuntimeError: If observation is not running.
+
+        """
+        subscriber = self._subscribe(maxsize)
+        return self._track(
+            subscriber,
+            self._watch(ChangeFilter(name, model, resource_id, kind), subscriber),
+        )
+
+    def describe(self, change: Change) -> ChangeContext:
+        """Resolve the display name and containing room for one change.
+
+        Args:
+            change: The record to resolve topology for.
+
+        Returns:
+            A :class:`ChangeContext` pairing the change with its name and room.
+
+        Raises:
+            StateNotStartedError: If observation has never started.
+
+        """
+        return ChangeContext(
+            change=change,
+            name=self.name_of(change.resource_id),
+            room=self.room_of(change.resource_id),
+        )
+
+    async def _watch(
+        self,
+        change_filter: ChangeFilter,
+        subscriber: _Subscriber,
+    ) -> AsyncGenerator[Change]:
+        """Yield the changes from one subscriber that pass ``change_filter``."""
+        async for item in self._drain(subscriber):
+            if isinstance(item, Resync):
+                logger.warning(
+                    "watch() discarded a %s marker (%s..%s); changes() sees gaps",
+                    item.reason,
+                    item.gap_started,
+                    item.gap_ended,
+                )
+                continue
+            if change_filter.matches(item, self.name_of):
+                yield item
+
+    @staticmethod
+    def _discard[HandlerT](
+        registrations: list[_Registration[HandlerT]],
+        registration: _Registration[HandlerT],
+    ) -> None:
+        """Remove one registration, tolerating a state that already closed."""
+        with suppress(ValueError):
+            registrations.remove(registration)
+
+    def _ensure_dispatching(self) -> None:
+        """Start the shared handler reader once there is something to feed.
+
+        Handlers may be registered before observation starts, so this is called
+        both on registration and at startup; whichever happens second wins.
+        """
+        if self._dispatch_task is not None and not self._dispatch_task.done():
+            return
+        if self._task is None or self._task.done():
+            return
+        if not (self._change_handlers or self._resync_handlers):
+            return
+        subscriber = self._subscribe()
+        self._dispatch_task = asyncio.create_task(
+            self._dispatch(subscriber), name="huepy-state-dispatch"
+        )
+
+    async def _dispatch(self, subscriber: _Subscriber) -> None:
+        """Feed every registered handler from one shared subscriber.
+
+        One subscriber rather than one per handler, because lag is reported by
+        inserting a marker into *that* subscriber's queue: with per-handler
+        queues a lagging change handler would generate a marker it is defined
+        never to receive, and its own data loss would vanish silently.
+        """
+        try:
+            async for item in self._drain(subscriber):
+                if isinstance(item, Resync):
+                    for registration in tuple(self._resync_handlers):
+                        await self._invoke(registration.handler, item)
+                    continue
+                for registration in tuple(self._change_handlers):
+                    if registration.filter.matches(item, self.name_of):
+                        await self._invoke(registration.handler, item)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # A terminal observer failure is re-raised into this task by
+            # `_drain`. `changes()` consumers see it; handlers cannot, so
+            # without this the callbacks simply stop firing and nothing says
+            # why. `ensure_healthy()` re-raises it on demand.
+            logger.exception("State stream stopped; handlers will receive nothing")
+
+    @staticmethod
+    async def _invoke[RecordT](
+        handler: Callable[[RecordT], Coroutine[Any, Any, None] | None],
+        record: RecordT,
+    ) -> None:
+        """Call one handler, awaiting it only when it returned a coroutine."""
+        try:
+            result = handler(record)
+            if result is not None:
+                await result
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("State handler %r failed", handler)
+
+    def _subscribe(self, maxsize: int = DEFAULT_SUBSCRIBER_SIZE) -> _Subscriber:
+        """Register a bounded subscriber synchronously.
+
+        Raises:
+            RuntimeError: If observation is not running.
+
+        """
         if self._task is None or self._task.done():
             if self._terminal_error is not None:
                 raise self._terminal_error
@@ -397,6 +744,31 @@ class HueState:
             raise RuntimeError(msg)
         subscriber = _Subscriber(maxsize)
         self._subscribers.add(subscriber)
+        return subscriber
+
+    def _track[ItemT](
+        self,
+        subscriber: _Subscriber,
+        stream: AsyncGenerator[ItemT] | None = None,
+    ) -> AsyncGenerator[ItemT]:
+        """Tie a subscriber's lifetime to the iterator handed to the caller.
+
+        Registration happens eagerly so no change is missed, but an iterator
+        that is never advanced never runs its body -- and `aclose()` on an
+        unstarted async generator does not run it either. Without this, a
+        `changes()` result that is built and dropped would leave a subscriber
+        registered for the life of the process, taking a deep copy of every
+        change forever.
+        """
+        generator = cast(
+            "AsyncGenerator[ItemT]",
+            self._drain(subscriber) if stream is None else stream,
+        )
+        _ = weakref.finalize(generator, self._subscribers.discard, subscriber)
+        return generator
+
+    async def _drain(self, subscriber: _Subscriber) -> AsyncGenerator[StateItem]:
+        """Yield one registered subscriber's items until the stream closes."""
         try:
             while True:
                 item = await subscriber.get()
@@ -503,6 +875,7 @@ class HueState:
         }
         if startup:
             self._raw = snapshot_raw
+            self._name_map = None
             for frame in buffered:
                 await self._fold_frame(self._raw, frame, publish=False)
             self._connected = disconnect is None
@@ -523,6 +896,7 @@ class HueState:
             )
             await self._publish_diff(historical, snapshot_raw, gap_end)
             self._raw = snapshot_raw
+            self._name_map = None
             for frame in buffered:
                 await self._fold_frame(self._raw, frame, publish=False)
             self._connected = disconnect is None
@@ -666,6 +1040,7 @@ class HueState:
             if before_raw is None:
                 return None
             del raw_state[resource_id]
+            self._invalidate_names(raw_state)
             return self._make_change(
                 ChangeKind.DELETE,
                 before_raw,
@@ -683,6 +1058,7 @@ class HueState:
                 return None
             after_raw = self._resource_raw(fetched)
             raw_state[resource_id] = after_raw
+            self._invalidate_names(raw_state)
             return self._make_change(
                 ChangeKind.ADD,
                 None,
@@ -703,6 +1079,7 @@ class HueState:
         if before_raw == after_raw:
             return None
         raw_state[resource_id] = after_raw
+        self._invalidate_names(raw_state)
         return self._make_change(
             ChangeKind.ADD if before_raw is None else ChangeKind.UPDATE,
             before_raw,

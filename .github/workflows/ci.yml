@@ -45,7 +45,7 @@ jobs:
           wheel_path=$(find "$PWD/dist" -maxdepth 1 -name "huepy-${project_version}-*.whl" -print -quit)
           test -n "$wheel_path"
           uv run --no-project --isolated --with="$wheel_path" python -c "
-          import huepy, huepy.state, importlib.util, pathlib
+          import huepy, huepy.state, huepy.recording, importlib.util, pathlib
           root = pathlib.Path(importlib.util.find_spec('huepy').origin).parent
           assert (root / 'py.typed').is_file(), 'py.typed missing from the wheel'
           print('huepy', huepy.__all__)

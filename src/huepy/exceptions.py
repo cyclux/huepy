@@ -61,6 +61,17 @@ class HueResponseError(HueError):
         super().__init__("; ".join(errors) or "Bridge reported an unspecified error")
 
 
+class StateNotStartedError(HueError):
+    """Raised when the local state graph is read before it is observing.
+
+    ``hue.state`` exists from construction so handlers and sinks can be
+    registered before the stream opens, but a graph that has never taken a
+    snapshot holds nothing. Returning an empty list there would report "no
+    lights" instead of "not tracking yet", so reads raise until the observer
+    is running. Start it with ``Hue(state=True)`` or ``async with hue.state``.
+    """
+
+
 class DetachedResourceError(HueError):
     """Raised when a command is issued on a model that has no client.
 

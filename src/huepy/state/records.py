@@ -1,13 +1,14 @@
 """Serializable records emitted by the bridge state layer."""
 
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, final
 from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, computed_field
 
-from huepy.models import AnyResource
+from huepy.models import AnyResource, Room
 
 
 class ChangeKind(StrEnum):
@@ -79,3 +80,25 @@ class ActiveFade(BaseModel):
     ends_at: AwareDatetime
     unreliable_until: AwareDatetime
     confirmed: bool | None = None
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class ChangeContext:
+    """One change with the topology resolved around it.
+
+    A view, not a record. Name and room are derived, mutable, and sometimes
+    unresolvable -- the aggregate endpoint omits resources their own endpoints
+    expose -- so they are resolved on request rather than frozen into
+    :class:`Change`, which is a record of an observed fact.
+
+    Attributes:
+        change: The transition this context describes.
+        name: Display name at resolution time, or ``"Unknown"``.
+        room: Containing room, or None when the resource is in no room.
+
+    """
+
+    change: Change
+    name: str
+    room: Room | None

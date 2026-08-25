@@ -126,59 +126,103 @@ class TestCollectionCrud:
         assert http.last == ("DELETE", f"{ROOM}/room-1", None)
 
 
-class TestLiveResolver:
-    async def test_live_collection_lookup_uses_the_local_graph(self, hue, http):
+def track(hue: Hue, raw: dict[str, Any], *, connected: bool = True):
+    """Make ``hue.state`` report as tracking ``raw``, with no event stream.
+
+    ``tracking`` asks whether an observer task exists; these tests drive the
+    graph directly instead of running one, so the task is only ever compared
+    against None.
+    """
+    state = hue.state
+    state._raw = raw
+    state._connected = connected
+    state._started = True
+    state._task = cast("Any", _OBSERVING)
+    return state
+
+
+_OBSERVING = object()
+
+
+class TestTrackedResolver:
+    async def test_tracked_collection_lookup_uses_the_local_graph(self, hue, http):
         local = models.Room.model_validate(room("room-1", "Kitchen")).bind(hue, "room")
 
-        class Live:
+        class Tracked:
+            tracking = True
+
             def ensure_resolver_healthy(self):
                 return None
 
             def list(self, model: type[models.HueResource]):
                 return [local] if model is models.Room else []
 
-        hue._live_state = cast("Any", Live())
+        hue._state = cast("Any", Tracked())
 
         found = await hue.rooms.get("Kitchen")
 
         assert found.id == "room-1"
         assert http.calls == []
 
-    async def test_terminal_live_failure_is_raised_instead_of_serving_stale_data(
-        self, hue
-    ):
-        state = hue.state()
-        state._raw = {"room-1": room("room-1", "Kitchen")}
+    async def test_terminal_failure_is_raised_instead_of_serving_stale_data(self, hue):
+        state = track(hue, {"room-1": room("room-1", "Kitchen")})
         state._terminal_error = RuntimeError("event observer stopped")
-        hue._live_state = state
 
         with pytest.raises(RuntimeError, match="observer stopped"):
             await hue.rooms.get("Kitchen")
 
     async def test_transient_disconnect_prevents_stale_name_mutation(self, hue, http):
-        state = hue.state()
-        state._raw = {"room-1": room("room-1", "Kitchen")}
-        state._connected = False
-        hue._live_state = state
+        track(hue, {"room-1": room("room-1", "Kitchen")}, connected=False)
 
         with pytest.raises(BridgeConnectionError, match="reconnecting"):
             await hue.rooms.delete("Kitchen")
 
         assert http.writes == []
 
-    def test_get_name_tracks_live_renames(self, hue):
-        state = hue.state()
-        state._raw = {"room-1": room("room-1", "Kitchen")}
-        state._connected = True
-        hue._live_state = state
+    async def test_untracked_state_falls_back_to_the_bridge(self, hue, http):
+        """A constructed but unstarted graph must not shadow the bridge."""
+        http.queue_collection("room", [room("room-1", "Kitchen")])
+
+        assert (await hue.rooms.get("Kitchen")).id == "room-1"
+        assert http.calls == [("GET", ROOM, None)]
+
+    async def test_get_name_tracks_renames(self, hue):
+        """A rename arrives as an event, so folding one is the real path.
+
+        The name map is memoised per graph revision; poking `_raw` directly
+        would skip the invalidation a genuine rename goes through and prove
+        nothing about it.
+        """
+        state = track(hue, {"room-1": room("room-1", "Kitchen")})
         assert hue.get_name("room-1") == "Kitchen"
 
-        state._raw["room-1"]["metadata"]["name"] = "North kitchen"
+        await state._fold_frame(
+            state._raw,
+            SSEFrame(
+                event_id="1:1",
+                received_at=datetime.now(UTC),
+                events=[
+                    {
+                        "id": "event-1",
+                        "type": "update",
+                        "creationtime": "2026-08-24T10:00:00Z",
+                        "data": [
+                            {
+                                "id": "room-1",
+                                "type": "room",
+                                "metadata": {"name": "North kitchen"},
+                            }
+                        ],
+                    }
+                ],
+            ),
+            publish=False,
+        )
 
         assert hue.get_name("room-1") == "North kitchen"
         assert hue.names["room-1"] == "North kitchen"
 
-    async def test_live_client_starts_with_one_snapshot_and_reuses_it(
+    async def test_tracking_client_starts_with_one_snapshot_and_reuses_it(
         self, tmp_path, monkeypatch
     ):
         class LiveHttp(FakeHttp):
@@ -209,7 +253,7 @@ class TestLiveResolver:
             bridge_ip="10.0.0.1",
             app_key="key",
             config_path=tmp_path / "config.json",
-            live=True,
+            state=True,
         )
 
         async with client:
