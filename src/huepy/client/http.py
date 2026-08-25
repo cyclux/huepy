@@ -32,7 +32,12 @@ from huepy.client.protocol import (
     WriteObserver,
 )
 from huepy.config import HueConfig
-from huepy.exceptions import AuthenticationError, BridgeConnectionError, HueAPIError
+from huepy.exceptions import (
+    ADVISORY_ERROR_CODES,
+    AuthenticationError,
+    BridgeConnectionError,
+    HueAPIError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -96,9 +101,15 @@ def _write_status(
         return "unknown"
     if not errors:
         return "accepted"
+    # The same set the caller-facing envelope parsing uses. These were separate
+    # literals once and drifted: a write to a switched-off light was reported
+    # to the caller as accepted while this said rejected, so the state layer
+    # dropped the command, deleted its fade, and republished the change as
+    # somebody else's.
     blocking = any(
         not isinstance(error, dict)
-        or cast("dict[str, object]", error).get("error_code") != "communication_error"
+        or cast("dict[str, object]", error).get("error_code")
+        not in ADVISORY_ERROR_CODES
         for error in cast("list[object]", errors)
     )
     rejected: bool = blocking or not data

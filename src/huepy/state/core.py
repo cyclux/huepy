@@ -71,14 +71,19 @@ _RESOURCE_PATH_PARTS = 5
 _MATCH_TOLERANCE = 0.1
 _MATCH_TOLERANCES: Final = MappingProxyType(
     {
-        # Measured: a commanded brightness of 20.0 echoes back as 20.16. The bridge
-        # stores brightness as 254 levels, so its own grid is ~0.4 apart and a
-        # tolerance below that made `command_echo` unreachable for any brightness
-        # -- every transition echo was misfiled as a physical `reported` value.
-        # Per attribute rather than one global number, because the same constant
-        # guards `xy`, whose whole range is 0..1.
+        # Measured: a commanded brightness of 20.0 echoes back as 20.16. The
+        # bridge stores brightness as 254 levels, so its own grid is ~0.395
+        # apart; this covers a whole step rather than the ~0.2 a round-to-
+        # nearest would need, because the rounding rule was not established.
+        # Below the grid, `command_echo` was unreachable for any brightness at
+        # all -- every transition echo was misfiled as a physical `reported`.
+        #
+        # Per attribute rather than one global number, because the same
+        # constant guards `xy`, whose whole range is 0..1. Only brightness is
+        # listed: mirek is an int end to end and echoes exactly, so widening it
+        # would buy nothing and would mask a real off-by-one such as a clamp to
+        # a light's own mirek_schema.
         "brightness": 0.5,
-        "mirek": 1.0,
     }
 )
 _EVENT_SOURCE_STOPPED_MESSAGE = "Event connection source stopped"

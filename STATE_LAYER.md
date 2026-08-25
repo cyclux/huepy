@@ -161,10 +161,14 @@ guarantees.
 - A transition PUT produced an immediate event containing the commanded target,
   while physical progress reports arrived on a much slower device cadence.
 - That echo carries the bridge's own quantisation, not the commanded number: a
-  PUT of `20.0` came back as `20.16`, because brightness is stored as 254
-  levels (~0.4 apart). Write correlation therefore matches brightness with a
-  wider tolerance than `xy`, whose whole range is 0..1; a tolerance below the
-  grid made `command_echo` unreachable for every brightness.
+  PUT of `20.0` came back as `20.16`. Brightness is stored as 254 levels, so
+  the grid is `100/253` ~ 0.395 apart and the worst-case echo error under
+  round-to-nearest is a *half* step -- 0.198, at `50.0` -> `49.80`. The old
+  0.1 tolerance sat below that half step, which is why `command_echo` was
+  unreachable for every brightness. The allowance is 0.5: a whole step, since
+  the rounding rule itself was not established. Only brightness is widened --
+  `mirek` is an int end to end and echoes exactly, and `xy` spans 0..1, where
+  the brightness allowance would match almost anything.
 - A write to a light that is switched off is *accepted* and answered with
   `attribute_may_have_no_effect` ('is "soft off", command (.dimming.brightness)
   may not have effect'), alongside `communication_error` for an unreachable
