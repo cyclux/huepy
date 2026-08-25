@@ -33,8 +33,8 @@ class CollectionClient(Protocol):
     """Client state needed by the high-level collection façade."""
 
     @property
-    def live_state(self) -> HueState | None:
-        """Return the running local graph when live mode is enabled."""
+    def state(self) -> HueState:
+        """Return the local resource graph, observing or not."""
         ...
 
 
@@ -53,11 +53,19 @@ class NamedCollection[ModelT: NamedResource]:
         self._model: type[ModelT] = model
 
     async def list(self) -> list[ModelT]:
-        """Return current resources, from the bridge or the live local graph."""
-        live = self._hue.live_state
-        if live is not None:
-            live.ensure_resolver_healthy()
-            return live.list(self._model)
+        """Return current resources, from the bridge or the tracked graph.
+
+        Raises:
+            BridgeConnectionError: If the graph is tracked but reconnecting.
+                Names resolved here target renames, deletes and commands, so a
+                graph known to be stale must not answer -- it could send a
+                command to the wrong light.
+
+        """
+        state = self._hue.state
+        if state.tracking:
+            state.ensure_resolver_healthy()
+            return state.list(self._model)
         return await self._handler.list()
 
     async def get(self, name: str) -> ModelT:

@@ -48,7 +48,8 @@ class Hue:
         config_path: str | Path | None = None,
         *,
         verify_ssl: bool = False,
-        live: bool = False,
+        state: bool = False,
+        record: HistorySink | Sequence[HistorySink] | None = None,
     )
 ```
 
@@ -61,6 +62,8 @@ order:
 | Application key | `app_key=` | `HUE_APP_KEY` | `app_key` | Stays `None`; `ensure_authenticated()` then raises |
 | Config file path | `config_path=` | `HUE_CONFIG_PATH` | — | `$XDG_CONFIG_HOME/huepy/config.json` |
 | TLS verification | `verify_ssl=` | — | — | `False` — bridges ship a self-signed certificate |
+| State tracking | `state=` | — | — | `False` — a plain client opens no event stream |
+| History recording | `record=` | — | — | `None` — implies `state=True` when given |
 
 Use the client as an async context manager. Normal startup opens the HTTP
 session and does no resource GETs:
@@ -83,7 +86,6 @@ async with Hue(bridge_ip="192.168.1.100") as hue:
 | `async authenticate(app_name="huepy", timeout=60) -> str` | Obtain a key. The bridge link button must be pressed while this runs. |
 | `async get_event_stream() -> AsyncGenerator[models.HueEvent]` | Yield typed events pushed by the bridge. See [Events](#events). |
 | `async snapshot() -> list[models.AnyResource]` | Fetch all aggregate-visible resources in one request. Known types use their concrete model; future types use `models.HueResource`. |
-| `state() -> huepy.state.HueState` | Create a stopped last-reported state view. Enter it as an async context manager. `Hue(live=True)` starts one automatically for high-level collections. |
 
 #### Attributes
 
@@ -91,7 +93,9 @@ async with Hue(bridge_ip="192.168.1.100") as hue:
 | --- | --- | --- |
 | `config` | `HueConfig` | The resolved settings. |
 | `http` | `Transport` | The open transport. Raises `RuntimeError` before `start()`. |
-| `names` | `dict[str, str]` | The local id-to-name map. It is populated by `refresh_names()` or live mode. |
+| `names` | `dict[str, str]` | The local id-to-name map. It is populated by `refresh_names()` or by state tracking. |
+| `state` | `huepy.state.HueState` | The local resource graph. Present from construction; observing when `Hue(state=True)`. See [Last-reported state](#last-reported-state). |
+| `recorder` | `huepy.recording.Recorder \| None` | The running history recorder, when `record=` was given. See [Recording history](#recording-history). |
 | `api` | `HueAPI` | Typed, strictly id-addressed CLIP v2 handlers. |
 | `lights`, `rooms`, `zones`, `scenes`, `devices`, `service_groups` | named collections | Human-facing collections addressed by display name. |
 
@@ -105,7 +109,7 @@ one vocabulary: `list()` returns every current resource, `get(name)` returns
 one uniquely named bound resource, `names()` returns display names,
 `rename(name, new_name)` renames one, and `delete(name)` removes one.
 
-| Call | Returns | Stateless cost | Connected live cost |
+| Call | Returns | Stateless cost | Tracked cost |
 | --- | --- | --- | --- |
 | `await hue.lights.list()` | `list[models.Light]` | one GET | local |
 | `await hue.lights.get("Desk lamp")` | `models.Light` | one collection GET | local |
@@ -148,12 +152,13 @@ except AmbiguousResourceError as exc:
 
 Stateless collections fetch and match a collection for each lookup because CLIP
 has no server-side name filter. Use `list()` for many local matches. With
-`Hue(live=True)`, startup requires an application key, takes one aggregate
+`Hue(state=True)`, startup requires an application key, takes one aggregate
 snapshot, and keeps a local graph current from the event stream. Subsequent
 collection reads use that graph. During a disconnect or reconciliation they
 raise `BridgeConnectionError` rather than resolving a command against stale
-names. Explicit `HueState` views remain last-reported state and can still be
-read while disconnected.
+names: a name resolved here is the target of a rename, a delete, or a command,
+so a graph known to be stale must not answer. Reading `hue.state` directly is
+last-reported state and stays readable while disconnected.
 
 Resource creation stays under `hue.api`: room, zone, scene, and service-group
 creation inherently requires ids or typed CLIP reference shapes, so exposing
@@ -592,29 +597,45 @@ Both resume reconnects with the last event id. The compatibility
 
 ## Last-reported state
 
-`hue.state()` creates a `huepy.state.HueState`; it does nothing until entered.
-The context establishes the stream, buffers it during a one-request aggregate
-snapshot, folds the buffered frames without publishing startup history, and
-then returns a last-reported view. The bridge gives the snapshot no cursor, so
-an event already represented by the snapshot can briefly regress one field;
-the next event or reconnect reconciliation repairs it.
+`hue.state` is a `huepy.state.HueState`. It exists from construction and does
+nothing until started, so handlers and sinks can be registered before the
+stream opens. Starting it establishes the stream, buffers it during a
+one-request aggregate snapshot, folds the buffered frames without publishing
+startup history, and then serves a last-reported view. The bridge gives the
+snapshot no cursor, so an event already represented by the snapshot can briefly
+regress one field; the next event or reconnect reconciliation repairs it.
+
+Start it with `Hue(state=True)`, which tracks for the client's whole lifetime:
 
 ```python
 from huepy import models
 
-async with hue.state() as state:
-    desk = state.lights.get("Desk lamp")
-    print(state.connected, desk.kelvin)
-    all_lights = state.list(models.Light)
+async with Hue(state=True) as hue:
+    desk = hue.state.lights.get("Desk lamp")
+    print(hue.state.connected, desk.kelvin)
+    all_lights = hue.state.list(models.Light)
 ```
 
+Or scope it explicitly, which is the same object entered by hand:
+
+```python
+async with hue.state as state:
+    print(state.connected, len(state.resources))
+```
+
+Reads before tracking starts raise `StateNotStartedError` rather than
+answering "no lights" for "not tracking yet". `hue.state.tracking` reports
+whether observation has started. A *closed* state keeps what it last observed
+and stays readable. For a second, independently scoped graph, construct
+`huepy.state.HueState(hue)` directly.
+
 `state.lights`, `rooms`, `zones`, `scenes` and `devices` are synchronous local
-views with `get(name)`, `by_id(id)`, `list()` and `names()`. `state.resources`,
+views with `get(name)`, `by_id(id)`, `list()` and `names()`. `hue.state.resources`,
 `by_id(id)`, `list(Model)`, `lights_in(group)`, `room_of(id)`, `zones_of(id)`,
 `device_of(id)` and `name_of(id)` provide generic and topology lookup. Every
 read returns a fresh bound model; changing it cannot alter the stored graph.
 
-`state.changes(maxsize=4096)` is an async iterator of frozen
+`hue.state.changes(maxsize=4096)` is an async iterator of frozen
 `huepy.state.Change` and `Resync` records. A `Change` includes full before and
 after resources, raw `delta`, source timestamps, event id, and write-correlation
 fields (`origin`, `command_id`, `command_confirmed`, `observation`, and
@@ -624,28 +645,74 @@ independent and bounded; overflow is coalesced into `Resync(LAGGED)`.
 
 State is never optimistic. Commands observed through its transport may be
 attributed to this client only after their transport outcome is known.
-`state.fading` is a read-only mapping of current locally issued
+`hue.state.fading` is a read-only mapping of current locally issued
 `huepy.state.ActiveFade` records, keyed by resource id; each record includes the
 command id, normalized target, end, report-reliability end, and confirmation.
 See [`STATE_LAYER.md`](STATE_LAYER.md) for the reconnect, reconciliation,
 folding, and write-correlation rationale and the bridge observations behind it.
 
+### Reacting to changes
+
+Register a handler instead of owning the loop. Handlers may be plain functions
+or coroutine functions, and may be registered before tracking starts.
+
+```python
+from huepy import models
+
+subscription = hue.state.on_change(
+    lambda change: print(change.at, change.delta),
+    name="Desk lamp",
+)
+hue.state.on_resync(lambda marker: print("gap", marker.reason))
+subscription.cancel()
+```
+
+| Member | Type | Description |
+| --- | --- | --- |
+| `hue.state.on_change(handler, *, name, model, resource_id, kind)` | `Subscription` | Call `handler` for each matching `Change`. Markers never arrive here. |
+| `hue.state.on_resync(handler)` | `Subscription` | Call `handler` for each `Resync` continuity marker. |
+| `hue.state.watch(*, name, model, resource_id, kind, maxsize=4096)` | `AsyncGenerator[Change]` | Matching changes only, for callers who want the loop. |
+| `hue.state.describe(change)` | `ChangeContext` | Resolve `name` and `room` for one change. |
+
+Every supplied filter must match. `name=` matches case-insensitively and
+ignores surrounding whitespace, so no resource id need appear in caller code.
+`model=` is matched against the resource after the change, falling back to the
+one before it so a delete still matches. `Subscription` has `cancel()` and
+`active`, and cancels on exit when used as a `with` block.
+
+All handlers share one reader, so a slow handler delays the other handlers —
+never the fold loop, which writes into bounded newest-wins buffers that never
+block. Use `watch()` in your own task when you need isolation. A handler that
+raises is logged and skipped: one bad handler must not stop a process meant to
+run for weeks.
+
+`watch()` discards continuity markers, logging each one at `WARNING` first;
+`changes()` is the stream that reports gaps. Both register their subscriber
+when *called* rather than when first advanced, so nothing published between
+building the iterator and consuming it is lost.
+
+`ChangeContext` is a frozen view holding `change`, `name`, and `room`. Name and
+room are resolved on request rather than stored on `Change`: they are derived,
+mutable, and sometimes unresolvable, and freezing a possibly-stale `"Unknown"`
+into a record of an observed fact would be a quiet lie.
+
 ### State lifecycle and views
 
 | Member | Type | Description |
 | --- | --- | --- |
-| `state.connected` | `bool` | Whether the event stream is active and startup or reconnect reconciliation is complete. |
-| `state.resources` | `list[AnyResource]` | Fresh bound copies of every aggregate-visible resource. |
-| `state.fading` | `Mapping[str, ActiveFade]` | Fresh, read-only records for locally issued fades still inside their reporting window. |
-| `state.by_id(resource_id)` | `AnyResource \| None` | Local id lookup. |
-| `state.list(Model)` | `list[Model]` | Local lookup by concrete model class. |
-| `state.name_of(resource_id)` | `str` | Resource or owner name, or `"Unknown"`. |
-| `state.device_of(resource_id)` | `Device \| None` | Owning physical device. |
-| `state.room_of(resource_id)` | `Room \| None` | Containing room. |
-| `state.zones_of(resource_id)` | `list[Zone]` | Every containing zone. |
-| `state.lights_in(group)` | `list[Light]` | Resolvable lights in a room or zone. |
-| `state.changes(maxsize=4096)` | `AsyncGenerator[Change \| Resync]` | Independent bounded history stream. Requires the state context to be running. |
-| `state.close()` | `Coroutine[Any, Any, None]` | Stop observation and close every subscriber when awaited. Called by context exit. |
+| `hue.state.tracking` | `bool` | Whether observation has been started on this graph. |
+| `hue.state.connected` | `bool` | Whether the event stream is active and startup or reconnect reconciliation is complete. |
+| `hue.state.resources` | `list[AnyResource]` | Fresh bound copies of every aggregate-visible resource. |
+| `hue.state.fading` | `Mapping[str, ActiveFade]` | Fresh, read-only records for locally issued fades still inside their reporting window. |
+| `hue.state.by_id(resource_id)` | `AnyResource \| None` | Local id lookup. |
+| `hue.state.list(Model)` | `list[Model]` | Local lookup by concrete model class. |
+| `hue.state.name_of(resource_id)` | `str` | Resource or owner name, or `"Unknown"`. |
+| `hue.state.device_of(resource_id)` | `Device \| None` | Owning physical device. |
+| `hue.state.room_of(resource_id)` | `Room \| None` | Containing room. |
+| `hue.state.zones_of(resource_id)` | `list[Zone]` | Every containing zone. |
+| `hue.state.lights_in(group)` | `list[Light]` | Resolvable lights in a room or zone. |
+| `hue.state.changes(maxsize=4096)` | `AsyncGenerator[Change \| Resync]` | Independent bounded history stream. Requires tracking to be started. |
+| `hue.state.close()` | `Coroutine[Any, Any, None]` | Stop observation and close every subscriber when awaited. Called by context exit. |
 
 Each `StateView` (`lights`, `rooms`, `zones`, `scenes`, and `devices`) has
 `get(name)`, `by_id(id)`, `list()`, and `names()`. These operations are
@@ -654,20 +721,142 @@ same errors as the asynchronous high-level collections.
 
 ### State records
 
-The state package exports `HueState`, `StateView`, `Change`, `ChangeKind`,
-`Resync`, `ResyncReason`, `ActiveFade`, and the transport-level `PendingWrite`.
+The state package exports `HueState`, `StateView`, `Change`, `ChangeContext`,
+`ChangeKind`, `ChangeFilter`, `ChangeHandler`, `Resync`, `ResyncHandler`,
+`ResyncReason`, `ActiveFade`, `Subscription`, and the transport-level
+`PendingWrite`.
 
 | Record | Important fields |
 | --- | --- |
 | `Change` | `kind`, `at`, `observed_at`, `event_at`, `received_at`, `event_id`, `resource_id`, `resource_type`, `before`, `after`, `delta`, `resynced`, `origin`, `command_id`, `command_confirmed`, `observation`, `transition_ends_at` |
 | `Resync` | `reason`, `gap_started`, `gap_ended`, `dropped`, `detail` |
 | `ActiveFade` | `command_id`, `resource_id`, `target`, `sent_at`, `ends_at`, `unreliable_until`, `confirmed` |
+| `ChangeContext` | `change`, `name`, `room` |
 | `PendingWrite` | `command_id`, `path`, `payload`, `sent_at`, `completed_at`, `status` |
 
 `ChangeKind` contains `UPDATE`, `ADD`, and `DELETE`. `ResyncReason` contains
 `RECONNECT`, `LAGGED`, and `INCONSISTENT`. `Change.at` chooses the best
 available feature timestamp in the order `observed_at`, `event_at`, then
 `received_at`.
+
+### Migrating from 0.4
+
+State tracking had two overlapping entry points; 0.5 keeps one.
+
+| 0.4 | 0.5 |
+| --- | --- |
+| `Hue(live=True)` | `Hue(state=True)` |
+| `live_state` on the client (`HueState \| None`) | `hue.state` (always a `HueState`) |
+| `async with hue.state() as state:` | `async with hue.state as state:` |
+| a second, independent graph | `huepy.state.HueState(hue)` |
+
+The removed `live_state` attribute and `state()` factory are asserted absent
+by the test suite, so they cannot quietly return. `hue.state` now exists from
+construction, so handlers and sinks can be
+registered before the stream opens and nothing has to be threaded through a
+call stack. Reads before tracking starts raise `StateNotStartedError` instead
+of returning an empty graph.
+
+## Recording history
+
+Persisting the change stream is one constructor argument. `record=` accepts one
+sink or several, and implies `state=True`.
+
+```python
+from huepy import Hue
+from huepy.recording import SQLiteSink
+
+async with Hue(record=SQLiteSink("hue-history.sqlite3")) as hue:
+    print(hue.recorder is not None)
+```
+
+| Sink | Writes | Notes |
+| --- | --- | --- |
+| `SQLiteSink(path)` | One queryable file | WAL mode, so the file stays readable from the `sqlite3` CLI while huepy writes it. |
+| `JSONLSink(path)` | One JSON object per line | Lossless and greppable; the escape hatch for questions the schema does not anticipate. |
+| `LoggingSink(logger=None, level=INFO)` | Records on a `logging.Logger` | Installs no handler; the host application decides the format. |
+
+Sinks receive frozen `ChangeEntry(record, change, name, room)` and
+`ResyncEntry(record, resync)` values, never the state graph. The recorder
+resolves topology once, so every sink sees identical information and none
+reaches back into the engine. Write your own by satisfying `HistorySink`:
+
+```
+class HistorySink(Protocol):
+    async def start(self) -> None
+    async def write(self, entries: Sequence[HistoryEntry]) -> None
+    async def close(self) -> None
+```
+
+Both shipped file sinks do their blocking work — including serialisation — on a
+dedicated thread each, so a slow disk never stalls the fold loop.
+
+### Failure and loss
+
+The recorder holds an ordinary bounded subscriber. If a sink cannot keep up,
+that subscriber overflows and the resulting `Resync(LAGGED)` is written as a
+row: the archive states where and how much of itself is missing.
+
+A sink that raises mid-stream never stops state tracking. The batch is dropped,
+never retried, and the next batch that sink accepts is prefixed with
+`Resync(INCONSISTENT)` carrying `detail["source"] == "sink"` and the count lost.
+Repeated failures coalesce into one widened marker, so an outage leaves one
+honest row rather than one per flush. `hue.recorder.stats` returns a frozen
+`RecorderStats` with `written`, `batches`, `dropped`, `failures`, `last_error`
+and `last_error_at`.
+
+A sink that cannot *open* fails `Hue.start()` and closes what already opened:
+an unwritable path is a configuration bug, and a recorder that silently records
+nothing is worse than a refused start.
+
+### The SQLite schema
+
+Three tables. `change` is the history, `resync` records where that history is
+knowingly incomplete, and `current` holds the latest row per resource.
+
+| Table | Key columns |
+| --- | --- |
+| `change` | `at`, `received_at`, `kind`, `resource_id`, `resource_type`, `name`, `room`, `origin`, `observation`, `resynced`, `command_id`, `on_state`, `brightness`, `payload` |
+| `resync` | `reason`, `gap_started`, `gap_ended`, `dropped`, `payload` |
+| `current` | `resource_id` (primary key), `at`, `resource_type`, `name`, `room`, `on_state`, `brightness`, `payload` |
+| `meta` | `key`, `value` — holds `schema_version` |
+
+Timestamps are normalised to UTC ISO-8601 with explicit microseconds, so
+lexicographic order equals chronological order; the original offset survives in
+`payload`. `payload` is the full `model_dump_json()` and is the source of
+truth — the extracted columns are an index over it, so a column that turns out
+wrong can be recomputed. `on_state` and `brightness` come from the resource
+*after* the transition rather than from `delta`, so a brightness-only change
+does not leave `on_state` NULL.
+
+```sql
+-- When was the Desk lamp last on?
+SELECT at FROM change WHERE name = 'Desk lamp' AND on_state = 1
+ORDER BY at DESC LIMIT 1;
+
+-- What is it right now, without replaying anything?
+SELECT on_state, brightness, at FROM current WHERE name = 'Desk lamp';
+
+-- Where is this history incomplete?
+SELECT reason, gap_started, gap_ended, dropped FROM resync ORDER BY gap_started DESC;
+```
+
+`name` and `room` are the values *at the time of recording*: renaming a room
+later does not rewrite history. `payload` always carries `resource_id` for
+re-joining against current topology.
+
+**Growth.** A `Change` carries full before and after resources, so a row is
+roughly 1–3 KB and a busy household produces on the order of 30 MB a day. huepy
+does no rotation or pruning: every retention knob is a policy guess, reclaiming
+space needs a long exclusive-lock `VACUUM`, and a library that silently deletes
+your data is user-hostile. Prune when you want to:
+
+```sql
+-- strftime, not datetime(): `at` is 'T'-separated with microseconds, and
+-- datetime() renders a space separator, so the comparison would be off by a day.
+DELETE FROM change WHERE at < strftime('%Y-%m-%dT%H:%M:%f', 'now', '-90 days');
+VACUUM;
+```
 
 ## `huepy.color`
 
@@ -846,6 +1035,7 @@ All derive from `HueError`.
 | `DetachedResourceError` | — | A command was issued on a model with no client |
 | `ResourceNotFoundError` | `name`, `known` | A name lookup matched nothing |
 | `AmbiguousResourceError` | `name`, `resource_ids` | A high-level name matched more than one resource |
+| `StateNotStartedError` | — | `hue.state` was read before tracking started |
 
 `HueResponseError` matters: the v2 API reports many failures this way, so a
 write can "succeed" at the HTTP level and still have been rejected.

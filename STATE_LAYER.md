@@ -8,20 +8,24 @@ and tests are authoritative when this rationale and the implementation differ.
 ## Scope and status
 
 Version 0.3.0 added an opt-in, continuously maintained, last-reported view of
-the aggregate-visible Hue resource graph:
+the aggregate-visible Hue resource graph. Version 0.5.0 collapsed its two entry
+points into one permanent `hue.state`, added handler registration, and added a
+configurable recording layer:
 
 ```python
-async with Hue() as hue, hue.state() as state:
-    desk = state.lights.get("Desk lamp")
+async with Hue(state=True) as hue:
+    desk = hue.state.lights.get("Desk lamp")
     print(desk.brightness)
 
-    async for item in state.changes():
+    async for item in hue.state.changes():
         print(item)
 ```
 
 Ordinary handler reads remain uncached and continue to issue bridge requests.
-The state layer is explicit: `hue.state()` returns a stopped `HueState`, and
-entering its async context starts observation.
+The state layer is explicit: `hue.state` is a stopped `HueState` from
+construction, and `Hue(state=True)` -- or entering it directly -- starts
+observation. Reads before that raise `StateNotStartedError`, because a graph
+that has never taken a snapshot would otherwise report an empty bridge.
 
 The current implementation includes:
 
@@ -210,6 +214,28 @@ Committed fixtures are deliberately not raw bridge dumps. The capture tools:
 Regression tests enforce those privacy properties. The original aggregate
 resource count above is retained only as a research observation.
 
+## Recording
+
+`huepy.recording` persists the change stream. It holds an ordinary bounded
+`changes()` subscriber rather than a queue of its own, which is what makes the
+loss contract carry through to disk: a sink that cannot keep up overflows that
+subscriber, and the coalesced `Resync(LAGGED)` is written as a row. The archive
+therefore states where and how much of itself is missing, in the same terms the
+in-memory stream uses.
+
+A sink that raises is isolated. Its batch is dropped, never retried, and the
+next batch it accepts is prefixed with a coalesced `Resync(INCONSISTENT)`
+carrying `detail["source"] == "sink"`. That reuses the existing reason rather
+than adding a fourth member: "continuity could not be proved" is precisely
+true, `detail` exists to distinguish origins, and `HueState` itself would never
+emit the new member.
+
+Sinks receive enriched, self-contained records and never the state graph, so
+`huepy.recording` depends only on `huepy.state.records` and the models. Blocking
+sinks own a single-threaded executor each rather than using `asyncio.to_thread`,
+whose shared pool would move a `sqlite3` connection between threads and trip
+`check_same_thread`.
+
 ## Known limits
 
 - `HueState` is last-reported state, not guaranteed physical state. This is
@@ -247,6 +273,10 @@ consumer or new bridge observation. Reasonable candidates are:
   shapes.
 - `tests/test_real_fixtures.py`: parser coverage, measured durability evidence,
   and fixture privacy.
+- `tests/test_recording.py`: sink conformance, batching, loss marking, and the
+  documented SQLite queries.
+- `tests/test_state_callbacks.py` and `tests/test_state_facade.py`: handler
+  dispatch, filters, failure isolation, and the permanent `hue.state` attribute.
 - `tests/integration/test_live_state.py`: opt-in end-to-end snapshot, fade
   attribution, replay overflow, reconnect marker, and reconciliation.
 - `examples/track_state.py` and `examples/record_history.py`: maintained state

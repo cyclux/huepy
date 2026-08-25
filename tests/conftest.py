@@ -7,10 +7,11 @@ bodies (``{"errors": [...], "data": [...]}``) so the envelope handling is
 exercised too.
 """
 
+import asyncio
 from collections.abc import AsyncGenerator, Callable
 from datetime import UTC, datetime
 from types import TracebackType
-from typing import Any, Self
+from typing import Any, Literal, Self, override
 from uuid import uuid4
 
 import pytest
@@ -170,6 +171,86 @@ class FakeHttp:
     def writes(self) -> list[Call]:
         """Only the mutating calls -- a read often precedes the write."""
         return [call for call in self.calls if call[0] in {"PUT", "POST", "DELETE"}]
+
+
+class StateHttp(FakeHttp):
+    """A controllable live connection plus a sequence of snapshots."""
+
+    def __init__(self, snapshots: list[list[dict[str, Any]]]) -> None:
+        super().__init__()
+        self.snapshots = snapshots
+        self.snapshot_index = 0
+        self.connections: list[asyncio.Queue[SSEFrame | None]] = [asyncio.Queue()]
+
+    @override
+    async def get(self, path: str) -> Any:
+        if path == "/clip/v2/resource":
+            index = min(self.snapshot_index, len(self.snapshots) - 1)
+            self.snapshot_index += 1
+            return envelope(*self.snapshots[index])
+        return await super().get(path)
+
+    async def _frames(
+        self,
+        queue: asyncio.Queue[SSEFrame | None],
+    ) -> AsyncGenerator[SSEFrame]:
+        while True:
+            frame = await queue.get()
+            if frame is None:
+                return
+            yield frame
+
+    @override
+    async def event_connections(
+        self,
+        *,
+        max_retries: int | None = 10,
+    ) -> AsyncGenerator[EventConnection]:
+        del max_retries
+        for index, queue in enumerate(self.connections):
+            yield EventConnection(
+                opened_at=datetime.now(UTC),
+                resumed_from=None if index == 0 else f"{index}:0",
+                frames=self._frames(queue),
+            )
+
+
+class DeferredWriteHttp(StateHttp):
+    """Hold a PUT between its pending and terminal observer notifications."""
+
+    def __init__(
+        self,
+        snapshots: list[list[dict[str, Any]]],
+        outcome: Literal["rejected", "unknown"],
+    ) -> None:
+        super().__init__(snapshots)
+        self.outcome = outcome
+        self.write_started = asyncio.Event()
+        self.release_write = asyncio.Event()
+
+    @override
+    async def put(self, path: str, data: dict[str, Any]) -> Any:
+        self.calls.append(("PUT", path, data))
+        pending = PendingWrite(
+            command_id=uuid4(),
+            path=path,
+            payload=data,
+            sent_at=datetime.now(UTC),
+        )
+        for observer in tuple(self._write_observers):
+            observer(pending.model_copy(deep=True))
+        self.write_started.set()
+        await self.release_write.wait()
+        completed = pending.model_copy(
+            update={
+                "completed_at": datetime.now(UTC),
+                "status": self.outcome,
+            },
+            deep=True,
+        )
+        for observer in tuple(self._write_observers):
+            observer(completed.model_copy(deep=True))
+        return self.write_result
 
 
 @pytest.fixture

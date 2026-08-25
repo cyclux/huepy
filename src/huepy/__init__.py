@@ -32,6 +32,7 @@ from huepy.exceptions import (
     HueError,
     HueResponseError,
     ResourceNotFoundError,
+    StateNotStartedError,
 )
 from huepy.models.common import CommandResult
 
@@ -55,6 +56,7 @@ __all__ = [
     "HueResponseError",
     "InsecureConfigWarning",
     "ResourceNotFoundError",
+    "StateNotStartedError",
     "color",
     "models",
 ]

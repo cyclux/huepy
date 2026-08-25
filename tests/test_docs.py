@@ -6,6 +6,7 @@ handler, model command, public name and capability claim in the reference is
 checked against the objects it describes.
 """
 
+import inspect
 import re
 import textwrap
 from pathlib import Path
@@ -188,6 +189,12 @@ def test_removed_synonyms_are_absent(hue):
         assert not hasattr(collection, "all")
         assert not hasattr(collection, "get_all")
         assert not hasattr(collection, "__getitem__")
+    # `hue.state()` the factory and `hue.live_state` were folded into one
+    # attribute. Pinning the descriptor is what stops the factory coming back:
+    # a `state()` method would still satisfy every other assertion here.
+    assert not hasattr(hue, "live_state")
+    assert isinstance(inspect.getattr_static(Hue, "state"), property)
+    assert not callable(hue.state)
 
 
 def test_readme_does_not_advertise_the_removed_sync_api():

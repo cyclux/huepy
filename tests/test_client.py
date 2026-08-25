@@ -356,7 +356,7 @@ class TestStartWithoutAKey:
         client = Hue(
             bridge_ip="10.0.0.1",
             config_path=tmp_path / "c.json",
-            live=True,
+            state=True,
         )
 
         with pytest.raises(AuthenticationError, match="No Hue application key"):

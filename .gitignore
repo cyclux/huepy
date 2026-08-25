@@ -8,6 +8,8 @@ __pycache__/
 dist/
 *.egg-info/
 .coverage
+hue-history.sqlite3*
+hue-history.jsonl
 .coverage.*
 htmlcov/
 .pytest_cache/

@@ -1,69 +1,53 @@
-"""Persist state changes and explicit uncertainty windows to SQLite."""
+"""Record every bridge change to a queryable SQLite file, then ask it a question.
+
+    python examples/record_history.py            # record until Ctrl-C
+    python examples/record_history.py "Desk lamp"   # query what was recorded
+
+Recording is the `record=` argument; everything else here is the payoff.
+"""
 
 import asyncio
 import sqlite3
+import sys
 from pathlib import Path
 
 from huepy import Hue
-from huepy.state import Resync
+from huepy.recording import SQLiteSink
 
 DATABASE = Path("hue-history.sqlite3")
 
-
-def open_database() -> sqlite3.Connection:
-    connection = sqlite3.connect(DATABASE)
-    connection.execute(
-        """
-        CREATE TABLE IF NOT EXISTS history (
-            received_at TEXT NOT NULL,
-            record_type TEXT NOT NULL,
-            resource_id TEXT,
-            resource_type TEXT,
-            name TEXT,
-            room TEXT,
-            payload TEXT NOT NULL
-        )
-        """
-    )
-    return connection
+LAST_ON = """
+    SELECT at FROM change
+    WHERE name = ? AND on_state = 1
+    ORDER BY at DESC LIMIT 1
+"""
 
 
-async def main() -> None:
-    database = open_database()
+async def record() -> None:
+    """Persist changes and uncertainty markers until interrupted."""
+    # `record=` implies `state=True`, and the sink does its writing on its own
+    # thread, so a slow disk never stalls the event stream.
+    async with Hue(record=SQLiteSink(DATABASE)):
+        print(f"Recording to {DATABASE}. Ctrl-C to stop.")
+        await asyncio.Event().wait()
+
+
+def last_on(name: str) -> None:
+    """Answer a question the recorded schema was designed for."""
+    if not DATABASE.exists():
+        print(f"No recording yet. Run this without arguments to create {DATABASE}.")
+        raise SystemExit(1)
+    # WAL mode, so this works while a recorder is still writing the file.
+    connection = sqlite3.connect(f"file:{DATABASE}?mode=ro", uri=True)
     try:
-        async with Hue() as hue, hue.state() as state:
-            async for item in state.changes():
-                # The stream is a closed Change | Resync union, so everything
-                # past this guard is a Change -- a second isinstance, or a
-                # defensive else, would be dead code.
-                if isinstance(item, Resync):
-                    values = (
-                        item.gap_ended.isoformat(),
-                        "resync",
-                        None,
-                        None,
-                        None,
-                        None,
-                        item.model_dump_json(),
-                    )
-                else:
-                    room = state.room_of(item.resource_id)
-                    values = (
-                        item.received_at.isoformat(),
-                        "change",
-                        item.resource_id,
-                        item.resource_type,
-                        state.name_of(item.resource_id),
-                        room.name if room is not None else None,
-                        item.model_dump_json(),
-                    )
-                database.execute(
-                    "INSERT INTO history VALUES (?, ?, ?, ?, ?, ?, ?)", values
-                )
-                database.commit()
+        row = connection.execute(LAST_ON, (name,)).fetchone()
     finally:
-        database.close()
+        connection.close()
+    print(f"{name} was last on at {row[0]}" if row else f"No record of {name} on")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    if len(sys.argv) > 1:
+        last_on(sys.argv[1])
+    else:
+        asyncio.run(record())

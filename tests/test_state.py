@@ -1,21 +1,22 @@
 """Tests for the opt-in, event-folded bridge state."""
 
 import asyncio
+import copy
+import gc
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
-from typing import Any, Literal, override
-from uuid import uuid4
+from typing import Any, override
 
 import pytest
 from pydantic import ValidationError
 
 from huepy import models
-from huepy.client.http import EventConnection, PendingWrite, SSEFrame
+from huepy.client.http import EventConnection, SSEFrame
 from huepy.exceptions import HueResponseError
 from huepy.state import Change, ChangeKind, Resync, ResyncReason
 from huepy.state.core import _observed_at
 
-from .conftest import FakeHttp, envelope
+from .conftest import DeferredWriteHttp, StateHttp, envelope
 
 
 class EventStreamExhaustedError(RuntimeError):
@@ -92,86 +93,6 @@ def event_frame(
             }
         ],
     )
-
-
-class StateHttp(FakeHttp):
-    """A controllable live connection plus a sequence of snapshots."""
-
-    def __init__(self, snapshots: list[list[dict[str, Any]]]) -> None:
-        super().__init__()
-        self.snapshots = snapshots
-        self.snapshot_index = 0
-        self.connections: list[asyncio.Queue[SSEFrame | None]] = [asyncio.Queue()]
-
-    @override
-    async def get(self, path: str) -> Any:
-        if path == "/clip/v2/resource":
-            index = min(self.snapshot_index, len(self.snapshots) - 1)
-            self.snapshot_index += 1
-            return envelope(*self.snapshots[index])
-        return await super().get(path)
-
-    async def _frames(
-        self,
-        queue: asyncio.Queue[SSEFrame | None],
-    ) -> AsyncGenerator[SSEFrame]:
-        while True:
-            frame = await queue.get()
-            if frame is None:
-                return
-            yield frame
-
-    @override
-    async def event_connections(
-        self,
-        *,
-        max_retries: int | None = 10,
-    ) -> AsyncGenerator[EventConnection]:
-        del max_retries
-        for index, queue in enumerate(self.connections):
-            yield EventConnection(
-                opened_at=datetime.now(UTC),
-                resumed_from=None if index == 0 else f"{index}:0",
-                frames=self._frames(queue),
-            )
-
-
-class DeferredWriteHttp(StateHttp):
-    """Hold a PUT between its pending and terminal observer notifications."""
-
-    def __init__(
-        self,
-        snapshots: list[list[dict[str, Any]]],
-        outcome: Literal["rejected", "unknown"],
-    ) -> None:
-        super().__init__(snapshots)
-        self.outcome = outcome
-        self.write_started = asyncio.Event()
-        self.release_write = asyncio.Event()
-
-    @override
-    async def put(self, path: str, data: dict[str, Any]) -> Any:
-        self.calls.append(("PUT", path, data))
-        pending = PendingWrite(
-            command_id=uuid4(),
-            path=path,
-            payload=data,
-            sent_at=datetime.now(UTC),
-        )
-        for observer in tuple(self._write_observers):
-            observer(pending.model_copy(deep=True))
-        self.write_started.set()
-        await self.release_write.wait()
-        completed = pending.model_copy(
-            update={
-                "completed_at": datetime.now(UTC),
-                "status": self.outcome,
-            },
-            deep=True,
-        )
-        for observer in tuple(self._write_observers):
-            observer(completed.model_copy(deep=True))
-        return self.write_result
 
 
 @pytest.fixture
@@ -253,7 +174,7 @@ class TestLifecycleAndFold:
         self, hue, state_http
     ):
         await state_http.connections[0].put(update_frame(20))
-        async with hue.state() as state:
+        async with hue.state as state:
             assert state.lights.get("desk").brightness == 20
             first = state.lights.by_id("light-1")
             second = state.lights.by_id("light-1")
@@ -264,7 +185,7 @@ class TestLifecycleAndFold:
             assert state.lights.get("Desk").brightness == 20
 
     async def test_multi_entry_event_emits_one_complete_change(self, hue, state_http):
-        async with hue.state() as state:
+        async with hue.state as state:
             changes = state.changes()
             waiting = asyncio.create_task(anext(changes))
             await asyncio.sleep(0)
@@ -312,7 +233,7 @@ class TestLifecycleAndFold:
         self, hue, state_http
     ):
         observed = datetime(2026, 8, 24, 9, 59, tzinfo=UTC)
-        async with hue.state() as state:
+        async with hue.state as state:
             stream = state.changes()
             waiting = asyncio.create_task(anext(stream))
             await asyncio.sleep(0)
@@ -361,7 +282,7 @@ class TestLifecycleAndFold:
         self, hue, state_http
     ):
         added_payload = light(45, light_id="light-2", owner="device-2")
-        async with hue.state() as state:
+        async with hue.state as state:
             stream = state.changes()
             waiting = asyncio.create_task(anext(stream))
             await asyncio.sleep(0)
@@ -392,7 +313,7 @@ class TestLifecycleAndFold:
         state_http.queue_resource(
             "light", "light-2", light(55, light_id="light-2", owner="device-2")
         )
-        async with hue.state() as state:
+        async with hue.state as state:
             stream = state.changes()
             waiting = asyncio.create_task(anext(stream))
             await asyncio.sleep(0)
@@ -423,7 +344,7 @@ class TestLifecycleAndFold:
     async def test_invalid_delta_marks_inconsistent_without_corrupting_state(
         self, hue, state_http
     ):
-        async with hue.state() as state:
+        async with hue.state as state:
             stream = state.changes()
             waiting = asyncio.create_task(anext(stream))
             await asyncio.sleep(0)
@@ -455,7 +376,7 @@ class TestLifecycleAndFold:
     async def test_missing_resource_ids_mark_the_frame_inconsistent(
         self, hue, state_http, entry
     ):
-        async with hue.state() as state:
+        async with hue.state as state:
             stream = state.changes()
             waiting = asyncio.create_task(anext(stream))
             await asyncio.sleep(0)
@@ -471,7 +392,7 @@ class TestLifecycleAndFold:
         state_http.queue_resource(
             "light", "light-2", light(55, light_id="different-id")
         )
-        async with hue.state() as state:
+        async with hue.state as state:
             stream = state.changes()
             waiting = asyncio.create_task(anext(stream))
             await asyncio.sleep(0)
@@ -538,7 +459,7 @@ class TestTopology:
         )
         hue._http = http
 
-        async with hue.state() as state:
+        async with hue.state as state:
             room = state.rooms.get("Office")
             zone = state.zones.get("Work")
 
@@ -555,7 +476,7 @@ class TestSubscribers:
     async def test_lag_is_coalesced_into_one_marker_before_the_newest_change(
         self, hue, state_http
     ):
-        async with hue.state() as state:
+        async with hue.state as state:
             stream = state.changes(maxsize=2)
             waiting = asyncio.create_task(anext(stream))
             await asyncio.sleep(0)
@@ -585,7 +506,7 @@ class TestSubscribers:
     async def test_each_subscriber_receives_an_independent_record(
         self, hue, state_http
     ):
-        async with hue.state() as state:
+        async with hue.state as state:
             first_stream = state.changes()
             second_stream = state.changes()
             first_waiting = asyncio.create_task(anext(first_stream))
@@ -614,7 +535,7 @@ class TestReconnectAndCorrelation:
         http.connections.append(asyncio.Queue())
         hue._http = http
 
-        async with hue.state() as state:
+        async with hue.state as state:
             stream = state.changes()
             first_item = asyncio.create_task(anext(stream))
             await asyncio.sleep(0)
@@ -637,7 +558,7 @@ class TestReconnectAndCorrelation:
             await stream.aclose()
 
     async def test_local_fade_marks_echo_and_exposes_fading(self, hue, state_http):
-        async with hue.state() as state:
+        async with hue.state as state:
             stream = state.changes()
             current = state.lights.get("Desk")
             await current.set(brightness=80, transition=60)
@@ -656,7 +577,7 @@ class TestReconnectAndCorrelation:
     async def test_only_first_fade_target_is_an_echo_and_unrelated_fields_are_free(
         self, hue, state_http
     ):
-        async with hue.state() as state:
+        async with hue.state as state:
             stream = state.changes()
             await state.lights.get("Desk").set(brightness=80, transition=60)
 
@@ -698,7 +619,7 @@ class TestReconnectAndCorrelation:
             "unknown",
         )
         hue._http = http
-        async with hue.state() as state:
+        async with hue.state as state:
             stream = state.changes()
             first_waiting = asyncio.create_task(anext(stream))
             await asyncio.sleep(0)
@@ -749,7 +670,7 @@ class TestReconnectAndCorrelation:
 
         http = TerminalDeferredHttp([[light(10)]], "unknown")
         hue._http = http
-        async with hue.state() as state:
+        async with hue.state as state:
             stream = state.changes()
             first_waiting = asyncio.create_task(anext(stream))
             await asyncio.sleep(0)
@@ -788,7 +709,7 @@ class TestReconnectAndCorrelation:
     ):
         http = DeferredWriteHttp([[light(10)]], outcome)
         hue._http = http
-        async with hue.state() as state:
+        async with hue.state as state:
             stream = state.changes()
             waiting = asyncio.create_task(anext(stream))
             await asyncio.sleep(0)
@@ -832,7 +753,7 @@ class TestReconnectAndCorrelation:
 
         http = TerminalStateHttp([[light(10)]])
         hue._http = http
-        async with hue.state() as state:
+        async with hue.state as state:
             stream = state.changes()
             waiting = asyncio.create_task(anext(stream))
             await asyncio.sleep(0)
@@ -851,3 +772,170 @@ class TestReconnectAndCorrelation:
                 EventStreamExhaustedError, match="event stream exhausted"
             ):
                 await anext(state.changes())
+
+
+class TestNameMapCaching:
+    """The id-to-name map is memoised per graph revision.
+
+    Building it walks every resource through a deep copy and a revalidation, so
+    rebuilding per call made enriching one change with a name and a room cost
+    two full graph re-parses.
+    """
+
+    async def test_map_is_built_once_and_reused(self, hue, state_http):
+        async with hue.state as state:
+            assert state._name_map is None
+            assert state.name_of("light-1") == "Desk"
+            built = state._name_map
+            assert built is not None
+
+            assert state.name_of("light-1") == "Desk"
+            assert state._name_map is built
+
+    async def test_folding_a_rename_invalidates_the_map(self, hue, state_http):
+        async with hue.state as state:
+            assert state.name_of("light-1") == "Desk"
+
+            await state_http.connections[0].put(
+                event_frame(
+                    "update",
+                    {"id": "light-1", "type": "light", "metadata": {"name": "Bench"}},
+                )
+            )
+            await asyncio.sleep(0.05)
+
+            assert state.name_of("light-1") == "Bench"
+
+    async def test_reconnect_reconciliation_does_not_poison_the_live_map(
+        self, hue, state_http
+    ):
+        """Reconnect folds a *copy* of the graph; that must not touch the map."""
+        async with hue.state as state:
+            assert state.name_of("light-1") == "Desk"
+            historical = copy.deepcopy(state._raw)
+
+            await state._fold_frame(
+                historical,
+                event_frame(
+                    "update",
+                    {"id": "light-1", "type": "light", "metadata": {"name": "Ghost"}},
+                ),
+                publish=False,
+            )
+
+            assert state.name_of("light-1") == "Desk"
+
+
+class TestSubscriberRegistration:
+    async def test_registration_is_eager_so_no_change_is_missed(self, hue, state_http):
+        """A change published before the first `__anext__` must still arrive.
+
+        `changes()` is a plain function returning an async generator precisely
+        so registration happens at call time; an async-generator body would not
+        run until first advanced, dropping anything published in between.
+        """
+        async with hue.state as state:
+            stream = state.changes()
+
+            await state_http.connections[0].put(update_frame(55))
+            await asyncio.sleep(0.05)
+
+            item = await asyncio.wait_for(anext(stream), 1)
+            assert isinstance(item, Change)
+            assert item.after is not None
+            assert isinstance(item.after, models.Light)
+            assert item.after.brightness == 55
+            await stream.aclose()
+
+    async def test_changes_before_start_raises_at_call_time(self, hue, state_http):
+        """The guard moved with the registration it protects."""
+        with pytest.raises(RuntimeError, match="not running"):
+            hue.state.changes()
+
+
+class TestSubscriberLifetime:
+    async def test_an_abandoned_iterator_does_not_leak_its_subscriber(
+        self, hue, state_http
+    ):
+        """Eager registration must not outlive the iterator that caused it.
+
+        An iterator that is never advanced never runs its body, and `aclose()`
+        on an unstarted async generator does not run it either -- so without a
+        finaliser the subscriber would take a deep copy of every change for the
+        life of the process.
+        """
+        async with hue.state as state:
+            before = len(state._subscribers)
+
+            streams = [state.changes() for _ in range(5)]
+            streams += [state.watch() for _ in range(5)]
+            assert len(state._subscribers) == before + 10
+
+            streams.clear()
+            _ = gc.collect()
+
+            assert len(state._subscribers) == before
+
+    async def test_closing_an_iterator_deregisters_it(self, hue, state_http):
+        async with hue.state as state:
+            before = len(state._subscribers)
+            stream = state.changes()
+            await state_http.connections[0].put(update_frame(50))
+            _ = await asyncio.wait_for(anext(stream), 1)
+            assert len(state._subscribers) == before + 1
+
+            await stream.aclose()
+
+            assert len(state._subscribers) == before
+
+
+class TestNameMapInvalidationOrdering:
+    async def test_a_rename_later_in_a_frame_survives_a_read_during_the_fetch(
+        self, hue
+    ):
+        """The exact window a frame-level invalidation could not close.
+
+        Folding an unknown id suspends on a point fetch. A concurrent reader
+        rebuilds the name map from the half-folded graph, and a rename later in
+        the *same* frame would then never invalidate it again -- serving the old
+        name until some unrelated frame arrived, and writing it into history.
+        """
+        released = asyncio.Event()
+        entered = asyncio.Event()
+
+        class GatedHttp(StateHttp):
+            @override
+            async def get(self, path: str) -> Any:
+                if path.endswith("/light-2"):
+                    entered.set()
+                    await released.wait()
+                return await super().get(path)
+
+        http = GatedHttp([[light(10)]])
+        http.queue_resource("light", "light-2", light(20, light_id="light-2"))
+        hue._http = http
+
+        async with hue.state as state:
+            fold = asyncio.create_task(
+                http.connections[0].put(
+                    event_frame(
+                        "update",
+                        {"id": "light-2", "type": "light"},
+                        {
+                            "id": "light-1",
+                            "type": "light",
+                            "metadata": {"name": "Bench"},
+                        },
+                    )
+                )
+            )
+            await asyncio.wait_for(entered.wait(), 1)
+
+            # The concurrent read that used to poison the cache.
+            assert state.name_of("light-1") == "Desk"
+
+            released.set()
+            await fold
+            await asyncio.sleep(0.05)
+
+            assert state.name_of("light-1") == "Bench"
