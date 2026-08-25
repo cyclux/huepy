@@ -354,3 +354,34 @@ class TestDispatchLifetime:
             await settle()
 
         assert len(seen) == 1
+
+
+class TestSelfCancellation:
+    async def test_an_async_handler_can_cancel_its_own_subscription(
+        self, hue: Hue, state_http: StateHttp
+    ) -> None:
+        """The one-shot idiom: the handler runs *inside* the dispatch task.
+
+        Cancelling that task from within would deliver the CancelledError into
+        the handler at its next await, tearing it apart mid-body.
+        """
+        seen: list[Change] = []
+        finished = asyncio.Event()
+
+        async def once(item: Change) -> None:
+            subscription.cancel()
+            await asyncio.sleep(0)  # the await that used to be interrupted
+            seen.append(item)
+            finished.set()
+
+        async with hue.state as state:
+            subscription = state.on_change(once)
+            await state_http.connections[0].put(update_frame(70))
+            await asyncio.wait_for(finished.wait(), 1)
+
+            await state_http.connections[0].put(update_frame(80))
+            await settle()
+
+            assert state._dispatch_task is None
+
+        assert len(seen) == 1

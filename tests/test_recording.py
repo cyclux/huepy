@@ -595,16 +595,83 @@ class TestStats:
     async def test_the_reported_error_and_its_timestamp_come_from_one_sink(
         self, state: FakeState
     ) -> None:
-        """Pairing one sink's message with another's time describes nothing."""
-        quiet = FakeSink()
-        noisy = FakeSink(fail_writes=1)
-        recorder = Recorder(state, [quiet, noisy], batch_size=1, flush_interval=60)
+        """Pairing one sink's message with another's time describes nothing.
+
+        Two sinks must fail, with distinct messages and distinguishable times:
+        with only one failing, taking the first non-None message and the max
+        timestamp happens to agree, so the bug hides.
+        """
+
+        class NamedFailure(FakeSink):
+            def __init__(self, message: str) -> None:
+                super().__init__()
+                self.message = message
+
+            @override
+            async def write(self, entries: Sequence[HistoryEntry]) -> None:
+                msg = self.message
+                raise RuntimeError(msg)
+
+        first = NamedFailure("first sink is broken")
+        second = NamedFailure("second sink is broken")
+        recorder = Recorder(state, [first, second], batch_size=1, flush_interval=60)
         async with recorder:
             state.queue.put_nowait(change())
             await settle()
 
         stats = recorder.stats
-        assert stats.failures == 1
+        assert stats.failures == 2
         assert stats.last_error is not None
-        assert "disk is full" in stats.last_error
-        assert stats.last_error_at is not None
+        # `second` is written after `first`, so it owns the later timestamp and
+        # must own the reported message too.
+        assert "second sink is broken" in stats.last_error
+
+
+class TestStopDrainIsBounded:
+    async def test_a_producer_faster_than_the_pump_cannot_stall_close(
+        self, state: FakeState, monkeypatch: Any
+    ) -> None:
+        """Draining until the queue empties is a livelock, not a bounded drain.
+
+        A stream that keeps producing leaves `pending` done on every turn, so
+        the loop never reaches its empty-queue exit; close() would then wait
+        out the full drain timeout and abandon the buffer with no marker.
+        """
+        monkeypatch.setattr("huepy.recording.recorder.STOP_DRAIN_GRACE", 0.05)
+        sink = FakeSink()
+        recorder = Recorder(state, [sink], batch_size=4, flush_interval=60)
+        await recorder.start()
+
+        async def flood() -> None:
+            while True:
+                state.queue.put_nowait(change())
+                await asyncio.sleep(0)
+
+        producer = asyncio.create_task(flood())
+        await asyncio.sleep(0.01)
+
+        await asyncio.wait_for(recorder.close(), 5)
+        producer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await producer
+
+        markers = [e for e in sink.entries if isinstance(e, ResyncEntry)]
+        assert markers, "abandoned history must not be silent"
+        assert markers[-1].resync.detail is not None
+        assert markers[-1].resync.detail["source"] == "shutdown"
+
+    async def test_the_normal_close_path_still_records_everything(
+        self, state: FakeState
+    ) -> None:
+        """`state.close()` broadcasts the tail then `_CLOSED`; nothing is lost."""
+        sink = FakeSink()
+        recorder = Recorder(state, [sink], batch_size=2, flush_interval=60)
+        await recorder.start()
+        for _ in range(6):
+            state.queue.put_nowait(change())
+        state.queue.put_nowait(None)
+
+        await recorder.close()
+
+        assert len([e for e in sink.entries if isinstance(e, ChangeEntry)]) == 6
+        assert [e for e in sink.entries if isinstance(e, ResyncEntry)] == []

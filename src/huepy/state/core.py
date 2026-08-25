@@ -627,7 +627,7 @@ class HueState:
             self._watch(ChangeFilter(name, model, resource_id, kind), subscriber),
         )
 
-    def name_for(self, change: Change) -> str:
+    def _name_for(self, change: Change) -> str:
         """Resolve the display name a change refers to, deletes included.
 
         A DELETE has already been folded out of the graph by the time anyone
@@ -639,19 +639,25 @@ class HueState:
         name = self.name_of(change.resource_id)
         if name != UNKNOWN_NAME:
             return name
-        resource = change.before or change.after
+        # `after` first, like `ChangeFilter.matches`: a rename enriched after
+        # its resource left the graph should carry the name it changed *to*.
+        resource = change.after or change.before
         if isinstance(resource, NamedResource) and resource.name:
             return resource.name
         if resource is not None and resource.owner is not None:
             return self.name_of(resource.owner.rid)
         return name
 
-    def room_for(self, change: Change) -> Room | None:
+    def _room_for(self, change: Change) -> Room | None:
         """Resolve the room a change refers to, deletes included."""
         room = self.room_of(change.resource_id)
-        if room is not None:
+        if room is not None or self.by_id(change.resource_id) is not None:
+            # Only fall back when the resource is actually gone. While it is
+            # still in the graph `room_of` already resolved through its owning
+            # device, so a second pass could not answer differently -- and each
+            # pass deep-copies and revalidates the whole graph.
             return room
-        resource = change.before or change.after
+        resource = change.after or change.before
         if resource is None or resource.owner is None:
             return None
         # The service is gone but the device that owned it usually is not.
@@ -672,8 +678,8 @@ class HueState:
         """
         return ChangeContext(
             change=change,
-            name=self.name_for(change),
-            room=self.room_for(change),
+            name=self._name_for(change),
+            room=self._room_for(change),
         )
 
     async def _watch(
@@ -691,7 +697,7 @@ class HueState:
                     item.gap_ended,
                 )
                 continue
-            if change_filter.matches(item, self.name_for):
+            if change_filter.matches(item, self._name_for):
                 yield item
 
     def _discard[HandlerT](
@@ -711,9 +717,14 @@ class HueState:
         if self._change_handlers or self._resync_handlers:
             return
         dispatch, self._dispatch_task = self._dispatch_task, None
-        if dispatch is not None:
-            # `_drain`'s finally deregisters the subscriber on cancellation.
-            _ = dispatch.cancel()
+        if dispatch is None or dispatch is asyncio.current_task():
+            # A handler cancelling its own subscription -- the one-shot idiom --
+            # is running *inside* this task. Cancelling here would deliver the
+            # CancelledError into that handler at its next await. The loop
+            # checks for an empty roster after each item and retires itself.
+            return
+        # `_drain`'s finally deregisters the subscriber on cancellation.
+        _ = dispatch.cancel()
 
     def _ensure_dispatching(self) -> None:
         """Start the shared handler reader once there is something to feed.
@@ -741,14 +752,11 @@ class HueState:
         never to receive, and its own data loss would vanish silently.
         """
         try:
-            async for item in self._drain(subscriber):
-                if isinstance(item, Resync):
-                    for registration in tuple(self._resync_handlers):
-                        await self._invoke(registration.handler, item)
-                    continue
-                for registration in tuple(self._change_handlers):
-                    if registration.filter.matches(item, self.name_for):
-                        await self._invoke(registration.handler, item)
+            # `aclosing`, because the roster check below returns while the
+            # generator is suspended: without it the subscriber would be
+            # deregistered only when the asyncgen finalizer got round to it.
+            async with aclosing(self._drain(subscriber)) as stream:
+                await self._dispatch_items(stream)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -757,6 +765,20 @@ class HueState:
             # without this the callbacks simply stop firing and nothing says
             # why. `ensure_healthy()` re-raises it on demand.
             logger.exception("State stream stopped; handlers will receive nothing")
+
+    async def _dispatch_items(self, stream: AsyncGenerator[StateItem]) -> None:
+        """Offer each item to every handler whose filter accepts it."""
+        async for item in stream:
+            if isinstance(item, Resync):
+                for registration in tuple(self._resync_handlers):
+                    await self._invoke(registration.handler, item)
+            else:
+                for registration in tuple(self._change_handlers):
+                    if registration.filter.matches(item, self._name_for):
+                        await self._invoke(registration.handler, item)
+            if not (self._change_handlers or self._resync_handlers):
+                # The last subscription went away, from inside a handler.
+                return
 
     @staticmethod
     async def _invoke[RecordT](
