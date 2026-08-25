@@ -65,6 +65,7 @@ WRITE_MATCH_WINDOW: Final = timedelta(seconds=25)
 _TIMESTAMP: TypeAdapter[datetime] = TypeAdapter(AwareDatetime)
 _BARRIER = object()
 _CLOSED = object()
+UNKNOWN_NAME: Final = "Unknown"
 _MIN_BUFFER_SIZE = 2
 _RESOURCE_PATH_PARTS = 5
 _MATCH_TOLERANCE = 0.1
@@ -424,7 +425,7 @@ class HueState:
             StateNotStartedError: If observation has never started.
 
         """
-        return self._names_map().get(resource_id, "Unknown")
+        return self._names_map().get(resource_id, UNKNOWN_NAME)
 
     def _invalidate_names(self, raw_state: dict[str, dict[str, Any]]) -> None:
         """Drop the memoised name map when the *live* graph changed.
@@ -626,6 +627,36 @@ class HueState:
             self._watch(ChangeFilter(name, model, resource_id, kind), subscriber),
         )
 
+    def name_for(self, change: Change) -> str:
+        """Resolve the display name a change refers to, deletes included.
+
+        A DELETE has already been folded out of the graph by the time anyone
+        sees the record, so the live lookup answers ``"Unknown"``. The record
+        still carries what the resource was, and without this every delete
+        would be filtered out by a `name=` handler and written to history
+        nameless.
+        """
+        name = self.name_of(change.resource_id)
+        if name != UNKNOWN_NAME:
+            return name
+        resource = change.before or change.after
+        if isinstance(resource, NamedResource) and resource.name:
+            return resource.name
+        if resource is not None and resource.owner is not None:
+            return self.name_of(resource.owner.rid)
+        return name
+
+    def room_for(self, change: Change) -> Room | None:
+        """Resolve the room a change refers to, deletes included."""
+        room = self.room_of(change.resource_id)
+        if room is not None:
+            return room
+        resource = change.before or change.after
+        if resource is None or resource.owner is None:
+            return None
+        # The service is gone but the device that owned it usually is not.
+        return self.room_of(resource.owner.rid)
+
     def describe(self, change: Change) -> ChangeContext:
         """Resolve the display name and containing room for one change.
 
@@ -641,8 +672,8 @@ class HueState:
         """
         return ChangeContext(
             change=change,
-            name=self.name_of(change.resource_id),
-            room=self.room_of(change.resource_id),
+            name=self.name_for(change),
+            room=self.room_for(change),
         )
 
     async def _watch(
@@ -660,17 +691,29 @@ class HueState:
                     item.gap_ended,
                 )
                 continue
-            if change_filter.matches(item, self.name_of):
+            if change_filter.matches(item, self.name_for):
                 yield item
 
-    @staticmethod
     def _discard[HandlerT](
+        self,
         registrations: list[_Registration[HandlerT]],
         registration: _Registration[HandlerT],
     ) -> None:
-        """Remove one registration, tolerating a state that already closed."""
+        """Remove one registration, tolerating a state that already closed.
+
+        Stops the shared reader once nothing is listening. Left running, it
+        would keep taking a deep copy of every change into a queue whose
+        consumer matches nothing, for the life of a client that no longer has
+        any callbacks.
+        """
         with suppress(ValueError):
             registrations.remove(registration)
+        if self._change_handlers or self._resync_handlers:
+            return
+        dispatch, self._dispatch_task = self._dispatch_task, None
+        if dispatch is not None:
+            # `_drain`'s finally deregisters the subscriber on cancellation.
+            _ = dispatch.cancel()
 
     def _ensure_dispatching(self) -> None:
         """Start the shared handler reader once there is something to feed.
@@ -704,7 +747,7 @@ class HueState:
                         await self._invoke(registration.handler, item)
                     continue
                 for registration in tuple(self._change_handlers):
-                    if registration.filter.matches(item, self.name_of):
+                    if registration.filter.matches(item, self.name_for):
                         await self._invoke(registration.handler, item)
         except asyncio.CancelledError:
             raise

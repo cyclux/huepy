@@ -39,6 +39,8 @@ DEFAULT_QUEUE_SIZE = 4096
 # How long close() lets a sink finish before giving up on the buffered tail.
 # A wedged sink must not hold the HTTP session open indefinitely.
 DRAIN_TIMEOUT = 30.0
+# How long close() waits for a sink to release its worker thread.
+SINK_CLOSE_TIMEOUT = 10.0
 
 UNKNOWN_NAME = "Unknown"
 
@@ -107,9 +109,35 @@ class _Tracked:
         )
 
 
+def _error_time(tracked: _Tracked) -> datetime:
+    """Sort key for the most recent sink failure."""
+    at = tracked.last_error_at
+    return at if at is not None else datetime.min.replace(tzinfo=UTC)
+
+
 async def _next_item(stream: AsyncIterator[Change | Resync]) -> Change | Resync | None:
     """Pull one item, returning None once the stream is exhausted."""
     return await anext(stream, None)
+
+
+def _wait_timeout(
+    *,
+    stopping: bool,
+    deadline: float | None,
+    now: float,
+) -> float | None:
+    """How long to wait for the next item.
+
+    Zero while stopping, so the pump takes the backlog the state broadcast on
+    its way out without waiting on a stream that may still be live. Otherwise
+    the time left before the partial batch ages out, or forever when there is
+    no partial batch to age.
+    """
+    if stopping:
+        return 0.0
+    if deadline is None:
+        return None
+    return max(0.0, deadline - now)
 
 
 @final
@@ -147,18 +175,18 @@ class Recorder:
     @property
     def stats(self) -> RecorderStats:
         """Totals across every sink, including history known to be lost."""
+        failed = [t for t in self._tracked if t.last_error_at is not None]
+        latest = max(failed, key=_error_time, default=None)
         return RecorderStats(
             written=sum(t.written for t in self._tracked),
             batches=sum(t.batches for t in self._tracked),
             dropped=sum(t.dropped for t in self._tracked),
             failures=sum(t.failures for t in self._tracked),
-            last_error=next(
-                (t.last_error for t in self._tracked if t.last_error is not None), None
-            ),
-            last_error_at=max(
-                (t.last_error_at for t in self._tracked if t.last_error_at is not None),
-                default=None,
-            ),
+            # From one sink, not two: reporting the first sink's message
+            # beside another's timestamp describes a failure that never
+            # happened.
+            last_error=latest.last_error if latest is not None else None,
+            last_error_at=latest.last_error_at if latest is not None else None,
         )
 
     async def start(self) -> None:
@@ -214,7 +242,18 @@ class Recorder:
                     await stream.aclose()
             for tracked in self._tracked:
                 try:
-                    await tracked.sink.close()
+                    # Bounded: a blocking sink's close() waits on its worker
+                    # thread, so a hung filesystem would otherwise hold the
+                    # HTTP session open as long as the write takes.
+                    await asyncio.wait_for(
+                        tracked.sink.close(), timeout=SINK_CLOSE_TIMEOUT
+                    )
+                except TimeoutError:
+                    logger.error(  # noqa: TRY400 - the timeout is the whole story
+                        "Sink %r did not close within %ss; abandoning its worker",
+                        tracked.sink,
+                        SINK_CLOSE_TIMEOUT,
+                    )
                 except Exception:
                     logger.exception("Sink %r failed to close", tracked.sink)
 
@@ -264,7 +303,16 @@ class Recorder:
         aborted = False
         try:
             while True:
-                timeout = None if deadline is None else max(0.0, deadline - loop.time())
+                # Once stopping, take only what the subscriber already holds:
+                # `Hue.close()` closes the state first, which broadcasts the
+                # tail plus `_CLOSED` into our queue, and breaking on the stop
+                # event alone would abandon it and record nothing to say so.
+                # A zero timeout drains that backlog without waiting on a
+                # stream that may still be live under a standalone close().
+                stopping = stop.done()
+                timeout = _wait_timeout(
+                    stopping=stopping, deadline=deadline, now=loop.time()
+                )
                 done, _ = await asyncio.wait(
                     {pending, stop},
                     timeout=timeout,
@@ -280,13 +328,11 @@ class Recorder:
                         deadline = loop.time() + self._flush_interval
                     if len(buffer) < self._batch_size:
                         continue
-                elif stop in done and not buffer:
+                elif stopping:
                     break
                 await self._flush(buffer)
                 buffer.clear()
                 deadline = None
-                if stop.done():
-                    break
         except asyncio.CancelledError:
             # close() gave up on a sink that never returned. Flushing the tail
             # here would call that same sink and block forever, defeating the

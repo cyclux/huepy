@@ -30,11 +30,16 @@ if TYPE_CHECKING:
 
 
 class CollectionClient(Protocol):
-    """Client state needed by the high-level collection façade."""
+    """Client state needed by the high-level collection façade.
+
+    Deliberately the non-constructing accessor rather than `state`: reading
+    `hue.state` builds a graph on first access, and a stateless client should
+    not import the state layer just to be told it is not tracking.
+    """
 
     @property
-    def state(self) -> HueState:
-        """Return the local resource graph, observing or not."""
+    def _tracking_state(self) -> HueState | None:
+        """Return the local resource graph only while it is observing."""
         ...
 
 
@@ -62,8 +67,12 @@ class NamedCollection[ModelT: NamedResource]:
                 command to the wrong light.
 
         """
-        state = self._hue.state
-        if state.tracking:
+        # Both sides of this seam are first-party: `CollectionClient` declares
+        # the member and `Hue` implements it. Naming it publicly would put an
+        # Optional state accessor back on the client, which is the shape this
+        # release removed.
+        state = self._hue._tracking_state  # noqa: SLF001 # pyright: ignore[reportPrivateUsage]
+        if state is not None:
             state.ensure_resolver_healthy()
             return state.list(self._model)
         return await self._handler.list()

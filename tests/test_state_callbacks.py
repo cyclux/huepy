@@ -285,3 +285,72 @@ class TestTerminalFailure:
 
         assert state.tracking is False
         assert state._dispatch_task is None
+
+
+class TestDeletes:
+    async def test_a_name_filter_still_matches_a_delete(
+        self, hue: Hue, state_http: StateHttp
+    ) -> None:
+        """The resource is folded out before dispatch, so the live lookup misses.
+
+        Watching a light by name and never being told it was removed is the
+        worst possible failure for a name filter.
+        """
+        seen: list[Change] = []
+        async with hue.state:
+            hue.state.on_change(seen.append, name="Desk")
+            await state_http.connections[0].put(
+                event_frame("delete", {"id": "light-1", "type": "light"})
+            )
+            await settle()
+
+        assert len(seen) == 1
+        assert seen[0].kind is ChangeKind.DELETE
+
+    async def test_describe_keeps_the_name_of_a_deleted_resource(
+        self, hue: Hue, state_http: StateHttp
+    ) -> None:
+        """Otherwise every delete row lands in history as name='Unknown'."""
+        async with hue.state as state:
+            stream = state.watch()
+            await state_http.connections[0].put(
+                event_frame("delete", {"id": "light-1", "type": "light"})
+            )
+            change = await asyncio.wait_for(anext(stream), 1)
+
+            assert state.describe(change).name == "Desk"
+            await stream.aclose()
+
+
+class TestDispatchLifetime:
+    async def test_cancelling_the_last_handler_stops_the_shared_reader(
+        self, hue: Hue, state_http: StateHttp
+    ) -> None:
+        """Left running it deep-copies every change into a queue nobody reads."""
+        async with hue.state as state:
+            before = len(state._subscribers)
+            subscription = state.on_change(lambda _c: None)
+            await settle()
+            assert len(state._subscribers) == before + 1
+
+            subscription.cancel()
+            await settle()
+
+            assert state._dispatch_task is None
+            assert len(state._subscribers) == before
+
+    async def test_a_remaining_handler_keeps_the_reader_alive(
+        self, hue: Hue, state_http: StateHttp
+    ) -> None:
+        seen: list[Change] = []
+        async with hue.state as state:
+            first = state.on_change(lambda _c: None)
+            state.on_change(seen.append)
+            first.cancel()
+            await settle()
+
+            assert state._dispatch_task is not None
+            await state_http.connections[0].put(update_frame(70))
+            await settle()
+
+        assert len(seen) == 1
