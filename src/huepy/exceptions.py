@@ -4,6 +4,31 @@ Every error raised by this package derives from :class:`HueError`, so callers
 can catch that one type and still narrow further when they care.
 """
 
+ADVISORY_ERROR_CODES = frozenset(
+    {"communication_error", "attribute_may_have_no_effect"}
+)
+"""Error codes that report a caveat on an accepted command, not a rejection.
+
+Lives here rather than beside the envelope parsing because two layers classify
+the same payload: the caller-facing :func:`~huepy.models.common.unwrap` and the
+transport's write observer, which is what tells the state layer whether to
+attribute a change to this client. They were separate literals once, and the
+halves drifted -- a write to a switched-off light was reported to the caller as
+accepted while the state layer recorded it as rejected, dropping the fade and
+the ``command_echo`` that went with it.
+
+Both were observed on a real bridge answering a write it *accepted*, with the
+resource still listed in ``data``:
+
+* ``communication_error`` -- "has communication issues, command (.on.on) may
+  not have effect".
+* ``attribute_may_have_no_effect`` -- 'is "soft off", command
+  (.dimming.brightness) may not have effect'.
+
+The second is what a light that is switched off returns for a brightness
+write, which is exactly what capture/restore sends for every off light.
+"""
+
 
 class HueError(Exception):
     """Base exception for all Hue errors."""

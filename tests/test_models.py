@@ -1083,6 +1083,29 @@ class TestPartialFailureFromRealHardware:
         with pytest.raises(HueResponseError, match="not supported"):
             unwrap(self.UNSUPPORTED, models.ResourceIdentifier)
 
+    def test_a_blocking_error_beside_an_advisory_one_still_raises(self):
+        """Widening the advisory set must not let a real rejection through.
+
+        The bridge can report both at once -- a light that is off *and* asked
+        for an attribute it does not have. Classification is per error, so the
+        blocking one must still win.
+        """
+        mixed = {
+            "data": [{"rid": "7d235587", "rtype": "light"}],
+            "errors": [
+                {
+                    "description": 'device is "soft off"',
+                    "error_code": "attribute_may_have_no_effect",
+                },
+                {
+                    "description": "attribute is not supported by resource",
+                    "error_code": "client_error",
+                },
+            ],
+        }
+        with pytest.raises(HueResponseError, match="not supported"):
+            unwrap(mixed, models.ResourceIdentifier)
+
     def test_advisory_error_that_changed_nothing_still_raises(self):
         payload = {"data": [], "errors": self.COMMUNICATION["errors"]}
         with pytest.raises(HueResponseError):

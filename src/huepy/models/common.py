@@ -28,7 +28,11 @@ from typing import TYPE_CHECKING, Any, ClassVar, Self
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
-from huepy.exceptions import DetachedResourceError, HueResponseError
+from huepy.exceptions import (
+    ADVISORY_ERROR_CODES,
+    DetachedResourceError,
+    HueResponseError,
+)
 
 if TYPE_CHECKING:
     from huepy.client.protocol import HueClient
@@ -38,24 +42,6 @@ RESOURCE_ROOT = "/clip/v2/resource"
 
 
 logger = logging.getLogger(__name__)
-
-ADVISORY_ERROR_CODES = frozenset(
-    {"communication_error", "attribute_may_have_no_effect"}
-)
-"""Error codes that report a caveat on an accepted command, not a rejection.
-
-Both were observed on a real bridge answering a write it *accepted* -- the
-resource is still listed in ``data``:
-
-* ``communication_error`` -- "has communication issues, command (.on.on) may
-  not have effect".
-* ``attribute_may_have_no_effect`` -- 'is "soft off", command
-  (.dimming.brightness) may not have effect'.
-
-The second is what a light that is switched off returns for a brightness
-write, which is exactly what capture/restore does for every off light. Raising
-there made restoring a room fail whenever one of its lights was off.
-"""
 
 
 class HueModel(BaseModel):
@@ -96,15 +82,19 @@ class HueResponse[ModelT: HueModel](HueModel):
         The bridge uses ``errors[]`` for two different things, and only
         ``error_code`` tells them apart:
 
-        * ``communication_error`` -- the command was accepted but a device's
-          radio is flaky, so it "may not have effect". Raising here would
-          discard a command the bridge took, and one unreliable bulb would
-          break every call that touches it. Logged, not raised.
+        * anything in :data:`~huepy.exceptions.ADVISORY_ERROR_CODES` -- the
+          command was accepted, but a caveat applies: a flaky radio, or an
+          attribute that will not land because the light is off. Raising here
+          would discard a command the bridge took, and one unreachable bulb
+          would break every call that touches it. Logged, not raised.
         * anything else -- the request itself was wrong, e.g. setting colour
           temperature on a light that has none. The bridge still lists the
           resource in ``data``, so these must raise on their own account or
           they vanish silently. That silent-success bug is why this method
           exists.
+
+        Classification is per error, so a blocking code alongside an advisory
+        one still raises.
 
         An advisory error that changed nothing at all still raises: nothing
         was accepted, so there is no success to preserve.

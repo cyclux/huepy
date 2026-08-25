@@ -959,6 +959,15 @@ class TestWriteMatchTolerance:
         target = {"dimming": {"brightness": 20.0}}
         assert not _compatible(target, {"dimming": {"brightness": 24.0}})
 
+    def test_mirek_keeps_the_tight_default_tolerance(self):
+        """It is an int end to end, so it echoes exactly.
+
+        Widening it would mask a clamp to a light's own mirek_schema.
+        """
+        target = {"color_temperature": {"mirek": 400}}
+        assert _compatible(target, {"color_temperature": {"mirek": 400}})
+        assert not _compatible(target, {"color_temperature": {"mirek": 401}})
+
     def test_colour_keeps_the_tight_default_tolerance(self):
         """`xy` spans 0..1, so the brightness allowance must not reach it."""
         target = {"color": {"xy": {"x": 0.5, "y": 0.4}}}

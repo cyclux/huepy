@@ -1048,7 +1048,12 @@ The bridge overloads `errors[]` for two different things, and only the
 | `error_code` | Meaning | huepy |
 | --- | --- | --- |
 | `communication_error` | The command was accepted, but a device's radio is flaky, so it "may not have effect" | Logged as a warning; the call returns normally |
+| `attribute_may_have_no_effect` | The command was accepted, but the light is "soft off", so one attribute may not land | Logged as a warning; the call returns normally |
 | anything else | The request itself was wrong, e.g. setting colour temperature on a light that has none | Raises `HueResponseError` |
+
+The first two are advisory; every other code is blocking. Classification is per
+error, so a blocking code alongside an advisory one still raises, and an
+advisory error on a response that changed nothing raises too.
 
 On the measured bridge these partial outcomes arrived as HTTP **207
 Multi-Status**, often with a resource still listed in `data`; neither the HTTP

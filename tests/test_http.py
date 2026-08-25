@@ -15,6 +15,7 @@ from huepy.client.http import (
     HueHttpClient,
     PendingWrite,
     SSEFrame,
+    _write_status,
     backoff_delay,
 )
 from huepy.config import HueConfig
@@ -488,3 +489,71 @@ class TestConnectionFailures:
         )
         with pytest.raises(BridgeConnectionError, match=r"10\.0\.0\.1"):
             await client.get(PATH)
+
+
+class TestWriteStatusClassification:
+    """The transport half of advisory-error classification.
+
+    `_write_status` is what tells the state layer whether to attribute a change
+    to this client. It classifies the same envelope as the caller-facing
+    `unwrap`, and the two must agree: they were separate literals once, and a
+    write to a switched-off light was reported to the caller as accepted while
+    this half called it rejected -- so the command was dropped, its fade
+    deleted, and the change republished as somebody else's.
+    """
+
+    RESOURCE: ClassVar[list[dict[str, str]]] = [{"rid": "abc", "rtype": "light"}]
+
+    def envelope(self, *codes: str, data: bool = True) -> dict[str, Any]:
+        """Build a 2xx body carrying the given error codes."""
+        return {
+            "data": self.RESOURCE if data else [],
+            "errors": [{"description": code, "error_code": code} for code in codes],
+        }
+
+    def test_no_errors_is_accepted(self):
+        assert _write_status(self.envelope()) == "accepted"
+
+    @pytest.mark.parametrize(
+        "code",
+        ["communication_error", "attribute_may_have_no_effect"],
+    )
+    def test_an_advisory_code_with_data_is_accepted(self, code: str):
+        assert _write_status(self.envelope(code)) == "accepted"
+
+    def test_both_advisory_codes_together_are_accepted(self):
+        envelope = self.envelope("communication_error", "attribute_may_have_no_effect")
+        assert _write_status(envelope) == "accepted"
+
+    def test_a_blocking_code_beside_an_advisory_one_is_rejected(self):
+        """Widening the advisory set must not swallow a real rejection."""
+        envelope = self.envelope("attribute_may_have_no_effect", "client_error")
+        assert _write_status(envelope) == "rejected"
+
+    def test_an_advisory_code_that_changed_nothing_is_rejected(self):
+        envelope = self.envelope("attribute_may_have_no_effect", data=False)
+        assert _write_status(envelope) == "rejected"
+
+    def test_it_agrees_with_the_caller_facing_envelope_parsing(self):
+        """The property whose absence let the two halves drift apart."""
+        for codes in (
+            (),
+            ("communication_error",),
+            ("attribute_may_have_no_effect",),
+            ("communication_error", "attribute_may_have_no_effect"),
+            ("client_error",),
+            ("attribute_may_have_no_effect", "client_error"),
+        ):
+            for data in (True, False):
+                envelope = self.envelope(*codes, data=data)
+                try:
+                    unwrap(envelope, models.ResourceIdentifier)
+                except HueResponseError:
+                    caller_accepted = False
+                else:
+                    caller_accepted = True
+                transport_accepted = _write_status(envelope) == "accepted"
+                assert caller_accepted is transport_accepted, (
+                    f"disagreement on {codes} data={data}: "
+                    f"caller={caller_accepted} transport={transport_accepted}"
+                )
