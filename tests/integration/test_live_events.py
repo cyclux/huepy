@@ -82,7 +82,14 @@ class TestEventStream:
         assert matching[0].dimming.brightness == pytest.approx(target, abs=2.0)
 
     async def test_events_carry_resolvable_names(self, hue: Hue, a_light: models.Light):
-        """Regression: service ids in events used to resolve to "Unknown"."""
+        """Regression: service ids in events used to resolve to "Unknown".
+
+        The name map is populated explicitly or by tracking; a stateless client
+        that has done neither answers "Unknown" for everything, which would
+        make this assert its own setup rather than the resolution it is here
+        to check.
+        """
+        _ = await hue.refresh_names()
         # A no-op change pushes no event, so move brightness somewhere it
         # certainly is not already.
         target = 20.0 if (a_light.brightness or 0.0) > 50.0 else 80.0
