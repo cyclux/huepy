@@ -41,6 +41,10 @@ DEFAULT_QUEUE_SIZE = 4096
 DRAIN_TIMEOUT = 30.0
 # How long close() waits for a sink to release its worker thread.
 SINK_CLOSE_TIMEOUT = 10.0
+# How long the pump keeps taking the backlog after close() before giving up.
+# Bounded, because a producer faster than the pump would otherwise keep it
+# looping until DRAIN_TIMEOUT cancelled it and the tail was lost unmarked.
+STOP_DRAIN_GRACE = 5.0
 
 UNKNOWN_NAME = "Unknown"
 
@@ -109,6 +113,32 @@ class _Tracked:
         )
 
 
+def _grace(stopping: bool, current: float | None, now: float) -> float | None:
+    """Start the shutdown grace clock on the first turn spent stopping."""
+    if not stopping or current is not None:
+        return current
+    return now + STOP_DRAIN_GRACE
+
+
+def _expired(deadline: float | None, now: float) -> bool:
+    """Whether a deadline is set and has passed."""
+    return deadline is not None and now >= deadline
+
+
+def _abandoned() -> Resync:
+    """Mark history the pump could not take before shutdown gave up."""
+    now = datetime.now(UTC)
+    return Resync(
+        reason=ResyncReason.INCONSISTENT,
+        gap_started=now,
+        gap_ended=now,
+        # The count is genuinely unknown: the items were never pulled from the
+        # subscriber. The marker's presence is the honest part.
+        dropped=0,
+        detail={"source": "shutdown", "note": "drain grace expired"},
+    )
+
+
 def _error_time(tracked: _Tracked) -> datetime:
     """Sort key for the most recent sink failure."""
     at = tracked.last_error_at
@@ -129,9 +159,9 @@ def _wait_timeout(
     """How long to wait for the next item.
 
     Zero while stopping, so the pump takes the backlog the state broadcast on
-    its way out without waiting on a stream that may still be live. Otherwise
-    the time left before the partial batch ages out, or forever when there is
-    no partial batch to age.
+    its way out rather than waiting on a stream that may still be live. The
+    caller bounds how long that phase may last. Otherwise the time left before
+    the partial batch ages out, or forever when there is no batch to age.
     """
     if stopping:
         return 0.0
@@ -249,8 +279,12 @@ class Recorder:
                         tracked.sink.close(), timeout=SINK_CLOSE_TIMEOUT
                     )
                 except TimeoutError:
+                    # Only the await is bounded. The sink's worker thread keeps
+                    # running and is non-daemon, so it can still delay
+                    # interpreter exit; what this buys is releasing the HTTP
+                    # session now instead of whenever the disk responds.
                     logger.error(  # noqa: TRY400 - the timeout is the whole story
-                        "Sink %r did not close within %ss; abandoning its worker",
+                        "Sink %r did not close within %ss; leaving its worker running",
                         tracked.sink,
                         SINK_CLOSE_TIMEOUT,
                     )
@@ -295,6 +329,7 @@ class Recorder:
         loop = asyncio.get_running_loop()
         buffer: list[HistoryEntry] = []
         deadline: float | None = None
+        stop_deadline: float | None = None
         # The pull lives in its own task so a flush timeout never cancels it
         # mid-await: cancelling inside `changes()` would unwind its `finally`,
         # deregister the subscriber and lose an item.
@@ -310,6 +345,7 @@ class Recorder:
                 # A zero timeout drains that backlog without waiting on a
                 # stream that may still be live under a standalone close().
                 stopping = stop.done()
+                stop_deadline = _grace(stopping, stop_deadline, loop.time())
                 timeout = _wait_timeout(
                     stopping=stopping, deadline=deadline, now=loop.time()
                 )
@@ -326,9 +362,18 @@ class Recorder:
                     pending = asyncio.ensure_future(_next_item(stream))
                     if deadline is None:
                         deadline = loop.time() + self._flush_interval
-                    if len(buffer) < self._batch_size:
+                    if len(buffer) < self._batch_size and not _expired(
+                        stop_deadline, loop.time()
+                    ):
                         continue
                 elif stopping:
+                    break
+                if _expired(stop_deadline, loop.time()):
+                    # The producer is outrunning the drain. Give up, but say so
+                    # -- an archive that stops mid-stream while claiming to be
+                    # complete is the failure this layer exists to prevent.
+                    await self._flush([*buffer, ResyncEntry(resync=_abandoned())])
+                    buffer.clear()
                     break
                 await self._flush(buffer)
                 buffer.clear()
