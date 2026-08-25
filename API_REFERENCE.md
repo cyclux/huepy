@@ -102,13 +102,16 @@ distribution metadata, or `"unknown"` when running from a source tree.
 
 The top-level plural collections are the canonical human-facing API. They use
 one vocabulary: `list()` returns every current resource, `get(name)` returns
-one uniquely named bound resource, and `names()` returns display names.
+one uniquely named bound resource, `names()` returns display names,
+`rename(name, new_name)` renames one, and `delete(name)` removes one.
 
-| Call | Returns | Stateless cost |
-| --- | --- | --- |
-| `await hue.lights.list()` | `list[models.Light]` | one GET |
-| `await hue.lights.get("Desk lamp")` | `models.Light` | one collection GET |
-| `await hue.rooms.names()` | `list[str]` | one GET |
+| Call | Returns | Stateless cost | Connected live cost |
+| --- | --- | --- | --- |
+| `await hue.lights.list()` | `list[models.Light]` | one GET | local |
+| `await hue.lights.get("Desk lamp")` | `models.Light` | one collection GET | local |
+| `await hue.rooms.names()` | `list[str]` | one GET | local |
+| `await hue.rooms.rename("Kitchen", "Galley")` | `CommandResult` | collection GET + PUT | PUT |
+| `await hue.rooms.delete("Kitchen")` | `CommandResult` | collection GET + DELETE | DELETE |
 
 ```python
 lights = await hue.lights.list()
@@ -145,10 +148,16 @@ except AmbiguousResourceError as exc:
 
 Stateless collections fetch and match a collection for each lookup because CLIP
 has no server-side name filter. Use `list()` for many local matches. With
-`Hue(live=True)`, startup takes one aggregate snapshot and keeps the high-level
-collections indexed from the event stream; subsequent collection reads use the
-local graph. `get`, `list`, and `names` retain the same async API in either
-mode.
+`Hue(live=True)`, startup requires an application key, takes one aggregate
+snapshot, and keeps a local graph current from the event stream. Subsequent
+collection reads use that graph. During a disconnect or reconciliation they
+raise `BridgeConnectionError` rather than resolving a command against stale
+names. Explicit `HueState` views remain last-reported state and can still be
+read while disconnected.
+
+Resource creation stays under `hue.api`: room, zone, scene, and service-group
+creation inherently requires ids or typed CLIP reference shapes, so exposing
+it on the name-oriented layer would mix abstraction levels.
 
 ## Bound and detached models
 

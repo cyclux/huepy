@@ -337,6 +337,34 @@ class TestStartWithoutAKey:
             assert requested == [], "a keyless bridge must not be queried"
             assert await client.authenticate() == "issued-key"
 
+    async def test_live_start_without_a_key_fails_and_closes_transport(
+        self, tmp_path, monkeypatch
+    ):
+        closed = False
+
+        class SilentHttp:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_exc: object) -> None:
+                nonlocal closed
+                closed = True
+
+        monkeypatch.setattr(
+            "huepy.client.base.HueHttpClient", lambda _config: SilentHttp()
+        )
+        client = Hue(
+            bridge_ip="10.0.0.1",
+            config_path=tmp_path / "c.json",
+            live=True,
+        )
+
+        with pytest.raises(AuthenticationError, match="No Hue application key"):
+            await client.start()
+
+        assert closed is True
+        assert client._http is None
+
     async def test_stateless_start_skips_lookup_even_with_a_key(
         self, tmp_path, monkeypatch
     ):

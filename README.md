@@ -91,8 +91,8 @@ one GET to resolve `"Kitchen"`; the room then carries the reference to its own
 
 The top-level collections are the human-facing API: `lights`, `rooms`,
 `zones`, `scenes`, `devices`, and `service_groups`. Every collection uses the
-same `get(name)`, `list()`, and `names()` vocabulary. Matching ignores case
-and surrounding whitespace.
+same `get(name)`, `list()`, `names()`, `rename(name, new_name)`, and
+`delete(name)` vocabulary. Matching ignores case and surrounding whitespace.
 
 ```python
 kitchen = await hue.rooms.get("Kitchen")
@@ -114,8 +114,14 @@ except ResourceNotFoundError as exc:
 In the default stateless mode, each lookup is one round trip: the bridge offers
 no server-side name filter, so huepy fetches and matches the collection locally.
 For several names, call `list()` once and match locally. With `Hue(live=True)`,
-the initial aggregate snapshot and event stream maintain the collection index,
-so later high-level lookups use that local state.
+an application key is required; the initial aggregate snapshot and event stream
+maintain a local resource graph, so later high-level lookups use local state.
+While the event stream is reconnecting, high-level lookups raise
+`BridgeConnectionError` instead of resolving commands against stale names.
+
+Creation remains explicitly low-level (`hue.api.rooms.create(...)`, and so on)
+because it requires bridge ids or CLIP reference shapes rather than display
+names.
 
 ### Commands on what you fetched
 

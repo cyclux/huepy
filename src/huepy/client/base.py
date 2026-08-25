@@ -129,7 +129,7 @@ class Hue:
     def names(self) -> dict[str, str]:
         """The id-to-display-name lookup populated explicitly or by live mode."""
         if self._live_state is not None:
-            self._live_state.ensure_healthy()
+            self._live_state.ensure_resolver_healthy()
             return build_name_map(self._live_state.list(NamedResource))
         return self._names
 
@@ -153,8 +153,9 @@ class Hue:
         logger.info(
             "huepy v%s connected to %s", package_version(), self.config.bridge_ip
         )
-        if self._live_requested and self.config.app_key:
+        if self._live_requested:
             try:
+                self.ensure_authenticated()
                 state = self.state()
                 self._live_state = await state.__aenter__()
             except BaseException:
@@ -222,7 +223,7 @@ class Hue:
 
         """
         if self._live_state is not None:
-            self._live_state.ensure_healthy()
+            self._live_state.ensure_resolver_healthy()
             return self._live_state.name_of(resource_id)
         return self._names.get(resource_id, UNKNOWN_NAME)
 

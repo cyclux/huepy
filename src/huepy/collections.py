@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Protocol
 from huepy.color import Gamut
 from huepy.exceptions import AmbiguousResourceError, ResourceNotFoundError
 from huepy.models import Device, Light, Room, Scene, ServiceGroup, Zone
-from huepy.models.common import CommandResult, NamedResource, ResourceIdentifier
+from huepy.models.common import CommandResult, NamedResource
 from huepy.models.light import Effect
 from huepy.resources.base import NamedResourceHandler
 from huepy.resources.device import Device as DeviceHandler
@@ -56,7 +56,7 @@ class NamedCollection[ModelT: NamedResource]:
         """Return current resources, from the bridge or the live local graph."""
         live = self._hue.live_state
         if live is not None:
-            live.ensure_healthy()
+            live.ensure_resolver_healthy()
             return live.list(self._model)
         return await self._handler.list()
 
@@ -92,13 +92,6 @@ class NamedCollection[ModelT: NamedResource]:
     async def rename(self, name: str, new_name: str) -> CommandResult:
         """Rename the uniquely named resource."""
         return await (await self.get(name)).update({"metadata": {"name": new_name}})
-
-    async def _created(self, references: list[ResourceIdentifier]) -> ModelT:
-        """Fetch and return the resource named by a successful create response."""
-        if not references:
-            msg = "Bridge accepted create but returned no resource reference"
-            raise RuntimeError(msg)
-        return await self._handler.get(references[0].rid)
 
 
 class LightCollection(NamedCollection[Light]):
@@ -331,11 +324,6 @@ class RoomCollection(GroupCollection[Room]):
     def __init__(self, hue: CollectionClient, handler: RoomHandler) -> None:
         """Create a high-level room collection."""
         super().__init__(hue, handler, Room)
-        self._room_handler: RoomHandler = handler
-
-    async def create(self, name: str, devices: list[str]) -> Room:
-        """Create a room and return its bound representation."""
-        return await self._created(await self._room_handler.create(name, devices))
 
 
 class ZoneCollection(GroupCollection[Zone]):
@@ -344,11 +332,6 @@ class ZoneCollection(GroupCollection[Zone]):
     def __init__(self, hue: CollectionClient, handler: ZoneHandler) -> None:
         """Create a high-level zone collection."""
         super().__init__(hue, handler, Zone)
-        self._zone_handler: ZoneHandler = handler
-
-    async def create(self, name: str, services: list[dict[str, str]]) -> Zone:
-        """Create a zone and return its bound representation."""
-        return await self._created(await self._zone_handler.create(name, services))
 
 
 class SceneCollection(NamedCollection[Scene]):
@@ -357,11 +340,6 @@ class SceneCollection(NamedCollection[Scene]):
     def __init__(self, hue: CollectionClient, handler: SceneHandler) -> None:
         """Create a high-level scene collection."""
         super().__init__(hue, handler, Scene)
-        self._scene_handler: SceneHandler = handler
-
-    async def create(self, name: str, room_id: str) -> Scene:
-        """Create a scene and return its bound representation."""
-        return await self._created(await self._scene_handler.create(name, room_id))
 
     async def activate(self, name: str) -> CommandResult:
         """Activate the uniquely named scene."""
@@ -382,17 +360,3 @@ class ServiceGroupCollection(NamedCollection[ServiceGroup]):
     def __init__(self, hue: CollectionClient, handler: ServiceGroupHandler) -> None:
         """Create a high-level service-group collection."""
         super().__init__(hue, handler, ServiceGroup)
-        self._service_group_handler: ServiceGroupHandler = handler
-
-    async def create(
-        self,
-        name: str,
-        services: list[dict[str, str]],
-        archetype: str = "sensor_group",
-    ) -> ServiceGroup:
-        """Create a service group and return its bound representation."""
-        return await self._created(
-            await self._service_group_handler.create(
-                name, services, archetype=archetype
-            )
-        )

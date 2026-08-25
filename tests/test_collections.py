@@ -9,6 +9,7 @@ import pytest
 
 from huepy import (
     AmbiguousResourceError,
+    BridgeConnectionError,
     CommandResult,
     Hue,
     ResourceNotFoundError,
@@ -104,28 +105,12 @@ class TestOneShotCommands:
 
 
 class TestCollectionCrud:
-    async def test_create_returns_the_created_bound_resource(self, hue, http):
-        http.write_result = {
-            "errors": [],
-            "data": [{"rid": "room-new", "rtype": "room"}],
-        }
-        http.queue_resource("room", "room-new", room("room-new", "Kitchen"))
-
-        created = await hue.rooms.create("Kitchen", ["device-1"])
-
-        assert isinstance(created, models.Room)
-        assert created.is_bound
-        assert http.calls == [
-            (
-                "POST",
-                ROOM,
-                {
-                    "metadata": {"name": "Kitchen"},
-                    "children": [{"rid": "device-1", "rtype": "device"}],
-                },
-            ),
-            ("GET", f"{ROOM}/room-new", None),
-        ]
+    @pytest.mark.parametrize(
+        "attribute", ["rooms", "zones", "scenes", "service_groups"]
+    )
+    def test_wire_shaped_creation_stays_on_the_low_level_api(self, hue, attribute):
+        assert not hasattr(getattr(hue, attribute), "create")
+        assert hasattr(getattr(hue.api, attribute), "create")
 
     async def test_rename_and_delete_use_unique_name_resolution(self, hue, http):
         http.queue_collection("room", [room("room-1", "Kitchen")])
@@ -146,7 +131,7 @@ class TestLiveResolver:
         local = models.Room.model_validate(room("room-1", "Kitchen")).bind(hue, "room")
 
         class Live:
-            def ensure_healthy(self):
+            def ensure_resolver_healthy(self):
                 return None
 
             def list(self, model: type[models.HueResource]):
@@ -170,9 +155,21 @@ class TestLiveResolver:
         with pytest.raises(RuntimeError, match="observer stopped"):
             await hue.rooms.get("Kitchen")
 
+    async def test_transient_disconnect_prevents_stale_name_mutation(self, hue, http):
+        state = hue.state()
+        state._raw = {"room-1": room("room-1", "Kitchen")}
+        state._connected = False
+        hue._live_state = state
+
+        with pytest.raises(BridgeConnectionError, match="reconnecting"):
+            await hue.rooms.delete("Kitchen")
+
+        assert http.writes == []
+
     def test_get_name_tracks_live_renames(self, hue):
         state = hue.state()
         state._raw = {"room-1": room("room-1", "Kitchen")}
+        state._connected = True
         hue._live_state = state
         assert hue.get_name("room-1") == "Kitchen"
 

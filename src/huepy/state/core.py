@@ -249,6 +249,13 @@ class HueState:
         if self._terminal_error is not None:
             raise self._terminal_error
 
+    def ensure_resolver_healthy(self) -> None:
+        """Require a continuous live index before resolving a command target."""
+        self.ensure_healthy()
+        if not self._connected:
+            msg = "Live resource index is reconnecting; name resolution is unavailable"
+            raise BridgeConnectionError(msg)
+
     @property
     def fading(self) -> Mapping[str, ActiveFade]:
         """Current locally issued fades, keyed by affected resource id."""
