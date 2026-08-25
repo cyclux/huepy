@@ -100,7 +100,7 @@ class TestRoomsRouteThroughGroupedLight:
         member_ids = {child.rid for child in a_room.children}
         lights = [
             light
-            for light in await hue.lights.all()
+            for light in await hue.api.lights.list()
             if light.device_id in member_ids and light.brightness is not None
         ]
         if not lights:

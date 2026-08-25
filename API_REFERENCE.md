@@ -3,17 +3,17 @@
 Async wrapper for the Philips Hue v2 CLIP API. Bridge I/O is asynchronous and
 resource responses are validated pydantic models.
 
-Anything the client hands you is **bound**: it carries the client that fetched
-it and can act on itself, so most code never handles a bridge id.
+Anything fetched through a high-level collection is **bound**: it carries the
+client that fetched it and can act on itself, so most code never handles a
+bridge id.
 
 ```python
-kitchen = await hue.rooms["Kitchen"]
-await kitchen.set(brightness=30, kelvin=2200, transition=2.0)
+await hue.rooms.set("Kitchen", brightness=30, kelvin=2200, transition=2.0)
 ```
 
-That is one request. The id-based handler API underneath is unchanged and is
-documented in [Resource handlers](#resource-handlers); reach for it when you
-already hold an id, or need a resource type the models do not cover.
+That resolves the unique room name and sends one PUT. The id-based API is under
+`hue.api` and is documented in [Resource handlers](#resource-handlers); use it
+when you already hold an id or need an unnamed resource type.
 
 - [Client](#client)
 - [Fetching resources](#fetching-resources)
@@ -48,6 +48,7 @@ class Hue:
         config_path: str | Path | None = None,
         *,
         verify_ssl: bool = False,
+        live: bool = False,
     )
 ```
 
@@ -61,12 +62,12 @@ order:
 | Config file path | `config_path=` | `HUE_CONFIG_PATH` | — | `$XDG_CONFIG_HOME/huepy/config.json` |
 | TLS verification | `verify_ssl=` | — | — | `False` — bridges ship a self-signed certificate |
 
-Use the client as an async context manager, which opens the HTTP session and
-loads the id-to-name lookup:
+Use the client as an async context manager. Normal startup opens the HTTP
+session and does no resource GETs:
 
 ```python
 async with Hue(bridge_ip="192.168.1.100") as hue:
-    for light in await hue.lights.get_all():
+    for light in await hue.lights.list():
         print(light.name, light.is_on)
 ```
 
@@ -74,15 +75,15 @@ async with Hue(bridge_ip="192.168.1.100") as hue:
 
 | Method | Description |
 | --- | --- |
-| `async start(*, load_names=True) -> None` | Open the session and load the name lookup. Called by `__aenter__`. Pass `load_names=False` to skip the five requests the lookup costs; it is skipped anyway when no application key is available, which is what keeps `authenticate()` reachable on an unkeyed bridge. |
+| `async start() -> None` | Open the session without eagerly fetching resources. Called by `__aenter__`. |
 | `async close() -> None` | Close every event stream and the session. Safe to call when not started. |
-| `async refresh_names() -> dict[str, str]` | Reload the id-to-name lookup. Devices, lights, rooms, zones and scenes are fetched concurrently — five requests. |
+| `async refresh_names() -> dict[str, str]` | Reload the id-to-name lookup from one aggregate snapshot request. |
 | `get_name(resource_id: str) -> str` | Display name for an id, or `"Unknown"`. Local; no request. |
 | `ensure_authenticated() -> None` | Raise `AuthenticationError` if no key is available. Never prompts. |
 | `async authenticate(app_name="huepy", timeout=60) -> str` | Obtain a key. The bridge link button must be pressed while this runs. |
 | `async get_event_stream() -> AsyncGenerator[models.HueEvent]` | Yield typed events pushed by the bridge. See [Events](#events). |
 | `async snapshot() -> list[models.AnyResource]` | Fetch all aggregate-visible resources in one request. Known types use their concrete model; future types use `models.HueResource`. |
-| `state() -> huepy.state.HueState` | Create a stopped, opt-in last-reported state view. Enter it as an async context manager. |
+| `state() -> huepy.state.HueState` | Create a stopped last-reported state view. Enter it as an async context manager. `Hue(live=True)` starts one automatically for high-level collections. |
 
 #### Attributes
 
@@ -90,77 +91,64 @@ async with Hue(bridge_ip="192.168.1.100") as hue:
 | --- | --- | --- |
 | `config` | `HueConfig` | The resolved settings. |
 | `http` | `Transport` | The open transport. Raises `RuntimeError` before `start()`. |
-| `names` | `dict[str, str]` | The id-to-name lookup, as loaded by `start()`. |
+| `names` | `dict[str, str]` | The local id-to-name map. It is populated by `refresh_names()` or live mode. |
+| `api` | `HueAPI` | Typed, strictly id-addressed CLIP v2 handlers. |
+| `lights`, `rooms`, `zones`, `scenes`, `devices`, `service_groups` | named collections | Human-facing collections addressed by display name. |
 
 The package itself exposes `huepy.__version__`, read from the installed
 distribution metadata, or `"unknown"` when running from a source tree.
 
 ## Fetching resources
 
-Every handler offers `get_all()`, its `all()` alias, and `get(id)`. Handlers
-for named resources additionally offer `by_name()`, `names()`, and an awaited
-subscript lookup.
+The top-level plural collections are the canonical human-facing API. They use
+one vocabulary: `list()` returns every current resource, `get(name)` returns
+one uniquely named bound resource, and `names()` returns display names.
 
-| Call | Returns | Cost |
+| Call | Returns | Stateless cost |
 | --- | --- | --- |
-| `await hue.lights.get_all()` | `list[models.Light]` | one GET |
-| `await hue.lights.all()` | `list[models.Light]` | one GET; the short spelling of `get_all()` |
-| `await hue.lights.get(light_id)` | `models.Light` | one GET |
-| `await hue.rooms.by_name("Kitchen")` | `models.Room` | one GET of the whole collection |
+| `await hue.lights.list()` | `list[models.Light]` | one GET |
+| `await hue.lights.get("Desk lamp")` | `models.Light` | one collection GET |
+| `await hue.rooms.names()` | `list[str]` | one GET |
 
 ```python
-lights = await hue.lights.all()
+lights = await hue.lights.list()
 on_now = [light.name for light in lights if light.is_on]
 ```
 
 ## Lookup by name
 
-The bridge addresses everything by opaque id, but people think in names. Every
-handler whose resources carry a `metadata.name` supports lookup by it.
+The human-facing collections are `hue.lights`, `hue.rooms`, `hue.zones`,
+`hue.scenes`, `hue.devices`, and `hue.service_groups`. Their names are matched
+case-insensitively after surrounding whitespace is removed.
 
 ```python
-kitchen = await hue.rooms["Kitchen"]
-desk = await hue.lights.by_name("desk lamp")
+kitchen = await hue.rooms.get("Kitchen")
+desk = await hue.lights.get("desk lamp")
 available = await hue.rooms.names()
 ```
 
-The subscript is asynchronous: `hue.rooms["Kitchen"]` returns the coroutine
-`by_name` would have, so it must be awaited. Matching ignores case and
-surrounding whitespace. The bridge permits two resources to share a name; the
-first in bridge order wins. A miss raises `ResourceNotFoundError`, which
-carries both the name asked for and the names that exist.
+A miss raises `ResourceNotFoundError`, which carries the requested `name` and
+the available `known` names. A duplicate raises `AmbiguousResourceError`, with
+the requested `name` and every matching `resource_ids`; commands are never
+sent for an ambiguous name.
 
 ```python
+from huepy import AmbiguousResourceError, ResourceNotFoundError
+
 try:
-    kitchen = await hue.rooms["Kitchn"]
+    kitchen = await hue.rooms.get("Kitchn")
 except ResourceNotFoundError as exc:
     print(exc.name, exc.known)
+except AmbiguousResourceError as exc:
+    print(exc.name, exc.resource_ids)
 ```
 
-**Cost.** The v2 API has no server-side name filter, so each of `by_name`,
-`names` and the subscript fetches the whole collection: one round trip per
-call. Resolving several names in a loop issues one request per iteration —
-call `get_all()` once and match locally instead.
-
-These are the handlers that support it, with the plural alias each one also
-answers to:
-
-| Handler | Alias | Model |
-| --- | --- | --- |
-| `hue.light` | `hue.lights` | `models.Light` |
-| `hue.room` | `hue.rooms` | `models.Room` |
-| `hue.zone` | `hue.zones` | `models.Zone` |
-| `hue.scene` | `hue.scenes` | `models.Scene` |
-| `hue.device` | `hue.devices` | `models.Device` |
-| `hue.service_group` | — | `models.ServiceGroup` |
-
-The plural names are **aliases, not copies**: `hue.lights is hue.light` is
-true, and either spelling reaches the same handler object. Both exist because
-each reads better in its own place — the singular is the raw, id-based
-vocabulary (`hue.light.set_brightness(light_id, 40.0)`), the plural reads
-naturally for lookup and iteration (`await hue.rooms["Kitchen"]`). Only the
-name-addressable handlers have an alias: the sensor handlers have no plural
-spelling, because their resources carry no name to look up.
+Stateless collections fetch and match a collection for each lookup because CLIP
+has no server-side name filter. Use `list()` for many local matches. With
+`Hue(live=True)`, startup takes one aggregate snapshot and keeps the high-level
+collections indexed from the event stream; subsequent collection reads use the
+local graph. `get`, `list`, and `names` retain the same async API in either
+mode.
 
 ## Bound and detached models
 
@@ -169,7 +157,7 @@ issue its own requests. A model you construct yourself is detached: it is
 plain data, with no bridge to talk to.
 
 ```python
-light = await hue.lights["Desk lamp"]
+light = await hue.lights.get("Desk lamp")
 print(light.is_bound)  # True
 await light.turn_on()
 
@@ -177,10 +165,11 @@ detached = models.Light(id="abc")
 await detached.turn_on()  # raises DetachedResourceError
 ```
 
-`refresh()` returns a new bound model. Commands return the bridge's
-`ResourceIdentifier` references instead. `bind(hue, rtype="")` exists for the
-rare case of attaching a client to a model you built or cached yourself;
-handlers call it for you.
+`refresh()` returns a new bound model. Bound and high-level write commands
+return `CommandResult`: `sent` is false only for a no-op `set()`, and
+`resources` contains bridge `ResourceIdentifier` references. `bind(hue,
+rtype="")` exists for the rare case of attaching a client to a model you built
+or cached yourself; handlers call it for you.
 
 ## Commands on every resource
 
@@ -190,18 +179,16 @@ these three.
 | Command | Sends | Notes |
 | --- | --- | --- |
 | `await resource.update(data)` | `PUT` to the resource's own path | `data` is in the bridge's payload shape |
-| `await resource.delete()` | `DELETE` | Returns `[]` when the bridge answers with no body |
+| `await resource.delete()` | `DELETE` | Returns a `CommandResult`; an empty body produces no affected references |
 | `await resource.refresh()` | `GET` | Returns a **new** bound instance; the one you called it on is untouched |
 
 ```python
-kitchen = await hue.rooms["Kitchen"]
+kitchen = await hue.rooms.get("Kitchen")
 await kitchen.update({"metadata": {"name": "Kitchen (north)"}})
 kitchen = await kitchen.refresh()
 ```
 
-Writes return `list[models.ResourceIdentifier]` — the bridge's references to
-what changed, not the changed resource. `refresh()` is how you read the new
-state.
+Writes return `CommandResult`; `refresh()` is how you read the new state.
 
 ## Light commands
 
@@ -221,7 +208,7 @@ async set(
     kelvin: int | None = None,
     gamut: color.Gamut | None = None,
     transition: float | None = None,
-) -> list[ResourceIdentifier]
+) -> CommandResult
 ```
 
 | Argument | Type | Meaning |
@@ -239,7 +226,7 @@ async set(
 Everything supplied goes into **one** PUT:
 
 ```python
-light = await hue.lights["Desk lamp"]
+light = await hue.lights.get("Desk lamp")
 await light.set(on=True, brightness=40, kelvin=2700, transition=1.5)
 ```
 
@@ -250,7 +237,8 @@ Rules `set()` enforces before it sends anything:
   raises `ValueError` rather than silently preferring one.
 - A colour and a colour temperature cannot be combined — a light does one or
   the other. That, too, is a `ValueError`.
-- A call that supplies nothing sends no request and returns `[]`.
+- A call that supplies nothing sends no request and returns
+  `CommandResult(sent=False)`.
 
 ```python
 await light.set(rgb=(255, 136, 0), kelvin=2700)  # raises ValueError
@@ -270,6 +258,19 @@ The wrappers, all of which end up in `set()`:
 
 `light` above stands for any of the four: the same call on a `Room` or a
 `Zone` reaches that group's lights instead.
+
+The named collections expose the same commands for one-shot work. They resolve
+the unique name and delegate to the corresponding bound-resource command:
+
+```python
+await hue.lights.turn_on("Desk lamp", transition=1.0)
+await hue.lights.set("Desk lamp", brightness=40, kelvin=2700)
+await hue.rooms.set("Kitchen", on=True, brightness=40)
+await hue.zones.turn_off("Downstairs", transition=3.0)
+```
+
+`lights` also provides `set_effect(name, effect)` and `alert(name)`. `scenes`
+provides `activate(name)`. Every direct command returns `CommandResult`.
 
 ## Transitions
 
@@ -311,7 +312,7 @@ no single triangle and clamps nothing by default. Pass one explicitly if the
 group is uniform:
 
 ```python
-kitchen = await hue.rooms["Kitchen"]
+kitchen = await hue.rooms.get("Kitchen")
 await kitchen.set(rgb=(255, 136, 0), gamut=color.GAMUT_C)
 ```
 
@@ -324,24 +325,24 @@ service that does. A bound room already carries that reference in its
 `services`, so it resolves the service from memory and sends **one** request:
 
 ```python
-kitchen = await hue.rooms["Kitchen"]
+kitchen = await hue.rooms.get("Kitchen")
 await kitchen.set(brightness=40, kelvin=2200, transition=2.0)
 ```
 
 | Task | Bound room | Id-based handler |
 | --- | --- | --- |
-| Dim a room | 1 PUT | 1 GET + 1 PUT |
-| Dim and warm a room | 1 PUT | 2 GETs + 2 PUTs |
+| Dim a room | 1 PUT | 1 PUT when the service id is known |
+| Dim and warm a room | 1 PUT | 2 PUTs when the service id is known |
 | Look the room up first | 1 GET, then as above | — |
 
-The id-based `hue.room.set_brightness(room_id, 40.0)` re-fetches the room on
-every call to find that service, and cannot compose two changes into one
-payload — which is why the bound form is worth reaching for.
+The id-based layer does not hide a room GET inside a command. Resolve the
+service explicitly and address `hue.api.grouped_lights`, or use a bound room
+when the human-facing group is the natural selector.
 
 Zones behave identically, and carry the same commands:
 
 ```python
-downstairs = await hue.zones["Downstairs"]
+downstairs = await hue.zones.get("Downstairs")
 await downstairs.turn_off(transition=3)
 ```
 
@@ -376,7 +377,7 @@ run an effect across a room, iterate its lights.
 | `await light.alert()` | `{"alert": {"action": "breathe"}}` | One pulse to identify a light; it restores itself. |
 
 ```python
-strip = await hue.lights["Hallway strip"]
+strip = await hue.lights.get("Hallway strip")
 await strip.set_effect(models.Effect.CANDLE)
 await strip.set_gradient([(0.6, 0.35), (0.2, 0.15)], mode="interpolated_palette")
 await strip.set_powerup("last_on_state")
@@ -403,7 +404,7 @@ all `None` on a plain white bulb:
 ## Scenes
 
 ```python
-scene = await hue.scenes["Movie night"]
+scene = await hue.scenes.get("Movie night")
 await scene.activate()
 ```
 
@@ -593,14 +594,14 @@ the next event or reconnect reconciliation repairs it.
 from huepy import models
 
 async with hue.state() as state:
-    desk = state.lights["Desk lamp"]
+    desk = state.lights.get("Desk lamp")
     print(state.connected, desk.kelvin)
-    all_lights = state.all(models.Light)
+    all_lights = state.list(models.Light)
 ```
 
 `state.lights`, `rooms`, `zones`, `scenes` and `devices` are synchronous local
-views with `get`, `all`, `by_name`, `names` and `[...]`. `state.resources`,
-`get(id)`, `all(Model)`, `lights_in(group)`, `room_of(id)`, `zones_of(id)`,
+views with `get(name)`, `by_id(id)`, `list()` and `names()`. `state.resources`,
+`by_id(id)`, `list(Model)`, `lights_in(group)`, `room_of(id)`, `zones_of(id)`,
 `device_of(id)` and `name_of(id)` provide generic and topology lookup. Every
 read returns a fresh bound model; changing it cannot alter the stored graph.
 
@@ -627,8 +628,8 @@ folding, and write-correlation rationale and the bridge observations behind it.
 | `state.connected` | `bool` | Whether the event stream is active and startup or reconnect reconciliation is complete. |
 | `state.resources` | `list[AnyResource]` | Fresh bound copies of every aggregate-visible resource. |
 | `state.fading` | `Mapping[str, ActiveFade]` | Fresh, read-only records for locally issued fades still inside their reporting window. |
-| `state.get(resource_id)` | `AnyResource \| None` | Local id lookup. |
-| `state.all(Model)` | `list[Model]` | Local lookup by concrete model class. |
+| `state.by_id(resource_id)` | `AnyResource \| None` | Local id lookup. |
+| `state.list(Model)` | `list[Model]` | Local lookup by concrete model class. |
 | `state.name_of(resource_id)` | `str` | Resource or owner name, or `"Unknown"`. |
 | `state.device_of(resource_id)` | `Device \| None` | Owning physical device. |
 | `state.room_of(resource_id)` | `Room \| None` | Containing room. |
@@ -638,9 +639,9 @@ folding, and write-correlation rationale and the bridge observations behind it.
 | `state.close()` | `Coroutine[Any, Any, None]` | Stop observation and close every subscriber when awaited. Called by context exit. |
 
 Each `StateView` (`lights`, `rooms`, `zones`, `scenes`, and `devices`) has
-`get(id)`, `all()`, `by_name(name)`, `names()`, and `[...]`. These operations
-are synchronous and issue no bridge request. A missing `by_name` or subscript
-lookup raises `ResourceNotFoundError`.
+`get(name)`, `by_id(id)`, `list()`, and `names()`. These operations are
+synchronous and issue no bridge request. Missing and duplicate names raise the
+same errors as the asynchronous high-level collections.
 
 ### State records
 
@@ -694,42 +695,37 @@ warm = color.kelvin_to_mirek(2700)
 
 ## Resource handlers
 
-The lower-level surface: every method takes an id, and results are still bound
-models. Reach for it when you already hold an id, when a resource type has no
-model commands, or for the handler-only helpers below.
-
-| Method | Returns |
-| --- | --- |
-| `async get_all()` | `list[Model]` |
-| `async all()` | `list[Model]` |
-| `async get(resource_id)` | `Model` |
-| `async update(resource_id, data)` | `list[ResourceIdentifier]` |
-| `async delete(resource_id)` | `list[ResourceIdentifier]` |
-
-Handlers in the [name-lookup table](#lookup-by-name) add `by_name(name)`,
-`names()` and the `[...]` subscript.
+`hue.api` is the lower-level, typed CLIP v2 namespace. Its plural attributes
+are exclusively id-addressed; it never guesses whether a string is a name or
+an id. Every handler provides `list()`, `get(resource_id)`,
+`update(resource_id, data)`, and `delete(resource_id)`. These write methods
+return bridge `list[models.ResourceIdentifier]`; model and collection commands
+instead return `CommandResult`.
 
 | Attribute | Class | Model | Extra methods |
 | --- | --- | --- | --- |
-| `hue.light` | `Light` | `models.Light` | `turn_on`, `turn_off`, `set_brightness`, `set_color`, `set_color_temperature`, `get_lights_on`, `get_service_ids_on`, `get_device_ids_on` |
-| `hue.light_group` | `GroupedLight` | `models.GroupedLight` | `turn_on`, `turn_off`, `set_brightness`, `set_color`, `set_color_temperature` |
-| `hue.room` | `Room` | `models.Room` | `create`, `grouped_light_id`, `get_from_light_service_id`, and the five light commands |
-| `hue.zone` | `Zone` | `models.Zone` | `create`, `grouped_light_id`, and the five light commands |
-| `hue.scene` | `Scene` | `models.Scene` | `create`, `activate` |
-| `hue.service_group` | `ServiceGroup` | `models.ServiceGroup` | `create` |
-| `hue.motion` | `Motion` | `models.Motion` | `turn_on`, `turn_off`, `set_sensitivity`, `get_motion_state`, `get_last_motion` |
-| `hue.motion_group` | `GroupedMotion` | `models.GroupedMotion` | `turn_on`, `turn_off` |
-| `hue.temperature` | `Temperature` | `models.Temperature` | `turn_on`, `turn_off` |
-| `hue.contact` | `Contact` | `models.Contact` | `turn_on`, `turn_off` |
-| `hue.button` | `Button` | `models.Button` | — |
-| `hue.relative_rotary` | `RelativeRotary` | `models.RelativeRotary` | — |
-| `hue.zigbee_connectivity` | `ZigbeeConnectivity` | `models.ZigbeeConnectivity` | — |
-| `hue.device` | `Device` | `models.Device` | — |
-| `hue.device_power` | `DevicePower` | `models.DevicePower` | — |
-| `hue.light_level` | `LightLevel` | `models.LightLevel` | — |
-| `hue.light_level_group` | `GroupedLightLevel` | `models.GroupedLightLevel` | — |
-| `hue.bridge` | `Bridge` | `models.Bridge` | — |
-| `hue.bridge_home` | `BridgeHome` | `models.BridgeHome` | — |
+| `hue.api.lights` | `Light` | `models.Light` | `turn_on`, `turn_off`, `set_brightness`, `set_color`, `set_color_temperature`, `get_lights_on`, `get_service_ids_on`, `get_device_ids_on` |
+| `hue.api.grouped_lights` | `GroupedLight` | `models.GroupedLight` | `turn_on`, `turn_off`, `set_brightness`, `set_color`, `set_color_temperature` |
+| `hue.api.rooms` | `Room` | `models.Room` | `create`, `grouped_light_id`, `get_from_light_service_id` |
+| `hue.api.zones` | `Zone` | `models.Zone` | `create`, `grouped_light_id` |
+| `hue.api.scenes` | `Scene` | `models.Scene` | `create`, `activate` |
+| `hue.api.service_groups` | `ServiceGroup` | `models.ServiceGroup` | `create` |
+| `hue.api.motions` | `Motion` | `models.Motion` | `turn_on`, `turn_off`, `set_sensitivity`, `get_motion_state`, `get_last_motion` |
+| `hue.api.grouped_motions` | `GroupedMotion` | `models.GroupedMotion` | `turn_on`, `turn_off` |
+| `hue.api.temperatures` | `Temperature` | `models.Temperature` | `turn_on`, `turn_off` |
+| `hue.api.contacts` | `Contact` | `models.Contact` | `turn_on`, `turn_off` |
+| `hue.api.buttons` | `Button` | `models.Button` | — |
+| `hue.api.relative_rotaries` | `RelativeRotary` | `models.RelativeRotary` | — |
+| `hue.api.zigbee_connectivities` | `ZigbeeConnectivity` | `models.ZigbeeConnectivity` | — |
+| `hue.api.devices` | `Device` | `models.Device` | — |
+| `hue.api.device_powers` | `DevicePower` | `models.DevicePower` | — |
+| `hue.api.light_levels` | `LightLevel` | `models.LightLevel` | — |
+| `hue.api.grouped_light_levels` | `GroupedLightLevel` | `models.GroupedLightLevel` | — |
+| `hue.api.bridges` | `Bridge` | `models.Bridge` | — |
+| `hue.api.bridge_homes` | `BridgeHome` | `models.BridgeHome` | — |
+
+`hue.api.raw` exposes the open decoded-JSON `Transport` for an advanced CLIP
+operation without a typed handler.
 
 ### Light commands
 
@@ -742,19 +738,19 @@ async set_color_temperature(resource_id, mirek) -> list[ResourceIdentifier]
 ```
 
 ```python
-lights = await hue.light.get_all()
-await hue.light.set_brightness(lights[0].id, 40.0)
+lights = await hue.api.lights.list()
+await hue.api.lights.set_brightness(lights[0].id, 40.0)
 ```
 
 These take neither `transition` nor the human-unit colour arguments, and each
-one is its own request — that is what the model commands add. On a room or
-zone they resolve the group's `grouped_light` service first, so every call
-costs an extra GET:
+one is its own request — that is what the model commands add. Rooms and zones
+are grouping resources, so the id-level path to their lights is explicit:
 
 ```python
-kitchen = await hue.rooms["Kitchen"]
-await hue.room.set_brightness(kitchen.id, 40.0)
-service_id = await hue.room.grouped_light_id(kitchen.id)
+kitchen = await hue.api.rooms.get(room_id)
+service_id = kitchen.service_id(models.ResourceType.GROUPED_LIGHT)
+if service_id is not None:
+    await hue.api.grouped_lights.set_brightness(service_id, 40.0)
 ```
 
 `grouped_light_id` raises `ValueError` if the group has no such service.
@@ -840,6 +836,7 @@ All derive from `HueError`.
 | `HueResponseError` | `errors: list[str]` | A 2xx body containing a blocking error, or only advisory errors with no successful data |
 | `DetachedResourceError` | — | A command was issued on a model with no client |
 | `ResourceNotFoundError` | `name`, `known` | A name lookup matched nothing |
+| `AmbiguousResourceError` | `name`, `resource_ids` | A high-level name matched more than one resource |
 
 `HueResponseError` matters: the v2 API reports many failures this way, so a
 write can "succeed" at the HTTP level and still have been rejected.
@@ -870,20 +867,19 @@ resource is `404` and a negative transition is `400`; both surface as
 ```python
 import asyncio
 
-from huepy import Hue, HueError, ResourceNotFoundError
+from huepy import AmbiguousResourceError, Hue, HueError, ResourceNotFoundError
 
 
 async def main() -> None:
     try:
         async with Hue(bridge_ip="192.168.1.100") as hue:
-            for light in await hue.lights.all():
+            for light in await hue.lights.list():
                 if light.is_on:
                     print(f"{light.name}: {light.brightness}% {light.mirek} mirek")
 
-            kitchen = await hue.rooms["Kitchen"]
-            await kitchen.set(brightness=40, kelvin=2200, transition=2.0)
+            await hue.rooms.set("Kitchen", brightness=40, kelvin=2200, transition=2.0)
 
-            desk = await hue.lights["Desk lamp"]
+            desk = await hue.lights.get("Desk lamp")
             await desk.set_rgb((255, 136, 0), transition=1.0)
 
             async for event in hue.get_event_stream():
@@ -891,6 +887,8 @@ async def main() -> None:
                 break
     except ResourceNotFoundError as exc:
         print(f"No such resource: {exc.name}. Known: {exc.known}")
+    except AmbiguousResourceError as exc:
+        print(f"Name is ambiguous: {exc.name}. Ids: {exc.resource_ids}")
     except HueError as exc:
         print(f"{type(exc).__name__}: {exc}")
 

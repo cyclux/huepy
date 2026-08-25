@@ -6,6 +6,7 @@ from pydantic import AwareDatetime, Field
 
 from huepy.models.common import (
     RESOURCE_ROOT,
+    CommandResult,
     HueModel,
     HueResource,
     NamedResource,
@@ -111,11 +112,11 @@ class Scene(NamedResource):
     actions: list[SceneAction] = Field(default_factory=list)
     status: SceneStatus | None = None
 
-    async def activate(self) -> list[ResourceIdentifier]:
+    async def activate(self) -> CommandResult:
         """Recall this scene, applying it to the room or zone it belongs to.
 
         Returns:
-            References to the resources the bridge reports as updated.
+            A CommandResult containing the bridge references affected.
 
         Raises:
             DetachedResourceError: If this scene is not bound to a client.

@@ -78,12 +78,12 @@ suite run.
 async def restore_all_lights(hue: Hue) -> AsyncIterator[None]:
     """Snapshot every light and put them all back when the test ends."""
     await asyncio.sleep(SETTLE_BEFORE_SNAPSHOT)
-    before = [light.capture() for light in await hue.light.get_all()]
+    before = [light.capture() for light in await hue.api.lights.list()]
     try:
         yield
     finally:
         for state in before:
-            light = await hue.light.get(state.light_id)
+            light = await hue.api.lights.get(state.light_id)
             try:
                 await light.restore(state)
             except BridgeConnectionError:  # pragma: no cover - hardware dependent
@@ -99,7 +99,7 @@ async def a_light(hue: Hue, restore_all_lights: None) -> models.Light:
     they reject `.dimming.brightness` outright. `dimming is not None` is how
     the bridge says a light can actually dim.
     """
-    lights = await hue.light.get_all()
+    lights = await hue.api.lights.list()
     usable = [
         light
         for light in lights
@@ -113,7 +113,7 @@ async def a_light(hue: Hue, restore_all_lights: None) -> models.Light:
 @pytest.fixture
 async def a_colour_light(hue: Hue, restore_all_lights: None) -> models.Light:
     """One colour-capable light, restored by the fixture above."""
-    lights = await hue.light.get_all()
+    lights = await hue.api.lights.list()
     usable = [light for light in lights if light.color is not None]
     if not usable:
         pytest.skip("no colour-capable lights on this bridge")
@@ -123,7 +123,7 @@ async def a_colour_light(hue: Hue, restore_all_lights: None) -> models.Light:
 @pytest.fixture
 async def a_room(hue: Hue, restore_all_lights: None) -> models.Room:
     """One room that owns a grouped_light, restored by the fixture above."""
-    rooms = await hue.room.get_all()
+    rooms = await hue.api.rooms.list()
     usable = [
         room
         for room in rooms

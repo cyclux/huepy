@@ -199,7 +199,7 @@ class TestResourceRegistry:
     def test_every_resource_type_has_the_expected_registry_model(self, hue):
         handlers = {
             str(handler.resource_type): handler.model
-            for handler in vars(hue).values()
+            for handler in vars(hue.api).values()
             if hasattr(handler, "resource_type") and hasattr(handler, "model")
         }
         assert handlers == dict(models.RESOURCE_MODELS)
@@ -254,14 +254,14 @@ class TestLifecycleAndFold:
     ):
         await state_http.connections[0].put(update_frame(20))
         async with hue.state() as state:
-            assert state.lights["desk"].brightness == 20
-            first = state.lights.get("light-1")
-            second = state.lights.get("light-1")
+            assert state.lights.get("desk").brightness == 20
+            first = state.lights.by_id("light-1")
+            second = state.lights.by_id("light-1")
             assert first is not second
             assert first is not None
             assert first.is_bound
             first.dimming.brightness = 99
-            assert state.lights["Desk"].brightness == 20
+            assert state.lights.get("Desk").brightness == 20
 
     async def test_multi_entry_event_emits_one_complete_change(self, hue, state_http):
         async with hue.state() as state:
@@ -379,7 +379,7 @@ class TestLifecycleAndFold:
             assert added.before is None
             assert isinstance(added.after, models.Light)
             assert added.after.brightness == 45
-            assert state.get("light-2") is None
+            assert state.by_id("light-2") is None
             assert isinstance(deleted, Change)
             assert deleted.kind is ChangeKind.DELETE
             assert isinstance(deleted.before, models.Light)
@@ -417,7 +417,7 @@ class TestLifecycleAndFold:
             assert change.before is None
             assert isinstance(change.after, models.Light)
             assert change.after.brightness == 55
-            assert state.lights.get("light-2") is not None
+            assert state.lights.by_id("light-2") is not None
             await stream.aclose()
 
     async def test_invalid_delta_marks_inconsistent_without_corrupting_state(
@@ -441,7 +441,7 @@ class TestLifecycleAndFold:
             item = await asyncio.wait_for(waiting, 1)
             assert isinstance(item, Resync)
             assert item.reason is ResyncReason.INCONSISTENT
-            assert state.lights["Desk"].brightness == 10
+            assert state.lights.get("Desk").brightness == 10
             await stream.aclose()
 
     @pytest.mark.parametrize(
@@ -464,7 +464,7 @@ class TestLifecycleAndFold:
             marker = await asyncio.wait_for(waiting, 1)
             assert isinstance(marker, Resync)
             assert marker.reason is ResyncReason.INCONSISTENT
-            assert state.lights["Desk"].brightness == 10
+            assert state.lights.get("Desk").brightness == 10
             await stream.aclose()
 
     async def test_mismatched_unknown_fetch_is_not_installed(self, hue, state_http):
@@ -489,8 +489,8 @@ class TestLifecycleAndFold:
             marker = await asyncio.wait_for(waiting, 1)
             assert isinstance(marker, Resync)
             assert marker.reason is ResyncReason.INCONSISTENT
-            assert state.get("light-2") is None
-            assert state.get("different-id") is None
+            assert state.by_id("light-2") is None
+            assert state.by_id("different-id") is None
             await stream.aclose()
 
 
@@ -539,8 +539,8 @@ class TestTopology:
         hue._http = http
 
         async with hue.state() as state:
-            room = state.rooms["Office"]
-            zone = state.zones["Work"]
+            room = state.rooms.get("Office")
+            zone = state.zones.get("Work")
 
             assert [item.id for item in state.lights_in(room)] == ["light-1"]
             assert [item.id for item in state.lights_in(zone)] == ["light-1"]
@@ -567,7 +567,7 @@ class TestSubscribers:
             await state_http.connections[0].put(update_frame(50, event_id="1:4"))
             for _ in range(10):
                 await asyncio.sleep(0)
-                if state.lights["Desk"].brightness == 50:
+                if state.lights.get("Desk").brightness == 50:
                     break
 
             marker = await asyncio.wait_for(anext(stream), 1)
@@ -639,7 +639,7 @@ class TestReconnectAndCorrelation:
     async def test_local_fade_marks_echo_and_exposes_fading(self, hue, state_http):
         async with hue.state() as state:
             stream = state.changes()
-            current = state.lights["Desk"]
+            current = state.lights.get("Desk")
             await current.set(brightness=80, transition=60)
             waiting = asyncio.create_task(anext(stream))
             await asyncio.sleep(0)
@@ -658,7 +658,7 @@ class TestReconnectAndCorrelation:
     ):
         async with hue.state() as state:
             stream = state.changes()
-            await state.lights["Desk"].set(brightness=80, transition=60)
+            await state.lights.get("Desk").set(brightness=80, transition=60)
 
             await state_http.connections[0].put(update_frame(80, event_id="1:1"))
             first = await asyncio.wait_for(anext(stream), 1)
@@ -702,7 +702,9 @@ class TestReconnectAndCorrelation:
             stream = state.changes()
             first_waiting = asyncio.create_task(anext(stream))
             await asyncio.sleep(0)
-            command = asyncio.create_task(state.lights["Desk"].set_brightness(70))
+            light_one = state.lights.by_id("light-1")
+            assert light_one is not None
+            command = asyncio.create_task(light_one.set_brightness(70))
             await asyncio.wait_for(http.write_started.wait(), 1)
             await http.connections[0].put(update_frame(70, event_id="1:1"))
             await http.connections[0].put(
@@ -751,7 +753,7 @@ class TestReconnectAndCorrelation:
             stream = state.changes()
             first_waiting = asyncio.create_task(anext(stream))
             await asyncio.sleep(0)
-            command = asyncio.create_task(state.lights["Desk"].set_brightness(70))
+            command = asyncio.create_task(state.lights.get("Desk").set_brightness(70))
             await asyncio.wait_for(http.write_started.wait(), 1)
             await http.connections[0].put(update_frame(70))
             await http.connections[0].put(None)
@@ -791,7 +793,7 @@ class TestReconnectAndCorrelation:
             waiting = asyncio.create_task(anext(stream))
             await asyncio.sleep(0)
 
-            command = asyncio.create_task(state.lights["Desk"].set_brightness(70))
+            command = asyncio.create_task(state.lights.get("Desk").set_brightness(70))
             await asyncio.wait_for(http.write_started.wait(), 1)
             await http.connections[0].put(update_frame(70))
             http.release_write.set()
@@ -842,7 +844,7 @@ class TestReconnectAndCorrelation:
             ):
                 await asyncio.wait_for(waiting, 1)
             assert state.connected is False
-            assert state.lights["Desk"].brightness == 10
+            assert state.lights.get("Desk").brightness == 10
             await stream.aclose()
 
             with pytest.raises(

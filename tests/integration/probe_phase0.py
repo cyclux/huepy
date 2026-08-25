@@ -89,7 +89,7 @@ async def probe_replay(hue: Hue, writes: int) -> dict[str, Any]:
 
         second = await anext(connections)
         replayed = await _collect_for(second.frames, REPLAY_SECONDS)
-        current = await hue.light.get(light.id)
+        current = await hue.api.lights.get(light.id)
         return {
             "cursor_before_gap": cursor_frame.event_id,
             "requested_resume_from": second.resumed_from,
@@ -187,7 +187,7 @@ async def probe_transition_ceiling(hue: Hue) -> dict[str, Any]:
         except HueAPIError as exc:
             result["-1"] = {"http_status": exc.status_code}
     finally:
-        current = await hue.light.get(light.id)
+        current = await hue.api.lights.get(light.id)
         await current.restore(before)
     return result
 

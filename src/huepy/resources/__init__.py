@@ -5,7 +5,7 @@ from huepy.resources.connectivity import ZigbeeConnectivity
 from huepy.resources.device import Bridge, Device
 from huepy.resources.group import (
     BridgeHome,
-    GroupedLightControlMixin,
+    GroupedLightResolver,
     Room,
     Scene,
     ServiceGroup,
@@ -39,8 +39,8 @@ __all__ = [
     "DevicePower",
     "DimmableMixin",
     "GroupedLight",
-    "GroupedLightControlMixin",
     "GroupedLightLevel",
+    "GroupedLightResolver",
     "GroupedMotion",
     "Light",
     "LightLevel",

@@ -6,16 +6,16 @@
 A modern async Python wrapper for the **Philips Hue v2 CLIP API**.
 
 - Async-only, built on `aiohttp`
-- Ask for what you named: `await hue.rooms["Kitchen"]`, not an opaque id
+- Ask for what you named: `await hue.rooms.get("Kitchen")`, not an opaque id
+- Issue a one-shot command without fetching first: `await hue.rooms.set("Kitchen", brightness=40)`
 - Whatever you fetch acts on itself -- `await light.turn_on()`, `await scene.activate()`
-- One command is one request: `set()` composes power, brightness, colour and
-  transition into a single PUT
+- One state change is one write: `set()` composes power, brightness, colour
+  and transition into a single PUT
 - Colour in human units -- `rgb=`, `hex_color=`, `kelvin=` -- clamped to the
   gamut the bulb itself reports
 - Transitions in seconds on every light command
 - Every response is a validated **pydantic** model, not a bare dict
-- An opt-in `hue.state()` view keeps a last-reported resource graph current
-  from the event stream
+- `Hue(live=True)` keeps high-level name lookups current from the event stream
 - Models tolerate unknown fields, so bridge firmware updates don't break parsing
 - Failures reported in a successful response body (`errors[]`) are raised, not silently ignored
 - Ships `py.typed` -- your type checker sees the annotations
@@ -66,10 +66,11 @@ from huepy import Hue
 
 async def main() -> None:
     async with Hue() as hue:
-        kitchen = await hue.rooms["Kitchen"]
-        await kitchen.set(on=True, brightness=30, kelvin=2200, transition=2.0)
+        await hue.rooms.set(
+            "Kitchen", on=True, brightness=30, kelvin=2200, transition=2.0
+        )
 
-        for light in await hue.lights.all():
+        for light in await hue.lights.list():
             print(light.name, light.is_on, light.brightness)
 
 
@@ -78,54 +79,57 @@ asyncio.run(main())
 
 `Hue()` picks up the address and key stored during setup; pass
 `Hue(bridge_ip=..., app_key=...)` to override either. Entering the context
-opens the session and loads the id-to-name lookup, and leaving it closes the
-session -- `start()` and `close()` are there if you'd rather manage that
+opens the session without fetching resources; leaving it closes the session.
+`start()` and `close()` are available when you prefer to manage that lifecycle
 yourself.
 
-That `set()` is **one** request. The room came back carrying the reference to
-its own `grouped_light` service, so switch on, dim, warm and fade travel to
-the bridge as a single PUT.
+That `set()` is **one PUT**. In stateless mode the collection first performs
+one GET to resolve `"Kitchen"`; the room then carries the reference to its own
+`grouped_light` service, so switch on, dim, warm and fade travel together.
 
 ### Lookup by name
 
-Every resource that carries a display name -- lights, rooms, zones, scenes,
-devices -- can be addressed by it. Matching ignores case and surrounding
-whitespace.
+The top-level collections are the human-facing API: `lights`, `rooms`,
+`zones`, `scenes`, `devices`, and `service_groups`. Every collection uses the
+same `get(name)`, `list()`, and `names()` vocabulary. Matching ignores case
+and surrounding whitespace.
 
 ```python
-kitchen = await hue.rooms["Kitchen"]  # subscript, awaited
-desk = await hue.lights.by_name("Desk lamp")  # the same thing, spelled out
+kitchen = await hue.rooms.get("Kitchen")
+desk = await hue.lights.get("Desk lamp")
 print(await hue.rooms.names())  # what may I ask for?
 ```
 
 A miss is not a `None` you have to check for:
 
 ```python
-from huepy import ResourceNotFoundError
+from huepy import AmbiguousResourceError, ResourceNotFoundError
 
 try:
-    room = await hue.rooms["Kithcen"]
+    room = await hue.rooms.get("Kithcen")
 except ResourceNotFoundError as exc:
     print(f"No room named {exc.name!r}. Known rooms: {', '.join(exc.known)}")
 ```
 
-Each lookup is one round trip -- the bridge offers no server-side name filter,
-so the collection is fetched and matched locally. Resolving many names is
-better served by a single `get_all()`.
+In the default stateless mode, each lookup is one round trip: the bridge offers
+no server-side name filter, so huepy fetches and matches the collection locally.
+For several names, call `list()` once and match locally. With `Hue(live=True)`,
+the initial aggregate snapshot and event stream maintain the collection index,
+so later high-level lookups use that local state.
 
 ### Commands on what you fetched
 
-Anything from `get()`, `get_all()`, `all()` or a name lookup is *bound* to the
+Anything from `get()` or `list()` is *bound* to the
 client that fetched it, and issues its own commands:
 
 ```python
-light = await hue.lights["Desk lamp"]
+light = await hue.lights.get("Desk lamp")
 await light.turn_on(transition=1.5)
 await light.set_brightness(60)
 await light.alert()  # flash once to identify it
 await light.refresh()  # a fresh snapshot; the old one is untouched
 
-scene = await hue.scenes["Relax"]
+scene = await hue.scenes.get("Relax")
 await scene.activate()
 ```
 
@@ -143,7 +147,7 @@ from huepy import DetachedResourceError, models
 try:
     await models.Light(id="abc").turn_on()
 except DetachedResourceError as exc:
-    print(exc)  # ... fetch it via hue.<resource>.get(...) to get a bound one
+    print(exc)  # ... fetch it via hue.lights.get(...) to get a bound one
 ```
 
 ### Colour
@@ -184,6 +188,21 @@ await light.turn_off(transition=5.0)
 await kitchen.set(brightness=100, kelvin=4000, transition=2.0)
 ```
 
+### One-shot commands
+
+For one command, use the same collection vocabulary without separately
+fetching a bound model:
+
+```python
+await hue.lights.turn_on("Desk lamp", transition=1.5)
+await hue.rooms.set("Kitchen", brightness=40, kelvin=2200)
+await hue.scenes.activate("Relax")
+```
+
+The direct command first resolves the unique name, then delegates to the same
+bound-resource command. It returns `CommandResult`, whose `sent` says whether
+a request was issued and whose `resources` are the bridge references affected.
+
 ### Working with ids
 
 The id-based handlers are still there, and still supported -- they are the
@@ -192,36 +211,33 @@ hold an id, when you are writing something generic over resource types, or
 when you want a payload the models do not spell:
 
 ```python
-room = await hue.room.get(room_id)
-await hue.room.set_brightness(room_id, 40.0)
-await hue.light.update(light_id, {"on": {"on": True}})
-await hue.light.delete(light_id)
+room = await hue.api.rooms.get(room_id)
+service_id = room.service_id("grouped_light")
+if service_id is not None:
+    await hue.api.grouped_lights.set_brightness(service_id, 40.0)
+await hue.api.lights.update(light_id, {"on": {"on": True}})
+await hue.api.lights.delete(light_id)
 ```
 
-The singular attributes (`hue.light`, `hue.room`) and the plural ones
-(`hue.lights`, `hue.rooms`) are the same objects, so mixing the two styles
-costs nothing.
+`hue.api` is the typed bridge-facing surface. Its plural handlers are strictly
+id-addressed and uniformly provide `list()`, `get(resource_id)`,
+`update(resource_id, data)`, and `delete(resource_id)`, plus resource-specific
+commands. `hue.api.raw` is the decoded-JSON transport escape hatch.
 
 ### Resources
 
-`hue.light`, `hue.light_group`, `hue.light_level`, `hue.light_level_group`,
-`hue.room`, `hue.zone`, `hue.scene`, `hue.device`, `hue.device_power`,
-`hue.bridge`, `hue.bridge_home`, `hue.service_group`, `hue.motion`,
-`hue.motion_group`, `hue.temperature`, `hue.button`, `hue.contact`,
-`hue.relative_rotary`, `hue.zigbee_connectivity`.
-
-Each exposes `get_all()` (or `all()`), `get(resource_id)`,
-`update(resource_id, data)` and `delete(resource_id)`, plus type-specific
-commands. The named ones add `by_name(name)`, `names()` and the `[...]`
-subscript, and are aliased in the plural: `hue.lights`, `hue.rooms`,
-`hue.zones`, `hue.scenes`, `hue.devices`.
+`hue.api.lights`, `grouped_lights`, `light_levels`, `grouped_light_levels`,
+`rooms`, `zones`, `scenes`, `devices`, `device_powers`, `bridges`,
+`bridge_homes`, `service_groups`, `motions`, `grouped_motions`,
+`temperatures`, `buttons`, `contacts`, `relative_rotaries`, and
+`zigbee_connectivities` expose the complete typed CLIP v2 resource API.
 
 ### Events
 
 The stream yields parsed events, not dicts:
 
 ```python
-async with Hue() as hue:
+async with Hue(live=True) as hue:
     async for event in hue.get_event_stream():
         if not event.is_update:
             continue
@@ -250,14 +266,14 @@ last sent, not a guarantee of a light's physical state.
 ```python
 async with Hue() as hue:
     async with hue.state() as state:
-        desk = state.lights["Desk lamp"]
+        desk = state.lights.get("Desk lamp")
         print(state.connected, desk.brightness)
         print(state.room_of(desk.id))
 ```
 
 The local `lights`, `rooms`, `zones`, `scenes` and `devices` views provide
-synchronous `get`, `all`, `by_name`, `names` and `[...]` lookup. `resources`,
-`get(id)`, `all(Model)`, `lights_in`, `room_of`, `zones_of`, `device_of` and
+synchronous `get(name)`, `by_id(id)`, `list()` and `names()` lookup. `resources`,
+`by_id(id)`, `list(Model)`, `lights_in`, `room_of`, `zones_of`, `device_of` and
 `name_of` support generic and topology queries. Returned models are fresh,
 bound copies and cannot mutate the canonical state.
 
@@ -278,6 +294,7 @@ All errors derive from `HueError`:
 | `HueAPIError` | Non-2xx HTTP status (carries `status_code`) |
 | `HueResponseError` | A successful HTTP response with blocking errors, or no successful data, in the body (carries `errors`) |
 | `ResourceNotFoundError` | No resource carries the requested name (carries `name` and `known`) |
+| `AmbiguousResourceError` | More than one resource carries a requested name (carries `name` and `resource_ids`) |
 | `DetachedResourceError` | A command was issued on a model that was never fetched |
 
 The transport limits itself to three concurrent connections per bridge. It

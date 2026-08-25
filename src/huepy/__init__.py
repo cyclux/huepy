@@ -9,8 +9,9 @@ Typical usage example:
 
     async def main() -> None:
         async with Hue() as hue:
-            kitchen = await hue.rooms["Kitchen"]
-            await kitchen.set(brightness=30, kelvin=2200, transition=2.0)
+            await hue.rooms.set(
+                "Kitchen", brightness=30, kelvin=2200, transition=2.0
+            )
 
     asyncio.run(main())
 """
@@ -23,6 +24,7 @@ from huepy.client.base import Hue
 from huepy.client.http import HueHttpClient
 from huepy.config import HueConfig, InsecureConfigWarning
 from huepy.exceptions import (
+    AmbiguousResourceError,
     AuthenticationError,
     BridgeConnectionError,
     DetachedResourceError,
@@ -31,6 +33,7 @@ from huepy.exceptions import (
     HueResponseError,
     ResourceNotFoundError,
 )
+from huepy.models.common import CommandResult
 
 # A library must not configure logging for its host application; this only
 # suppresses "no handler found" warnings when the host configures nothing.
@@ -39,8 +42,10 @@ logging.getLogger(__name__).addHandler(logging.NullHandler())
 __version__ = package_version()
 
 __all__ = [
+    "AmbiguousResourceError",
     "AuthenticationError",
     "BridgeConnectionError",
+    "CommandResult",
     "DetachedResourceError",
     "Hue",
     "HueAPIError",

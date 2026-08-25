@@ -951,7 +951,7 @@ class TestPowerupFromRealHardware:
 
     Regression: the bridge sends `{"mode": "previous"}` with no nested state
     for a field that keeps whatever it had. Parsing that as the inner model
-    failed its required fields and took the whole `light.get_all()` down --
+    failed its required fields and took the whole `api.lights.list()` down --
     every light on the bridge, not just the one.
     """
 
@@ -992,7 +992,7 @@ class TestPowerupFromRealHardware:
         assert light.powerup.on.on is True
 
     def test_every_light_on_a_real_bridge_parses(self):
-        """Both shapes together, as get_all() would see them."""
+        """Both shapes together, as list() would see them."""
         payload = {
             "errors": [],
             "data": [

@@ -1,5 +1,7 @@
 """Continuously maintained, event-folded Hue bridge state."""
 
+from __future__ import annotations
+
 import asyncio
 import copy
 import logging
@@ -16,6 +18,7 @@ from pydantic import AwareDatetime, TypeAdapter, ValidationError
 
 from huepy.client.protocol import EventConnection, HueClient, PendingWrite, SSEFrame
 from huepy.exceptions import (
+    AmbiguousResourceError,
     BridgeConnectionError,
     HueAPIError,
     HueResponseError,
@@ -149,53 +152,50 @@ class _Subscriber:
 class StateView[ModelT: HueResource]:
     """A synchronous typed view over one category of canonical state."""
 
-    def __init__(self, state: "HueState", model: type[ModelT]) -> None:
+    def __init__(self, state: HueState, model: type[ModelT]) -> None:
         """Bind the view to one state and concrete resource model."""
         self._state = state
         self._model = model
 
-    def get(self, resource_id: str) -> ModelT | None:
+    def by_id(self, resource_id: str) -> ModelT | None:
         """Return a resource of this view's type by id, when present."""
-        resource = self._state.get(resource_id)
+        resource = self._state.by_id(resource_id)
         return resource if isinstance(resource, self._model) else None
 
-    def all(self) -> list[ModelT]:
+    def list(self) -> list[ModelT]:
         """Return all resources in this view."""
-        return self._state.all(self._model)
+        return self._state.list(self._model)
 
-    def by_name(self, name: str) -> ModelT:
-        """Return the first case-insensitive display-name match."""
+    def get(self, name: str) -> ModelT:
+        """Return the unique case-insensitive display-name match."""
         wanted = name.strip().casefold()
-        resources = self.all()
-        match = next(
-            (
-                resource
-                for resource in resources
-                if isinstance(resource, NamedResource)
-                and resource.name.strip().casefold() == wanted
-            ),
-            None,
-        )
-        if match is None:
+        resources = self.list()
+        matches = [
+            resource
+            for resource in resources
+            if wanted
+            and isinstance(resource, NamedResource)
+            and bool(resource.name)
+            and resource.name.strip().casefold() == wanted
+        ]
+        if not matches:
             known = sorted(
                 resource.name
                 for resource in resources
                 if isinstance(resource, NamedResource) and resource.name
             )
             raise ResourceNotFoundError(name, known)
-        return match
+        if len(matches) > 1:
+            raise AmbiguousResourceError(name, [resource.id for resource in matches])
+        return matches[0]
 
     def names(self) -> list[str]:
         """Return the sorted non-empty names in this view."""
         return sorted(
             resource.name
-            for resource in self.all()
+            for resource in self.list()
             if isinstance(resource, NamedResource) and resource.name
         )
-
-    def __getitem__(self, name: str) -> ModelT:
-        """Look up a resource synchronously by display name."""
-        return self.by_name(name)
 
 
 class StateClient(HueClient, Protocol):
@@ -243,6 +243,11 @@ class HueState:
     def resources(self) -> list[AnyResource]:
         """Fresh bound copies of every aggregate-visible resource."""
         return [self._public(raw) for raw in self._raw.values()]
+
+    def ensure_healthy(self) -> None:
+        """Raise the terminal observer failure instead of serving stale state."""
+        if self._terminal_error is not None:
+            raise self._terminal_error
 
     @property
     def fading(self) -> Mapping[str, ActiveFade]:
@@ -304,37 +309,37 @@ class HueState:
         self._connected = False
         await self._broadcast(_CLOSED)
 
-    def get(self, resource_id: str) -> AnyResource | None:
+    def by_id(self, resource_id: str) -> AnyResource | None:
         """Return a fresh bound resource by id."""
         raw = self._raw.get(resource_id)
         return self._public(raw) if raw is not None else None
 
-    def all[ModelT: HueResource](self, model: type[ModelT]) -> list[ModelT]:
+    def list[ModelT: HueResource](self, model: type[ModelT]) -> list[ModelT]:
         """Return fresh bound copies of every resource matching a model type."""
         return [resource for resource in self.resources if isinstance(resource, model)]
 
     def name_of(self, resource_id: str) -> str:
         """Resolve a resource or its owner to a human-facing name."""
-        return build_name_map(self.all(NamedResource)).get(resource_id, "Unknown")
+        return build_name_map(self.list(NamedResource)).get(resource_id, "Unknown")
 
     def device_of(self, resource_id: str) -> Device | None:
         """Return the physical device owning a resource, when resolvable."""
-        resource = self.get(resource_id)
+        resource = self.by_id(resource_id)
         if isinstance(resource, Device):
             return resource
         owner = resource.owner.rid if resource is not None and resource.owner else None
-        candidate = self.get(owner) if owner is not None else None
+        candidate = self.by_id(owner) if owner is not None else None
         return candidate if isinstance(candidate, Device) else None
 
     def room_of(self, resource_id: str) -> Room | None:
         """Return the room containing a resource or device."""
-        resource = self.get(resource_id)
+        resource = self.by_id(resource_id)
         owner_id = (
             resource.owner.rid
             if resource is not None and resource.owner is not None
             else None
         )
-        direct_owner = self.get(owner_id) if owner_id is not None else None
+        direct_owner = self.by_id(owner_id) if owner_id is not None else None
         if isinstance(direct_owner, Room):
             return direct_owner
         device = self.device_of(resource_id)
@@ -342,7 +347,7 @@ class HueState:
         return next(
             (
                 room
-                for room in self.rooms.all()
+                for room in self.rooms.list()
                 if any(child.rid == device_id for child in room.children)
             ),
             None,
@@ -357,7 +362,7 @@ class HueState:
             candidates.update(service.rid for service in device.services)
         return [
             zone
-            for zone in self.zones.all()
+            for zone in self.zones.list()
             if any(child.rid in candidates for child in zone.children)
         ]
 
@@ -367,10 +372,10 @@ class HueState:
         if isinstance(group, Room):
             return [
                 light
-                for light in self.lights.all()
+                for light in self.lights.list()
                 if light.owner is not None and light.owner.rid in child_ids
             ]
-        return [light for light in self.lights.all() if light.id in child_ids]
+        return [light for light in self.lights.list() if light.id in child_ids]
 
     async def changes(
         self,
@@ -977,7 +982,7 @@ class HueState:
             return {resource_id}
         groups = [
             group
-            for group in [*self.rooms.all(), *self.zones.all()]
+            for group in [*self.rooms.list(), *self.zones.list()]
             if group.service_id("grouped_light") == resource_id
         ]
         if not groups:

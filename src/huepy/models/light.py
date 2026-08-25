@@ -2,7 +2,7 @@
 
 A parsed light is bound to the client that fetched it, so it acts on itself:
 
-    light = await hue.light.get(light_id)
+    light = await hue.api.lights.get(light_id)
     await light.set(on=True, brightness=40, mirek=400, transition=2)
 
 A colour may be given in whichever spelling suits the caller. A single light
@@ -31,12 +31,12 @@ from huepy.models.common import (
     ColorGamut,
     ColorTemperature,
     ColorXY,
+    CommandResult,
     Dimming,
     HueModel,
     HueResource,
     NamedResource,
     On,
-    ResourceIdentifier,
 )
 from huepy.models.state import build_light_payload
 
@@ -255,7 +255,7 @@ class LightCommands(HueResource):
         kelvin: int | None = None,
         gamut: Gamut | None = None,
         transition: float | None = None,
-    ) -> list[ResourceIdentifier]:
+    ) -> CommandResult:
         """Apply a whole state change in one request.
 
         Args:
@@ -272,8 +272,8 @@ class LightCommands(HueResource):
             transition: How long the change should take, in seconds.
 
         Returns:
-            References to the resources the bridge reports as updated, or an
-            empty list when no argument was supplied and nothing was sent.
+            A CommandResult containing the bridge references, or
+            ``CommandResult(sent=False)`` when no argument was supplied.
 
         Raises:
             DetachedResourceError: If this resource is not bound to a client.
@@ -296,21 +296,21 @@ class LightCommands(HueResource):
             transition=transition,
         )
         if not payload:
-            return []
+            return CommandResult(sent=False)
         return await self._put(self._command_path(), payload)
 
     async def turn_on(
         self,
         *,
         transition: float | None = None,
-    ) -> list[ResourceIdentifier]:
+    ) -> CommandResult:
         """Switch this resource on.
 
         Args:
             transition: How long the change should take, in seconds.
 
         Returns:
-            References to the resources the bridge reports as updated.
+            A CommandResult containing the bridge references affected.
 
         """
         return await self.set(on=True, transition=transition)
@@ -319,14 +319,14 @@ class LightCommands(HueResource):
         self,
         *,
         transition: float | None = None,
-    ) -> list[ResourceIdentifier]:
+    ) -> CommandResult:
         """Switch this resource off.
 
         Args:
             transition: How long the change should take, in seconds.
 
         Returns:
-            References to the resources the bridge reports as updated.
+            A CommandResult containing the bridge references affected.
 
         """
         return await self.set(on=False, transition=transition)
@@ -336,7 +336,7 @@ class LightCommands(HueResource):
         brightness: float,
         *,
         transition: float | None = None,
-    ) -> list[ResourceIdentifier]:
+    ) -> CommandResult:
         """Set brightness, clamped to 0-100.
 
         Args:
@@ -344,7 +344,7 @@ class LightCommands(HueResource):
             transition: How long the change should take, in seconds.
 
         Returns:
-            References to the resources the bridge reports as updated.
+            A CommandResult containing the bridge references affected.
 
         """
         return await self.set(brightness=brightness, transition=transition)
@@ -355,7 +355,7 @@ class LightCommands(HueResource):
         y: float,
         *,
         transition: float | None = None,
-    ) -> list[ResourceIdentifier]:
+    ) -> CommandResult:
         """Set colour from CIE xy coordinates.
 
         Args:
@@ -364,7 +364,7 @@ class LightCommands(HueResource):
             transition: How long the change should take, in seconds.
 
         Returns:
-            References to the resources the bridge reports as updated.
+            A CommandResult containing the bridge references affected.
 
         """
         return await self.set(xy=(x, y), transition=transition)
@@ -374,7 +374,7 @@ class LightCommands(HueResource):
         rgb: tuple[int, int, int],
         *,
         transition: float | None = None,
-    ) -> list[ResourceIdentifier]:
+    ) -> CommandResult:
         """Set colour from 8-bit RGB channels.
 
         Args:
@@ -382,7 +382,7 @@ class LightCommands(HueResource):
             transition: How long the change should take, in seconds.
 
         Returns:
-            References to the resources the bridge reports as updated.
+            A CommandResult containing the bridge references affected.
 
         Raises:
             ValueError: If any channel falls outside 0-255.
@@ -395,7 +395,7 @@ class LightCommands(HueResource):
         mirek: int,
         *,
         transition: float | None = None,
-    ) -> list[ResourceIdentifier]:
+    ) -> CommandResult:
         """Set colour temperature in mirek.
 
         Args:
@@ -403,7 +403,7 @@ class LightCommands(HueResource):
             transition: How long the change should take, in seconds.
 
         Returns:
-            References to the resources the bridge reports as updated.
+            A CommandResult containing the bridge references affected.
 
         """
         return await self.set(mirek=mirek, transition=transition)
@@ -413,7 +413,7 @@ class LightCommands(HueResource):
         kelvin: int,
         *,
         transition: float | None = None,
-    ) -> list[ResourceIdentifier]:
+    ) -> CommandResult:
         """Set colour temperature in kelvin.
 
         Args:
@@ -423,7 +423,7 @@ class LightCommands(HueResource):
             transition: How long the change should take, in seconds.
 
         Returns:
-            References to the resources the bridge reports as updated.
+            A CommandResult containing the bridge references affected.
 
         Raises:
             ValueError: If ``kelvin`` is zero or negative.
@@ -517,7 +517,7 @@ class Light(LightCommands, NamedResource):
         state: LightState,
         *,
         transition: float | None = None,
-    ) -> list[ResourceIdentifier]:
+    ) -> CommandResult:
         """Restore a state captured from this same light."""
         if state.light_id != self.id:
             msg = f"state belongs to light {state.light_id}, not {self.id}"
@@ -562,7 +562,7 @@ class Light(LightCommands, NamedResource):
             return _as_gamut(self.color.gamut)
         return gamut_for(self.color.gamut_type)
 
-    async def set_effect(self, effect: Effect | str) -> list[ResourceIdentifier]:
+    async def set_effect(self, effect: Effect | str) -> CommandResult:
         """Start a dynamic effect, or stop the running one.
 
         Args:
@@ -570,7 +570,7 @@ class Light(LightCommands, NamedResource):
                 raw name. ``Effect.NO_EFFECT`` stops whatever is running.
 
         Returns:
-            References to the resources the bridge reports as updated.
+            A CommandResult containing the bridge references affected.
 
         Raises:
             DetachedResourceError: If this resource is not bound to a client.
@@ -585,7 +585,7 @@ class Light(LightCommands, NamedResource):
         colors: list[tuple[float, float]],
         *,
         mode: str | None = None,
-    ) -> list[ResourceIdentifier]:
+    ) -> CommandResult:
         """Paint a gradient across the light's colour points.
 
         Args:
@@ -596,7 +596,7 @@ class Light(LightCommands, NamedResource):
                 ``"interpolated_palette"``. Left to the light when omitted.
 
         Returns:
-            References to the resources the bridge reports as updated.
+            A CommandResult containing the bridge references affected.
 
         Raises:
             DetachedResourceError: If this resource is not bound to a client.
@@ -611,7 +611,7 @@ class Light(LightCommands, NamedResource):
             gradient["mode"] = mode
         return await self._put(self._command_path(), {"gradient": gradient})
 
-    async def set_powerup(self, preset: str) -> list[ResourceIdentifier]:
+    async def set_powerup(self, preset: str) -> CommandResult:
         """Choose what the light does when mains power returns.
 
         Args:
@@ -619,7 +619,7 @@ class Light(LightCommands, NamedResource):
                 ``"powerfail"``, ``"last_on_state"`` or ``"custom"``.
 
         Returns:
-            References to the resources the bridge reports as updated.
+            A CommandResult containing the bridge references affected.
 
         Raises:
             DetachedResourceError: If this resource is not bound to a client.
@@ -629,14 +629,14 @@ class Light(LightCommands, NamedResource):
         payload: dict[str, Any] = {"powerup": {"preset": preset}}
         return await self._put(self._command_path(), payload)
 
-    async def alert(self) -> list[ResourceIdentifier]:
+    async def alert(self) -> CommandResult:
         """Flash the light once to identify it.
 
         The light returns to its previous state on its own, so nothing needs
         restoring afterwards.
 
         Returns:
-            References to the resources the bridge reports as updated.
+            A CommandResult containing the bridge references affected.
 
         Raises:
             DetachedResourceError: If this resource is not bound to a client.

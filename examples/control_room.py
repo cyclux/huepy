@@ -25,7 +25,9 @@ async def members(hue: Hue, room: models.Room) -> list[models.Light]:
     expose, so the two are matched up through each light's `device_id`.
     """
     devices = {child.rid for child in room.children}
-    return [light for light in await hue.lights.all() if light.device_id in devices]
+    return [
+        light for light in await hue.api.lights.list() if light.device_id in devices
+    ]
 
 
 def snapshot(light: models.Light) -> dict[str, object]:
@@ -58,7 +60,7 @@ async def main() -> None:
 
     async with Hue() as hue:
         try:
-            room = await hue.rooms[sys.argv[1]]
+            room = await hue.rooms.get(sys.argv[1])
         except ResourceNotFoundError as exc:
             # The library did the matching, and knows what it could have
             # matched against -- so the typo corrects itself.

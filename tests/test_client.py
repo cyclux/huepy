@@ -91,6 +91,21 @@ class TestNames:
             "room", [{"id": "room-1", "metadata": {"name": "Kitchen"}}]
         )
 
+        http.queue(
+            "/clip/v2/resource",
+            {
+                "data": [
+                    {"id": "dev-1", "type": "device", "metadata": {"name": "Ceiling"}},
+                    {
+                        "id": "svc-1",
+                        "type": "light",
+                        "metadata": {"name": "Desk"},
+                        "owner": {"rid": "dev-2", "rtype": "device"},
+                    },
+                    {"id": "room-1", "type": "room", "metadata": {"name": "Kitchen"}},
+                ]
+            },
+        )
         names = await hue.refresh_names()
 
         assert names == {
@@ -100,26 +115,21 @@ class TestNames:
             "room-1": "Kitchen",
         }
 
-    async def test_refresh_names_fetches_every_named_type_concurrently(self, hue, http):
-        for resource_type in ("device", "light", "room", "zone", "scene"):
-            http.queue_collection(resource_type, [])
+    async def test_refresh_names_uses_one_aggregate_request(self, hue, http):
+        http.queue("/clip/v2/resource", {"data": []})
         await hue.refresh_names()
-        assert sorted(http.paths) == [
-            "/clip/v2/resource/device",
-            "/clip/v2/resource/light",
-            "/clip/v2/resource/room",
-            "/clip/v2/resource/scene",
-            "/clip/v2/resource/zone",
-        ]
+        assert http.paths == ["/clip/v2/resource"]
 
     async def test_get_name_resolves_zones_and_scenes(self, hue, http):
-        http.queue_collection("device", [])
-        http.queue_collection("light", [])
-        http.queue_collection("room", [])
-        http.queue_collection(
-            "zone", [{"id": "z-1", "metadata": {"name": "Downstairs"}}]
+        http.queue(
+            "/clip/v2/resource",
+            {
+                "data": [
+                    {"id": "z-1", "type": "zone", "metadata": {"name": "Downstairs"}},
+                    {"id": "s-1", "type": "scene", "metadata": {"name": "Relax"}},
+                ]
+            },
         )
-        http.queue_collection("scene", [{"id": "s-1", "metadata": {"name": "Relax"}}])
         await hue.refresh_names()
         assert hue.get_name("z-1") == "Downstairs"
         assert hue.get_name("s-1") == "Relax"
@@ -159,24 +169,26 @@ class TestNames:
         assert hue.get_name("nope") == "Unknown"
 
     async def test_get_name_after_refresh(self, hue, http):
-        http.queue_collection(
-            "device", [{"id": "dev-1", "metadata": {"name": "Ceiling"}}]
+        http.queue(
+            "/clip/v2/resource",
+            {
+                "data": [
+                    {"id": "dev-1", "type": "device", "metadata": {"name": "Ceiling"}}
+                ]
+            },
         )
-        http.queue_collection("light", [])
-        http.queue_collection("room", [])
-        http.queue_collection("zone", [])
-        http.queue_collection("scene", [])
         await hue.refresh_names()
         assert hue.get_name("dev-1") == "Ceiling"
 
     async def test_names_property_exposes_the_lookup(self, hue, http):
-        http.queue_collection(
-            "device", [{"id": "dev-1", "metadata": {"name": "Ceiling"}}]
+        http.queue(
+            "/clip/v2/resource",
+            {
+                "data": [
+                    {"id": "dev-1", "type": "device", "metadata": {"name": "Ceiling"}}
+                ]
+            },
         )
-        http.queue_collection("light", [])
-        http.queue_collection("room", [])
-        http.queue_collection("zone", [])
-        http.queue_collection("scene", [])
         await hue.refresh_names()
         assert hue.names["dev-1"] == "Ceiling"
 
@@ -205,41 +217,35 @@ class TestHandlerWiring:
     @pytest.mark.parametrize(
         "attribute",
         [
-            "light",
-            "light_group",
-            "light_level",
-            "light_level_group",
-            "room",
-            "zone",
-            "scene",
-            "device",
-            "device_power",
-            "bridge",
-            "bridge_home",
-            "service_group",
-            "motion",
-            "motion_group",
-            "temperature",
-            "button",
-            "contact",
+            "lights",
+            "grouped_lights",
+            "light_levels",
+            "grouped_light_levels",
+            "rooms",
+            "zones",
+            "scenes",
+            "devices",
+            "device_powers",
+            "bridges",
+            "bridge_homes",
+            "service_groups",
+            "motions",
+            "grouped_motions",
+            "temperatures",
+            "buttons",
+            "contacts",
         ],
     )
     async def test_every_documented_handler_exists(self, hue, attribute):
-        assert getattr(hue, attribute) is not None
+        assert getattr(hue.api, attribute) is not None
 
     async def test_handlers_share_the_client(self, hue):
-        assert hue.light.hue is hue
-        assert hue.room.hue is hue
+        assert hue.api.lights.hue is hue
+        assert hue.api.rooms.hue is hue
 
 
-class TestStartFailureCleansUp:
-    """A failure after connecting must not strand the open session.
-
-    Regression: start() opened the transport, then called refresh_names(). If
-    that raised, __aenter__ propagated and __aexit__ never ran, so aiohttp
-    logged "Unclosed client session" -- seen for real against a bridge whose
-    address had changed.
-    """
+class TestLazyStart:
+    """Opening a stateless client performs no resource I/O."""
 
     async def test_transport_is_closed_when_refresh_fails(self, tmp_path, monkeypatch):
         closed: list[str] = []
@@ -260,12 +266,10 @@ class TestStartFailureCleansUp:
         )
         client = Hue(bridge_ip="10.0.0.1", app_key="k", config_path=tmp_path / "c.json")
 
-        with pytest.raises(ConnectionError):
-            await client.start()
-
-        assert closed == ["closed"], "the transport was not closed"
-        with pytest.raises(RuntimeError, match="Client not initialized"):
-            _ = client.http
+        await client.start()
+        assert closed == []
+        await client.close()
+        assert closed == ["closed"]
 
     async def test_context_manager_also_cleans_up(self, tmp_path, monkeypatch):
         closed: list[str] = []
@@ -285,11 +289,10 @@ class TestStartFailureCleansUp:
             "huepy.client.base.HueHttpClient", lambda _config: DyingHttp()
         )
 
-        with pytest.raises(ConnectionError):
-            async with Hue(
-                bridge_ip="10.0.0.1", app_key="k", config_path=tmp_path / "c.json"
-            ):
-                pass
+        async with Hue(
+            bridge_ip="10.0.0.1", app_key="k", config_path=tmp_path / "c.json"
+        ):
+            pass
 
         assert closed == ["closed"]
 
@@ -334,7 +337,7 @@ class TestStartWithoutAKey:
             assert requested == [], "a keyless bridge must not be queried"
             assert await client.authenticate() == "issued-key"
 
-    async def test_load_names_false_skips_the_lookup_even_with_a_key(
+    async def test_stateless_start_skips_lookup_even_with_a_key(
         self, tmp_path, monkeypatch
     ):
         requested: list[str] = []
@@ -355,7 +358,7 @@ class TestStartWithoutAKey:
         )
         client = Hue(bridge_ip="10.0.0.1", app_key="k", config_path=tmp_path / "c.json")
 
-        await client.start(load_names=False)
+        await client.start()
         assert requested == []
         assert client.get_name("anything") == "Unknown"
         await client.close()

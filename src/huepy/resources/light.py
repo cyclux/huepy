@@ -125,7 +125,7 @@ class Light(NamedResourceHandler[light_models.Light], DimmableMixin):
     """Handler for individual lights.
 
     Lights carry a `metadata.name`, so they can be looked up by it:
-    ``await hue.lights["Desk lamp"]``.
+    ``await hue.lights.get("Desk lamp")``.
     """
 
     resource_type: ClassVar[ResourceType] = ResourceType.LIGHT
@@ -138,7 +138,7 @@ class Light(NamedResourceHandler[light_models.Light], DimmableMixin):
             The lights whose power state is on.
 
         """
-        return [light for light in await self.get_all() if light.is_on]
+        return [light for light in await self.list() if light.is_on]
 
     async def get_service_ids_on(self) -> list[str]:
         """Ids of the light *services* that are currently on.

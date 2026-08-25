@@ -36,7 +36,7 @@ async def main() -> None:
 
     async with Hue() as hue:
         try:
-            light = await hue.lights[sys.argv[1]]
+            light = await hue.lights.get(sys.argv[1])
         except ResourceNotFoundError as exc:
             print(f"No light named {exc.name!r}.")
             print(f"Known lights: {', '.join(exc.known) or 'none'}")

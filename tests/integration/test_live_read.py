@@ -9,8 +9,8 @@ from typing import Any
 
 import pytest
 
-from huepy import Hue, ResourceNotFoundError, models
-from huepy.resources.base import BaseResource, NamedResourceHandler
+from huepy import AmbiguousResourceError, Hue, ResourceNotFoundError, models
+from huepy.resources.base import BaseResource
 
 pytestmark = pytest.mark.integration
 
@@ -18,7 +18,7 @@ pytestmark = pytest.mark.integration
 def handlers(hue: Hue) -> dict[str, BaseResource[Any]]:
     """Every resource handler on the client, deduplicated by identity."""
     seen: dict[int, tuple[str, BaseResource[Any]]] = {}
-    for name, value in vars(hue).items():
+    for name, value in vars(hue.api).items():
         if isinstance(value, BaseResource):
             seen.setdefault(id(value), (name, value))
     return dict(seen.values())
@@ -36,7 +36,7 @@ class TestEveryResourceTypeParses:
         failures: list[str] = []
         for name, handler in handlers(hue).items():
             try:
-                await handler.get_all()
+                await handler.list()
             except Exception as exc:  # noqa: BLE001 - reporting every failure
                 failures.append(f"{name}: {type(exc).__name__}: {exc}")
         assert not failures, "resource types that failed to parse:\n" + "\n".join(
@@ -44,7 +44,7 @@ class TestEveryResourceTypeParses:
         )
 
     async def test_lights_expose_their_convenience_properties(self, hue: Hue):
-        lights = await hue.lights.all()
+        lights = await hue.api.lights.list()
         assert lights, "bridge reports no lights"
         for light in lights:
             assert isinstance(light.is_on, bool)
@@ -54,11 +54,11 @@ class TestEveryResourceTypeParses:
 
 class TestBindingAgainstRealPayloads:
     async def test_fetched_resources_are_bound(self, hue: Hue):
-        light = (await hue.lights.all())[0]
+        light = (await hue.api.lights.list())[0]
         assert light.is_bound
 
     async def test_refresh_returns_a_new_bound_instance(self, hue: Hue):
-        light = (await hue.lights.all())[0]
+        light = (await hue.api.lights.list())[0]
         again = await light.refresh()
         assert again.id == light.id
         assert again is not light
@@ -66,26 +66,28 @@ class TestBindingAgainstRealPayloads:
 
 
 class TestNameLookup:
-    async def test_every_named_handler_resolves_its_own_names(self, hue: Hue):
-        for name, handler in handlers(hue).items():
-            if not isinstance(handler, NamedResourceHandler):
-                continue
-            for display in await handler.names():
-                found = await handler.by_name(display)
-                assert found.name == display, f"{name}.by_name({display!r}) mismatched"
+    async def test_every_named_collection_resolves_its_own_names(self, hue: Hue):
+        for name in ("lights", "rooms", "zones", "scenes", "devices"):
+            collection = getattr(hue, name)
+            for display in set(await collection.names()):
+                try:
+                    found = await collection.get(display)
+                except AmbiguousResourceError:
+                    continue
+                assert found.name.casefold() == display.casefold()
 
     async def test_lookup_ignores_case_and_whitespace(self, hue: Hue):
-        rooms = await hue.rooms.all()
+        rooms = await hue.api.rooms.list()
         if not rooms:
             pytest.skip("no rooms on this bridge")
         wanted = rooms[0].name
-        found = await hue.rooms[f"  {wanted.upper()}  "]
+        found = await hue.rooms.get(f"  {wanted.upper()}  ")
         assert found.id == rooms[0].id
 
     async def test_a_miss_lists_the_real_names(self, hue: Hue):
         with pytest.raises(ResourceNotFoundError) as caught:
-            await hue.rooms["definitely-not-a-room"]
-        known = {room.name for room in await hue.rooms.all()}
+            await hue.rooms.get("definitely-not-a-room")
+        known = {room.name for room in await hue.api.rooms.list()}
         assert set(caught.value.known) == known
 
 
@@ -97,20 +99,23 @@ class TestNameMap:
     """
 
     async def test_room_grouped_lights_resolve_to_the_room(self, hue: Hue):
-        for room in await hue.rooms.all():
+        await hue.refresh_names()
+        for room in await hue.api.rooms.list():
             service = room.service_id(models.ResourceType.GROUPED_LIGHT)
             if service is not None:
                 assert hue.get_name(service) == room.name
 
     async def test_device_services_resolve_to_the_device(self, hue: Hue):
-        for device in await hue.devices.all():
+        await hue.refresh_names()
+        for device in await hue.api.devices.list():
             for service in device.services:
                 assert hue.get_name(service.rid) != "Unknown", (
                     f"{service.rtype} service of {device.name} is unnamed"
                 )
 
     async def test_zones_and_scenes_are_in_the_map(self, hue: Hue):
-        for zone in await hue.zones.all():
+        await hue.refresh_names()
+        for zone in await hue.api.zones.list():
             assert hue.get_name(zone.id) == zone.name
-        for scene in await hue.scenes.all():
+        for scene in await hue.api.scenes.list():
             assert hue.get_name(scene.id) == scene.name

@@ -109,7 +109,7 @@ async def test_state_tracks_a_write_and_marks_a_fade_echo(
     a_light: models.Light,
 ):
     async with hue.state() as state:
-        current = state.lights.get(a_light.id)
+        current = state.lights.by_id(a_light.id)
         assert current is not None
         target = 20.0 if (current.brightness or 0) > 50 else 80.0
 
@@ -139,7 +139,7 @@ async def test_live_overflow_replays_marks_and_reconciles(
     hue._http = gap
 
     async with hue.state() as state:
-        current = state.lights.get(a_light.id)
+        current = state.lights.by_id(a_light.id)
         assert current is not None
 
         async def reconnect_marker() -> Resync:
@@ -162,7 +162,7 @@ async def test_live_overflow_replays_marks_and_reconciles(
             gap.release.set()
 
         marker = await asyncio.wait_for(waiting, 30)
-        tracked = state.lights.get(a_light.id)
+        tracked = state.lights.by_id(a_light.id)
         assert marker.reason is ResyncReason.RECONNECT
         assert len(gap.resumed_from) >= 2
         assert gap.resumed_from[1] is not None

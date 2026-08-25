@@ -180,13 +180,13 @@ async def _run_cleanup(*steps: Callable[[], Awaitable[object]]) -> None:
 
 async def _restore_light(hue: Hue, state: models.LightState) -> None:
     """Fetch a light's latest representation and restore its captured state."""
-    current = await hue.light.get(state.light_id)
+    current = await hue.api.lights.get(state.light_id)
     await current.restore(state)
 
 
 async def probe_fade(hue: Hue) -> None:
     """Create one reversible event-rich fade on a safe dimmable light."""
-    lights = await hue.light.get_all()
+    lights = await hue.api.lights.list()
     usable = [
         light
         for light in lights
@@ -202,14 +202,14 @@ async def probe_fade(hue: Hue) -> None:
         await light.set(on=True, brightness=target, transition=FADE_SECONDS)
         await asyncio.sleep(FADE_SECONDS + SUBSCRIBE_SETTLE_SECONDS)
     finally:
-        current = await hue.light.get(light.id)
+        current = await hue.api.lights.get(light.id)
         await current.restore(before)
 
 
 async def _safe_room_members(hue: Hue) -> tuple[models.Room, list[models.Light]]:
     """Find a room whose lights are safe for reversible probe writes."""
-    lights = await hue.lights.all()
-    for room in await hue.rooms.all():
+    lights = await hue.api.lights.list()
+    for room in await hue.api.rooms.list():
         device_ids = {
             child.rid
             for child in room.children
@@ -264,13 +264,13 @@ async def probe_scene(hue: Hue) -> None:
         target = 20.0 if (dimmable.brightness or 0) > 50 else 80.0
         await dimmable.set(on=True, brightness=target, transition=0.4)
         await asyncio.sleep(1)
-        await (await hue.scene.get(scene_id)).activate()
+        await (await hue.api.scenes.get(scene_id)).activate()
         await asyncio.sleep(SUBSCRIBE_SETTLE_SECONDS)
     finally:
 
         async def delete_scene() -> None:
             if scene_id is not None:
-                await hue.scene.delete(scene_id)
+                await hue.api.scenes.delete(scene_id)
                 await asyncio.sleep(SUBSCRIBE_SETTLE_SECONDS)
 
         await _run_cleanup(

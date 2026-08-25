@@ -13,7 +13,7 @@ from huepy import Hue
 
 async def main() -> None:
     async with Hue() as hue:
-        lights = await hue.lights.all()
+        lights = await hue.api.lights.list()
         print(f"Found {len(lights)} lights\n")
 
         for light in lights:

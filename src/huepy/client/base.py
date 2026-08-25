@@ -1,10 +1,10 @@
 """The Hue client: one object exposing every resource handler.
 
 The client is async-only. Use it as an async context manager, which opens the
-HTTP session and loads the id-to-name lookup:
+HTTP session without resource I/O in the default stateless mode:
 
     async with Hue(bridge_ip="192.168.1.100") as hue:
-        for light in await hue.light.get_all():
+        for light in await hue.api.lights.list():
             print(hue.get_name(light.id), light.is_on)
 """
 
@@ -20,33 +20,21 @@ from typing import TYPE_CHECKING, Any, Self
 from pydantic import ValidationError
 
 from huepy._version import package_version
+from huepy.client.api import HueAPI
 from huepy.client.http import HueHttpClient
 from huepy.client.protocol import Transport
+from huepy.collections import (
+    DeviceCollection,
+    LightCollection,
+    RoomCollection,
+    SceneCollection,
+    ServiceGroupCollection,
+    ZoneCollection,
+)
 from huepy.config import HueConfig, default_config_path
 from huepy.exceptions import AuthenticationError
-from huepy.models import AnyResource, HueResponse
+from huepy.models import AnyResource, HueResponse, NamedResource
 from huepy.models.event import HueEvent, parse_events
-from huepy.resources import (
-    Bridge,
-    BridgeHome,
-    Button,
-    Contact,
-    Device,
-    DevicePower,
-    GroupedLight,
-    GroupedLightLevel,
-    GroupedMotion,
-    Light,
-    LightLevel,
-    Motion,
-    RelativeRotary,
-    Room,
-    Scene,
-    ServiceGroup,
-    Temperature,
-    ZigbeeConnectivity,
-    Zone,
-)
 from huepy.utils.naming import build_name_map
 
 if TYPE_CHECKING:
@@ -62,26 +50,13 @@ class Hue:
 
     Attributes:
         config: The resolved connection settings.
-        http: The underlying HTTP client, or None before :meth:`start`.
-        light: Handler for individual lights.
-        light_group: Handler for grouped-light services.
-        light_level: Handler for ambient light-level sensors.
-        light_level_group: Handler for aggregated light-level services.
-        room: Handler for rooms.
-        zone: Handler for zones.
-        scene: Handler for scenes.
-        device: Handler for physical devices.
-        device_power: Handler for battery services.
-        bridge: Handler for the bridge resource.
-        bridge_home: Handler for the top-level home.
-        service_group: Handler for named service groups.
-        motion: Handler for motion sensors.
-        motion_group: Handler for aggregated motion services.
-        temperature: Handler for temperature sensors.
-        button: Handler for switch and dimmer buttons.
-        contact: Handler for contact sensors.
-        relative_rotary: Handler for relative rotary input services.
-        zigbee_connectivity: Handler for Zigbee reachability services.
+        api: Typed, id-addressed CLIP v2 handlers.
+        lights: Human-facing named light collection.
+        rooms: Human-facing named room collection.
+        zones: Human-facing named zone collection.
+        scenes: Human-facing named scene collection.
+        devices: Human-facing named device collection.
+        service_groups: Human-facing named service-group collection.
 
     """
 
@@ -92,6 +67,7 @@ class Hue:
         config_path: str | Path | None = None,
         *,
         verify_ssl: bool = False,
+        live: bool = False,
     ) -> None:
         """Initialise the client without contacting the bridge.
 
@@ -103,6 +79,8 @@ class Hue:
                 ``$XDG_CONFIG_HOME/huepy/config.json``, or
                 ``HUE_CONFIG_PATH`` when set.
             verify_ssl: Whether to verify the bridge's TLS certificate.
+            live: Whether to maintain the high-level resource index from the
+                aggregate snapshot and event stream.
 
         """
         self.config: HueConfig = HueConfig(
@@ -116,36 +94,23 @@ class Hue:
         self._http: Transport | None = None
         self._names: dict[str, str] = {}
         self._event_streams: set[AsyncGenerator[Any]] = set()
+        self._live_requested: bool = live
+        self._live_state: HueState | None = None
 
-        self.light: Light = Light(self)
-        self.light_group: GroupedLight = GroupedLight(self)
-        self.light_level: LightLevel = LightLevel(self)
-        self.light_level_group: GroupedLightLevel = GroupedLightLevel(self)
-        self.room: Room = Room(self)
-        self.zone: Zone = Zone(self)
-        self.scene: Scene = Scene(self)
-        self.device: Device = Device(self)
-        self.device_power: DevicePower = DevicePower(self)
-        self.bridge: Bridge = Bridge(self)
-        self.bridge_home: BridgeHome = BridgeHome(self)
-        self.service_group: ServiceGroup = ServiceGroup(self)
-        self.motion: Motion = Motion(self)
-        self.motion_group: GroupedMotion = GroupedMotion(self)
-        self.temperature: Temperature = Temperature(self)
-        self.button: Button = Button(self)
-        self.contact: Contact = Contact(self)
-        self.relative_rotary: RelativeRotary = RelativeRotary(self)
-        self.zigbee_connectivity: ZigbeeConnectivity = ZigbeeConnectivity(self)
+        self.api: HueAPI = HueAPI(self)
+        self.lights: LightCollection = LightCollection(self, self.api.lights)
+        self.rooms: RoomCollection = RoomCollection(self, self.api.rooms)
+        self.zones: ZoneCollection = ZoneCollection(self, self.api.zones)
+        self.scenes: SceneCollection = SceneCollection(self, self.api.scenes)
+        self.devices: DeviceCollection = DeviceCollection(self, self.api.devices)
+        self.service_groups: ServiceGroupCollection = ServiceGroupCollection(
+            self, self.api.service_groups
+        )
 
-        # Plural aliases for the same handler objects, not copies. The singular
-        # names are the raw, id-based surface; the plural ones read naturally
-        # for discovery -- `await hue.rooms["Kitchen"]`. Only the handlers whose
-        # resources carry a display name get one.
-        self.lights: Light = self.light
-        self.rooms: Room = self.room
-        self.zones: Zone = self.zone
-        self.scenes: Scene = self.scene
-        self.devices: Device = self.device
+    @property
+    def live_state(self) -> HueState | None:
+        """The running local state graph, or None in stateless mode."""
+        return self._live_state
 
     @property
     def http(self) -> Transport:
@@ -162,11 +127,14 @@ class Hue:
 
     @property
     def names(self) -> dict[str, str]:
-        """The id-to-display-name lookup loaded by :meth:`start`."""
+        """The id-to-display-name lookup populated explicitly or by live mode."""
+        if self._live_state is not None:
+            self._live_state.ensure_healthy()
+            return build_name_map(self._live_state.list(NamedResource))
         return self._names
 
     async def __aenter__(self) -> Self:
-        """Open the session and load the name lookup."""
+        """Open the session and, in live mode, start the local graph."""
         await self.start()
         return self
 
@@ -179,38 +147,19 @@ class Hue:
         """Close the session."""
         await self.close()
 
-    async def start(self, *, load_names: bool = True) -> None:
-        """Open the HTTP session and populate the name lookup.
-
-        The lookup is skipped when no application key is available, because
-        every request it makes would be rejected. That is what keeps
-        :meth:`authenticate` reachable through the client itself: connecting
-        to an unkeyed bridge to ask for a key is the one case where there is
-        nothing to look up yet.
-
-        Args:
-            load_names: Whether to populate the id-to-name lookup. Pass False
-                to connect without the five requests it costs; ``get_name``
-                then returns ``"Unknown"`` until :meth:`refresh_names` is
-                called.
-
-        """
+    async def start(self) -> None:
+        """Open the HTTP session without eagerly fetching bridge resources."""
         self._http = await HueHttpClient(self.config).__aenter__()
         logger.info(
             "huepy v%s connected to %s", package_version(), self.config.bridge_ip
         )
-        if not load_names:
-            return
-        if not self.config.app_key:
-            logger.debug("No application key yet, so the name lookup is skipped.")
-            return
-        try:
-            _ = await self.refresh_names()
-        except BaseException:
-            # Otherwise a failure here strands the open aiohttp session, since
-            # __aexit__ never runs for an __aenter__ that raised.
-            await self.close()
-            raise
+        if self._live_requested and self.config.app_key:
+            try:
+                state = self.state()
+                self._live_state = await state.__aenter__()
+            except BaseException:
+                await self.close()
+                raise
 
     async def close(self) -> None:
         """Close the event stream and HTTP session, if they are open.
@@ -219,16 +168,23 @@ class Hue:
         suspended, still holding the streaming response. Finalising it here
         releases that socket instead of leaving it to the garbage collector.
         """
+        errors: list[BaseException] = []
+        live, self._live_state = self._live_state, None
+        if live is not None:
+            try:
+                await live.close()
+            except BaseException as exc:  # noqa: BLE001 - continue all cleanup
+                errors.append(exc)
         streams = tuple(self._event_streams)
         self._event_streams.clear()
-        errors = [
+        errors.extend(
             result
             for result in await asyncio.gather(
                 *(stream.aclose() for stream in streams),
                 return_exceptions=True,
             )
             if isinstance(result, BaseException)
-        ]
+        )
         http, self._http = self._http, None
         if http is not None:
             try:
@@ -241,24 +197,18 @@ class Hue:
     async def refresh_names(self) -> dict[str, str]:
         """Reload the id-to-display-name lookup from the bridge.
 
-        Every named resource type is fetched concurrently, so a zone or
-        scene id resolves to its name just as a light id does.
+        One aggregate snapshot supplies every named resource and its contained
+        service references.
 
         Returns:
             The refreshed mapping of resource id to display name.
 
         """
-        # gather, not TaskGroup: any failure here means the bridge is
-        # unreachable, and callers should see that error directly rather than
-        # having to unwrap an ExceptionGroup.
-        devices, lights, rooms, zones, scenes = await asyncio.gather(
-            self.device.get_all(),
-            self.light.get_all(),
-            self.room.get_all(),
-            self.zone.get_all(),
-            self.scene.get_all(),
+        self._names = build_name_map(
+            resource
+            for resource in await self.snapshot()
+            if isinstance(resource, NamedResource)
         )
-        self._names = build_name_map(devices, lights, rooms, zones, scenes)
         return self._names
 
     def get_name(self, resource_id: str) -> str:
@@ -271,6 +221,9 @@ class Hue:
             The display name, or ``"Unknown"`` if the id is not in the lookup.
 
         """
+        if self._live_state is not None:
+            self._live_state.ensure_healthy()
+            return self._live_state.name_of(resource_id)
         return self._names.get(resource_id, UNKNOWN_NAME)
 
     async def snapshot(self) -> list[AnyResource]:

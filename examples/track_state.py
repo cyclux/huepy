@@ -8,7 +8,7 @@ from huepy.state import Change, Resync
 
 async def main() -> None:
     async with Hue() as hue, hue.state() as state:
-        for room in state.rooms.all():
+        for room in state.rooms.list():
             lights = ", ".join(light.name for light in state.lights_in(room))
             print(f"{room.name}: {lights or '(no resolvable lights)'}")
 

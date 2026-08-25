@@ -12,7 +12,7 @@ the aggregate-visible Hue resource graph:
 
 ```python
 async with Hue() as hue, hue.state() as state:
-    desk = state.lights["Desk lamp"]
+    desk = state.lights.get("Desk lamp")
     print(desk.brightness)
 
     async for item in state.changes():
@@ -96,8 +96,8 @@ a deep copy and binds it to the owning client, preventing callers from mutating
 canonical state while keeping bound-model commands available.
 
 The named `lights`, `rooms`, `zones`, `scenes`, and `devices` views provide
-synchronous local `get`, `all`, `by_name`, `names`, and subscript lookup.
-Generic and topology helpers are `resources`, `get`, `all(Model)`, `name_of`,
+synchronous local `get(name)`, `by_id(id)`, `list()`, and `names()` lookup.
+Generic and topology helpers are `resources`, `by_id`, `list(Model)`, `name_of`,
 `device_of`, `room_of`, `zones_of`, and `lights_in`.
 
 ### Folding and history

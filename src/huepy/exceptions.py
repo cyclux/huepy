@@ -93,3 +93,16 @@ class ResourceNotFoundError(HueError):
         self.known: list[str] = known
         available = ", ".join(known) if known else "none"
         super().__init__(f"No resource named {name!r}. Known names: {available}")
+
+
+class AmbiguousResourceError(HueError):
+    """Raised when a high-level name matches more than one resource."""
+
+    def __init__(self, name: str, resource_ids: list[str]) -> None:
+        """Record the requested name and every resource it could address."""
+        self.name: str = name
+        self.resource_ids: list[str] = resource_ids
+        matches = ", ".join(resource_ids)
+        super().__init__(
+            f"More than one resource is named {name!r}. Matching ids: {matches}"
+        )

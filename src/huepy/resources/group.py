@@ -6,17 +6,17 @@ from huepy.models import common as common_models
 from huepy.models import group as group_models
 from huepy.models.common import ResourceIdentifier, ResourceType
 from huepy.resources.base import BaseResource, NamedResourceHandler
-from huepy.resources.light import GroupedLight, Light
+from huepy.resources.light import Light
 
 
-class GroupedLightControlMixin[ModelT: group_models.ResourceGroup](
+class GroupedLightResolver[ModelT: group_models.ResourceGroup](
     NamedResourceHandler[ModelT]
 ):
-    """Control commands that act through a group's `grouped_light` service.
+    """Resolve the `grouped_light` service owned by a room or zone.
 
     Rooms and zones do not accept light commands directly: each owns a
-    `grouped_light` service that does. These helpers resolve that service once
-    and forward the command to it.
+    `grouped_light` service that does. The low-level API exposes that service
+    id explicitly; high-level bound groups route commands without another GET.
 
     Every `ResourceGroup` carries a `metadata.name`, so this builds on
     :class:`~huepy.resources.base.NamedResourceHandler`: a group is always
@@ -45,98 +45,12 @@ class GroupedLightControlMixin[ModelT: group_models.ResourceGroup](
             raise ValueError(msg)
         return service_id
 
-    async def _grouped_light(self, resource_id: str) -> tuple[GroupedLight, str]:
-        """Return the grouped-light handler and service id for this group."""
-        return GroupedLight(self.hue), await self.grouped_light_id(resource_id)
 
-    async def turn_on(self, resource_id: str) -> list[ResourceIdentifier]:
-        """Switch on every light in the group.
-
-        Args:
-            resource_id: The room or zone id.
-
-        Returns:
-            References to the updated resources.
-
-        """
-        handler, service_id = await self._grouped_light(resource_id)
-        return await handler.turn_on(service_id)
-
-    async def turn_off(self, resource_id: str) -> list[ResourceIdentifier]:
-        """Switch off every light in the group.
-
-        Args:
-            resource_id: The room or zone id.
-
-        Returns:
-            References to the updated resources.
-
-        """
-        handler, service_id = await self._grouped_light(resource_id)
-        return await handler.turn_off(service_id)
-
-    async def set_brightness(
-        self,
-        resource_id: str,
-        brightness: float,
-    ) -> list[ResourceIdentifier]:
-        """Set brightness for every light in the group.
-
-        Args:
-            resource_id: The room or zone id.
-            brightness: Target brightness percentage, clamped to 0-100.
-
-        Returns:
-            References to the updated resources.
-
-        """
-        handler, service_id = await self._grouped_light(resource_id)
-        return await handler.set_brightness(service_id, brightness)
-
-    async def set_color(
-        self,
-        resource_id: str,
-        x: float,
-        y: float,
-    ) -> list[ResourceIdentifier]:
-        """Set colour for every light in the group.
-
-        Args:
-            resource_id: The room or zone id.
-            x: CIE x coordinate.
-            y: CIE y coordinate.
-
-        Returns:
-            References to the updated resources.
-
-        """
-        handler, service_id = await self._grouped_light(resource_id)
-        return await handler.set_color(service_id, x, y)
-
-    async def set_color_temperature(
-        self,
-        resource_id: str,
-        mirek: int,
-    ) -> list[ResourceIdentifier]:
-        """Set colour temperature for every light in the group.
-
-        Args:
-            resource_id: The room or zone id.
-            mirek: Colour temperature; lower is cooler.
-
-        Returns:
-            References to the updated resources.
-
-        """
-        handler, service_id = await self._grouped_light(resource_id)
-        return await handler.set_color_temperature(service_id, mirek)
-
-
-class Room(GroupedLightControlMixin[group_models.Room]):
+class Room(GroupedLightResolver[group_models.Room]):
     """Handler for rooms.
 
     Rooms carry a `metadata.name`, so they can be looked up by it:
-    ``await hue.rooms["Kitchen"]``.
+    ``await hue.rooms.get("Kitchen")``.
     """
 
     resource_type: ClassVar[ResourceType] = ResourceType.ROOM
@@ -177,18 +91,18 @@ class Room(GroupedLightControlMixin[group_models.Room]):
         if light.owner is None:
             return None
 
-        rooms = await self.get_all()
+        rooms = await self.list()
         return next(
             (room.id for room in rooms if room.contains_device(light.owner.rid)),
             None,
         )
 
 
-class Zone(GroupedLightControlMixin[group_models.Zone]):
+class Zone(GroupedLightResolver[group_models.Zone]):
     """Handler for zones.
 
     Zones carry a `metadata.name`, so they can be looked up by it:
-    ``await hue.zones["Downstairs"]``.
+    ``await hue.zones.get("Downstairs")``.
     """
 
     resource_type: ClassVar[ResourceType] = ResourceType.ZONE
@@ -223,7 +137,7 @@ class ServiceGroup(NamedResourceHandler[group_models.ServiceGroup]):
     """Handler for named groups of arbitrary services.
 
     Service groups carry a `metadata.name`, so they can be looked up by it:
-    ``await hue.service_group["Hallway sensors"]``.
+    ``await hue.service_groups.get("Hallway sensors")``.
     """
 
     resource_type: ClassVar[ResourceType] = ResourceType.SERVICE_GROUP
@@ -258,8 +172,8 @@ class Scene(NamedResourceHandler[group_models.Scene]):
     """Handler for scenes.
 
     Scenes carry a `metadata.name`, so they can be looked up by it:
-    ``await hue.scenes["Movie night"]``. Scene names repeat across rooms far
-    more often than room names do, and the first match in bridge order wins.
+    High-level lookup is available as ``await hue.scenes.get("Movie night")``.
+    Duplicate names raise rather than selecting a scene from the wrong room.
     """
 
     resource_type: ClassVar[ResourceType] = ResourceType.SCENE

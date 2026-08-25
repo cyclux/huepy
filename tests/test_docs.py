@@ -1,6 +1,6 @@
 """Guards against API_REFERENCE.md drifting from the code.
 
-The previous reference documented `hue.service_group`, which did not exist for
+The previous reference documented `hue.api.service_groups`, which did not exist for
 about a year. These tests make that class of drift fail the build: every
 handler, model command, public name and capability claim in the reference is
 checked against the objects it describes.
@@ -38,12 +38,6 @@ AWAITED_CALL = re.compile(r"(?:await|async for \w+ in) ([\w.]+)\.(\w+)\(")
 
 PYTHON_BLOCK = re.compile(r"^```python\n(.*?)^```", re.DOTALL | re.MULTILINE)
 
-# A row of the name-lookup table: handler, plural alias (or an em dash), model.
-NAME_LOOKUP_ROW = re.compile(
-    r"^\| `hue\.(\w+)` \| (?:`hue\.(\w+)`|—) \| `models\.\w+` \|$",
-    re.MULTILINE,
-)
-
 
 @pytest.fixture(scope="module")
 def reference_text() -> str:
@@ -51,7 +45,9 @@ def reference_text() -> str:
 
 
 def handler_names(client: Hue) -> set[str]:
-    return {name for name, value in vars(client).items() if hasattr(value, "base_url")}
+    return {
+        name for name, value in vars(client.api).items() if hasattr(value, "base_url")
+    }
 
 
 def resolve(root: object, path: str) -> object | None:
@@ -76,7 +72,7 @@ def test_every_documented_client_attribute_exists(reference_text, hue):
 
 def test_every_handler_is_documented(reference_text, hue):
     undocumented = {
-        name for name in handler_names(hue) if f"`hue.{name}`" not in reference_text
+        name for name in handler_names(hue) if f"`hue.api.{name}`" not in reference_text
     }
     assert not undocumented, (
         f"handlers missing from the reference: {sorted(undocumented)}"
@@ -85,7 +81,7 @@ def test_every_handler_is_documented(reference_text, hue):
 
 def test_documented_handler_methods_exist(reference_text, hue):
     rows = re.findall(
-        r"\| `hue\.(\w+)` \| `\w+` \| `[\w.]+` \| (.+?) \|$",
+        r"\| `hue\.api\.(\w+)` \| `\w+` \| `[\w.]+` \| (.+?) \|$",
         reference_text,
         re.MULTILINE,
     )
@@ -93,12 +89,12 @@ def test_documented_handler_methods_exist(reference_text, hue):
 
     missing: list[str] = []
     for attribute, methods in rows:
-        handler = getattr(hue, attribute, None)
+        handler = getattr(hue.api, attribute, None)
         if handler is None:
             missing.append(f"hue.{attribute}")
             continue
         missing.extend(
-            f"hue.{attribute}.{method}"
+            f"hue.api.{attribute}.{method}"
             for method in re.findall(r"`(\w+)`", methods)
             if not hasattr(handler, method)
         )
@@ -171,44 +167,27 @@ def test_documented_model_names_exist(reference_text):
     assert not missing, f"documented but absent from huepy.models: {missing}"
 
 
-def test_name_lookup_table_matches_the_handlers(reference_text, hue):
-    """Catches the reference claiming name lookup where there is none.
-
-    ``by_name``, ``names`` and the ``[...]`` subscript come from
-    :class:`NamedResourceHandler`, so the documented set must equal the set of
-    handlers that actually subclass it -- in both directions.
-    """
-    rows = NAME_LOOKUP_ROW.findall(reference_text)
-    assert rows, "the name-lookup table could not be parsed"
-
-    documented = {name for row in rows for name in row if name}
-    actual = {
-        name
-        for name, value in vars(hue).items()
-        if isinstance(value, NamedResourceHandler)
-    }
-    assert documented == actual, (
-        f"documented as name-addressable but are not: {sorted(documented - actual)}; "
-        f"name-addressable but not documented as such: {sorted(actual - documented)}"
-    )
+def test_name_lookup_exists_only_on_high_level_collections(hue):
+    """The typed API stays id-only while top-level collections resolve names."""
+    names = ("lights", "rooms", "zones", "scenes", "devices", "service_groups")
+    for name in names:
+        collection = getattr(hue, name)
+        assert all(hasattr(collection, method) for method in ("get", "list", "names"))
+        handler = getattr(hue.api, name)
+        assert isinstance(handler, NamedResourceHandler)
+        assert not hasattr(handler, "by_name")
+        assert not hasattr(handler, "names")
 
 
-def test_documented_aliases_are_the_same_object(reference_text, hue):
-    """Catches an alias turning into a second handler instance.
-
-    The reference promises ``hue.lights is hue.light``. Two objects would mean
-    two of everything a handler might come to hold.
-    """
-    pairs = [(row[0], row[1]) for row in NAME_LOOKUP_ROW.findall(reference_text)]
-    aliased = [(name, alias) for name, alias in pairs if alias]
-    assert aliased, "no plural aliases documented"
-
-    not_aliases = [
-        f"hue.{alias} is not hue.{name}"
-        for name, alias in aliased
-        if getattr(hue, alias, None) is not getattr(hue, name)
-    ]
-    assert not not_aliases, not_aliases
+def test_removed_synonyms_are_absent(hue):
+    """The breaking redesign ships one canonical spelling per operation."""
+    for singular in ("light", "room", "zone", "scene", "device", "service_group"):
+        assert not hasattr(hue, singular)
+    for collection in (hue.lights, hue.rooms, hue.zones, hue.scenes, hue.devices):
+        assert not hasattr(collection, "by_name")
+        assert not hasattr(collection, "all")
+        assert not hasattr(collection, "get_all")
+        assert not hasattr(collection, "__getitem__")
 
 
 def test_readme_does_not_advertise_the_removed_sync_api():

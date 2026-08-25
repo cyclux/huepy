@@ -12,7 +12,7 @@ class Device(NamedResourceHandler[device_models.Device]):
     """Handler for physical Hue devices.
 
     Devices carry a `metadata.name`, so they can be looked up by it:
-    ``await hue.devices["Hue play 1"]``.
+    ``await hue.devices.get("Hue play 1")``.
     """
 
     resource_type: ClassVar[ResourceType] = ResourceType.DEVICE

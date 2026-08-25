@@ -17,7 +17,7 @@ pair around. A model built by hand is detached and raises
 
 Typical usage example:
 
-    light = await hue.light.get(light_id)
+    light = await hue.api.lights.get(light_id)
     if light.dimming is not None:
         print(light.dimming.brightness)
 """
@@ -202,6 +202,23 @@ class ResourceIdentifier(HueModel):
     rtype: str
 
 
+class CommandResult(HueModel):
+    """High-level outcome of a bridge mutation."""
+
+    sent: bool = True
+    resources: tuple[ResourceIdentifier, ...] = ()
+
+    @classmethod
+    def from_resources(
+        cls,
+        resources: list[ResourceIdentifier],
+        *,
+        sent: bool = True,
+    ) -> "CommandResult":
+        """Build a result from bridge resource references."""
+        return cls(sent=sent, resources=tuple(resources))
+
+
 class Metadata(HueModel):
     """Human-facing naming attached to most resources."""
 
@@ -334,7 +351,7 @@ class HueResource(HueModel):
         """The bridge endpoint addressing this resource."""
         return f"{RESOURCE_ROOT}/{self._rtype}/{self.id}"
 
-    async def _put(self, path: str, data: dict[str, Any]) -> list[ResourceIdentifier]:
+    async def _put(self, path: str, data: dict[str, Any]) -> CommandResult:
         """Write a payload to an arbitrary path through the bound client.
 
         Args:
@@ -343,7 +360,7 @@ class HueResource(HueModel):
             data: The fields to change, in the bridge's payload shape.
 
         Returns:
-            References to the resources the bridge reports as updated.
+            A CommandResult containing the bridge references affected.
 
         Raises:
             DetachedResourceError: If this resource is not bound to a client.
@@ -351,16 +368,16 @@ class HueResource(HueModel):
 
         """
         payload = await self._client.http.put(path, data)
-        return unwrap(payload, ResourceIdentifier)
+        return CommandResult.from_resources(unwrap(payload, ResourceIdentifier))
 
-    async def update(self, data: dict[str, Any]) -> list[ResourceIdentifier]:
+    async def update(self, data: dict[str, Any]) -> CommandResult:
         """Apply a partial update to this resource.
 
         Args:
             data: The fields to change, in the bridge's payload shape.
 
         Returns:
-            References to the resources the bridge reports as updated.
+            A CommandResult containing the bridge references affected.
 
         Raises:
             DetachedResourceError: If this resource is not bound to a client.
@@ -369,11 +386,11 @@ class HueResource(HueModel):
         """
         return await self._put(self._path, data)
 
-    async def delete(self) -> list[ResourceIdentifier]:
+    async def delete(self) -> CommandResult:
         """Delete this resource from the bridge.
 
         Returns:
-            References to the resources the bridge reports as deleted.
+            A CommandResult containing the bridge references deleted.
 
         Raises:
             DetachedResourceError: If this resource is not bound to a client.
@@ -382,8 +399,8 @@ class HueResource(HueModel):
         """
         payload = await self._client.http.delete(self._path)
         if payload is None:
-            return []
-        return unwrap(payload, ResourceIdentifier)
+            return CommandResult()
+        return CommandResult.from_resources(unwrap(payload, ResourceIdentifier))
 
     async def refresh(self) -> Self:
         """Re-fetch this resource and return the fresh copy.
