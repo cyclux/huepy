@@ -8,7 +8,6 @@ gave it on the bridge, and the dim travels as a single request.
 
 import asyncio
 import sys
-from typing import TypedDict
 
 from huepy import Hue, ResourceNotFoundError, models
 
@@ -19,15 +18,6 @@ HOLD_SECONDS = 5.0
 EXPECTED_ARGS = 2
 
 
-class LightSnapshot(TypedDict):
-    """The mutually exclusive light fields needed for a safe restore."""
-
-    on: bool
-    brightness: float | None
-    mirek: int | None
-    xy: tuple[float, float] | None
-
-
 async def members(hue: Hue, room: models.Room) -> list[models.Light]:
     """Return the room's own lights.
 
@@ -36,29 +26,6 @@ async def members(hue: Hue, room: models.Room) -> list[models.Light]:
     """
     devices = {child.rid for child in room.children}
     return [light for light in await hue.lights.list() if light.device_id in devices]
-
-
-def snapshot(light: models.Light) -> LightSnapshot:
-    """Capture what it takes to put one light back.
-
-    Per light, not per room: a room's `grouped_light` reports no aggregate
-    colour temperature, so restoring through the group silently drops it and
-    leaves the room the wrong colour. A light is also in colour-temperature
-    mode or colour mode but never both -- `mirek_valid` says which -- and
-    `set()` refuses to be given both.
-    """
-    temperature = light.color_temperature
-    in_ct_mode = temperature is not None and bool(temperature.mirek_valid)
-    return {
-        "on": light.is_on,
-        "brightness": light.brightness,
-        "mirek": temperature.mirek if in_ct_mode and temperature else None,
-        "xy": (
-            (light.color.xy.x, light.color.xy.y)
-            if light.color is not None and not in_ct_mode
-            else None
-        ),
-    }
 
 
 async def main() -> None:
@@ -80,7 +47,11 @@ async def main() -> None:
         if not lights:
             print(f"{room.name} has no lights to control.")
             raise SystemExit(1)
-        before = {light.id: snapshot(light) for light in lights}
+        # Per light, not per room: a room's `grouped_light` reports no aggregate
+        # colour temperature, so restoring through the group silently drops it
+        # and leaves the room the wrong colour. `capture()` also picks the one
+        # of colour/temperature the light is actually in, which `set()` requires.
+        before = {light.id: light.capture() for light in lights}
 
         print(f"Dimming {room.name} to {DIM_BRIGHTNESS:.0f}% at {WARM_KELVIN} K...")
         # One PUT carries the complete change. The high-level API resolves the
@@ -98,7 +69,7 @@ async def main() -> None:
 
         print(f"Restoring {room.name}...")
         for light in lights:
-            await light.set(**before[light.id], transition=FADE_SECONDS)
+            await light.restore(before[light.id], transition=FADE_SECONDS)
 
 
 if __name__ == "__main__":
