@@ -14,7 +14,7 @@ from huepy import models
 from huepy.client.http import EventConnection, SSEFrame
 from huepy.exceptions import HueResponseError
 from huepy.state import Change, ChangeKind, Resync, ResyncReason
-from huepy.state.core import _observed_at
+from huepy.state.core import _compatible, _observed_at
 
 from .conftest import DeferredWriteHttp, StateHttp, envelope
 
@@ -939,3 +939,28 @@ class TestNameMapInvalidationOrdering:
             await asyncio.sleep(0.05)
 
             assert state.name_of("light-1") == "Bench"
+
+
+class TestWriteMatchTolerance:
+    """The bridge echoes a commanded value on its own quantisation grid."""
+
+    def test_brightness_echo_on_the_bridge_grid_still_matches(self):
+        """Measured: a commanded 20.0 comes back as 20.16.
+
+        Brightness is stored as 254 levels, so the bridge's grid is ~0.4 apart.
+        A tolerance below that made `command_echo` unreachable for every
+        brightness -- each transition echo was misfiled as a physical report.
+        """
+        target = {"on": {"on": True}, "dimming": {"brightness": 20.0}}
+        echoed = {"on": {"on": True}, "dimming": {"brightness": 20.16}}
+        assert _compatible(target, echoed)
+
+    def test_a_genuinely_different_brightness_does_not_match(self):
+        target = {"dimming": {"brightness": 20.0}}
+        assert not _compatible(target, {"dimming": {"brightness": 24.0}})
+
+    def test_colour_keeps_the_tight_default_tolerance(self):
+        """`xy` spans 0..1, so the brightness allowance must not reach it."""
+        target = {"color": {"xy": {"x": 0.5, "y": 0.4}}}
+        assert _compatible(target, {"color": {"xy": {"x": 0.5, "y": 0.4}}})
+        assert not _compatible(target, {"color": {"xy": {"x": 0.9, "y": 0.4}}})

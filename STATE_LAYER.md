@@ -160,6 +160,16 @@ guarantees.
   replay/live boundary was observed.
 - A transition PUT produced an immediate event containing the commanded target,
   while physical progress reports arrived on a much slower device cadence.
+- That echo carries the bridge's own quantisation, not the commanded number: a
+  PUT of `20.0` came back as `20.16`, because brightness is stored as 254
+  levels (~0.4 apart). Write correlation therefore matches brightness with a
+  wider tolerance than `xy`, whose whole range is 0..1; a tolerance below the
+  grid made `command_echo` unreachable for every brightness.
+- A write to a light that is switched off is *accepted* and answered with
+  `attribute_may_have_no_effect` ('is "soft off", command (.dimming.brightness)
+  may not have effect'), alongside `communication_error` for an unreachable
+  radio. Both list the resource in `data`, so both are advisory; treating the
+  second as blocking made capture/restore fail for any light that was off.
 - The accepted transition ceiling was 6,000,000 milliseconds; 6,000,001 was
   rejected.
 - The aggregate endpoint returned 186 resources across 27 types on the test

@@ -69,6 +69,18 @@ UNKNOWN_NAME: Final = "Unknown"
 _MIN_BUFFER_SIZE = 2
 _RESOURCE_PATH_PARTS = 5
 _MATCH_TOLERANCE = 0.1
+_MATCH_TOLERANCES: Final = MappingProxyType(
+    {
+        # Measured: a commanded brightness of 20.0 echoes back as 20.16. The bridge
+        # stores brightness as 254 levels, so its own grid is ~0.4 apart and a
+        # tolerance below that made `command_echo` unreachable for any brightness
+        # -- every transition echo was misfiled as a physical `reported` value.
+        # Per attribute rather than one global number, because the same constant
+        # guards `xy`, whose whole range is 0..1.
+        "brightness": 0.5,
+        "mirek": 1.0,
+    }
+)
 _EVENT_SOURCE_STOPPED_MESSAGE = "Event connection source stopped"
 
 
@@ -1558,19 +1570,21 @@ def _compatible(expected: dict[str, Any], actual: dict[str, Any]) -> bool:
         if key not in actual:
             continue
         compared = True
-        if not _values_close(value, actual[key]):
+        if not _values_close(value, actual[key], key):
             return False
     return compared
 
 
-def _values_close(expected: object, actual: object) -> bool:
+def _values_close(expected: object, actual: object, key: str = "") -> bool:
     if isinstance(expected, dict) and isinstance(actual, dict):
         expected_dict = cast("dict[object, object]", expected)
         actual_dict = cast("dict[object, object]", actual)
         return all(
-            key in actual_dict and _values_close(value, actual_dict[key])
-            for key, value in expected_dict.items()
+            inner in actual_dict
+            and _values_close(value, actual_dict[inner], str(inner))
+            for inner, value in expected_dict.items()
         )
     if isinstance(expected, (int, float)) and isinstance(actual, (int, float)):
-        return abs(float(expected) - float(actual)) <= _MATCH_TOLERANCE
+        tolerance = _MATCH_TOLERANCES.get(key, _MATCH_TOLERANCE)
+        return abs(float(expected) - float(actual)) <= tolerance
     return expected == actual

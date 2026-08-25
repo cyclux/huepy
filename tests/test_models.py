@@ -1035,6 +1035,18 @@ class TestPartialFailureFromRealHardware:
             }
         ],
     }
+    SOFT_OFF: ClassVar[dict[str, object]] = {
+        "data": [{"rid": "7d235587", "rtype": "light"}],
+        "errors": [
+            {
+                "description": (
+                    'device (light) 7d235587 is "soft off", '
+                    "command (.dimming.brightness) may not have effect"
+                ),
+                "error_code": "attribute_may_have_no_effect",
+            }
+        ],
+    }
     UNSUPPORTED: ClassVar[dict[str, object]] = {
         "data": [{"rid": "17abe584", "rtype": "light"}],
         "errors": [
@@ -1053,6 +1065,18 @@ class TestPartialFailureFromRealHardware:
             result = unwrap(self.COMMUNICATION, models.ResourceIdentifier)
         assert [r.rid for r in result] == ["7d235587"], "the command was accepted"
         assert "communication_error" in caplog.text
+
+    def test_soft_off_light_does_not_raise(self, caplog):
+        """Observed on a real bridge: a brightness write to an off light.
+
+        Capture/restore sends brightness for every light it puts back, so
+        raising here made restoring fail whenever one of them was switched
+        off -- while the bridge had in fact accepted the command.
+        """
+        with caplog.at_level(logging.WARNING):
+            result = unwrap(self.SOFT_OFF, models.ResourceIdentifier)
+        assert [r.rid for r in result] == ["7d235587"], "the command was accepted"
+        assert "attribute_may_have_no_effect" in caplog.text
 
     def test_unsupported_attribute_still_raises(self):
         """Even though the bridge lists the resource in data."""

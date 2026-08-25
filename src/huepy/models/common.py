@@ -39,8 +39,23 @@ RESOURCE_ROOT = "/clip/v2/resource"
 
 logger = logging.getLogger(__name__)
 
-ADVISORY_ERROR_CODES = frozenset({"communication_error"})
-"""Error codes that report a caveat on an accepted command, not a rejection."""
+ADVISORY_ERROR_CODES = frozenset(
+    {"communication_error", "attribute_may_have_no_effect"}
+)
+"""Error codes that report a caveat on an accepted command, not a rejection.
+
+Both were observed on a real bridge answering a write it *accepted* -- the
+resource is still listed in ``data``:
+
+* ``communication_error`` -- "has communication issues, command (.on.on) may
+  not have effect".
+* ``attribute_may_have_no_effect`` -- 'is "soft off", command
+  (.dimming.brightness) may not have effect'.
+
+The second is what a light that is switched off returns for a brightness
+write, which is exactly what capture/restore does for every off light. Raising
+there made restoring a room fail whenever one of its lights was off.
+"""
 
 
 class HueModel(BaseModel):
