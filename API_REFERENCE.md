@@ -1,7 +1,7 @@
 # huepy API Reference
 
-Async wrapper for the Philips Hue v2 CLIP API. Every call is a coroutine and
-every response is a validated pydantic model.
+Async wrapper for the Philips Hue v2 CLIP API. Bridge I/O is asynchronous and
+resource responses are validated pydantic models.
 
 Anything the client hands you is **bound**: it carries the client that fetched
 it and can act on itself, so most code never handles a bridge id.
@@ -75,7 +75,7 @@ async with Hue(bridge_ip="192.168.1.100") as hue:
 | Method | Description |
 | --- | --- |
 | `async start(*, load_names=True) -> None` | Open the session and load the name lookup. Called by `__aenter__`. Pass `load_names=False` to skip the five requests the lookup costs; it is skipped anyway when no application key is available, which is what keeps `authenticate()` reachable on an unkeyed bridge. |
-| `async close() -> None` | Close the event stream and session. Safe to call when not started. |
+| `async close() -> None` | Close every event stream and the session. Safe to call when not started. |
 | `async refresh_names() -> dict[str, str]` | Reload the id-to-name lookup. Devices, lights, rooms, zones and scenes are fetched concurrently — five requests. |
 | `get_name(resource_id: str) -> str` | Display name for an id, or `"Unknown"`. Local; no request. |
 | `ensure_authenticated() -> None` | Raise `AuthenticationError` if no key is available. Never prompts. |
@@ -97,7 +97,9 @@ distribution metadata, or `"unknown"` when running from a source tree.
 
 ## Fetching resources
 
-Every handler — singular or plural — offers the same four reads.
+Every handler offers `get_all()`, its `all()` alias, and `get(id)`. Handlers
+for named resources additionally offer `by_name()`, `names()`, and an awaited
+subscript lookup.
 
 | Call | Returns | Cost |
 | --- | --- | --- |
@@ -175,9 +177,10 @@ detached = models.Light(id="abc")
 await detached.turn_on()  # raises DetachedResourceError
 ```
 
-`refresh()` and every command return bound results too, so a chain never falls
-off the client. `bind(hue, rtype="")` exists for the rare case of attaching a
-client to a model you built or cached yourself; handlers call it for you.
+`refresh()` returns a new bound model. Commands return the bridge's
+`ResourceIdentifier` references instead. `bind(hue, rtype="")` exists for the
+rare case of attaching a client to a model you built or cached yourself;
+handlers call it for you.
 
 ## Commands on every resource
 
@@ -490,7 +493,9 @@ building payloads by hand.
 | Payload builder | `build_light_payload` |
 | Aggregate resources | `AnyResource`, `RESOURCE_MODELS`, `RESOURCE_LIST`, `parse_resource` |
 
-`ResourceType` is a `StrEnum` of every v2 `rtype`.
+`ResourceType` is a `StrEnum` of every resource type with a concrete huepy
+model or handler. Unknown aggregate types remain usable through the generic
+fallback and keep their raw string `type`.
 
 `AnyResource` is the aggregate-resource union used by `Hue.snapshot()` and the
 state layer. `parse_resource(payload)` returns the concrete model for a known
@@ -507,9 +512,9 @@ they are included in normal `model_dump()` output.
 ### Envelope
 
 Every v2 response is `{"errors": [...], "data": [...]}`, and the bridge reports
-many failures *inside* the body — HTTP 200 with a populated `errors` array.
-Routing responses through `unwrap` is what turns that into an exception rather
-than a silent success.
+many failures *inside* otherwise successful 2xx bodies. Routing responses
+through `unwrap` is what turns that into an exception rather than a silent
+success.
 
 ```python
 from huepy.models import unwrap, unwrap_one
@@ -518,9 +523,9 @@ lights = unwrap(payload, models.Light)  # HueResponseError if the body has error
 light = unwrap_one(payload, models.Light)  # and also if data[] came back empty
 ```
 
-These names moved: `models/envelope.py` was folded into `models/common.py` in
-0.2.0. `HueResponse`, `HueErrorDetail`, `unwrap` and `unwrap_one` are unchanged
-and still exported from `huepy.models`.
+`HueResponse`, `HueErrorDetail`, `unwrap` and `unwrap_one` are exported from
+`huepy.models`; their implementation lives with the shared models in
+`models/common.py`.
 
 `build_light_payload(**state)` composes the same payload `set()` sends, without
 a client — useful for `update()` calls you assemble yourself.
@@ -612,6 +617,47 @@ attributed to this client only after their transport outcome is known.
 `state.fading` is a read-only mapping of current locally issued
 `huepy.state.ActiveFade` records, keyed by resource id; each record includes the
 command id, normalized target, end, report-reliability end, and confirmation.
+See [`STATE_LAYER.md`](STATE_LAYER.md) for the reconnect, reconciliation,
+folding, and write-correlation rationale and the bridge observations behind it.
+
+### State lifecycle and views
+
+| Member | Type | Description |
+| --- | --- | --- |
+| `state.connected` | `bool` | Whether the event stream is active and startup or reconnect reconciliation is complete. |
+| `state.resources` | `list[AnyResource]` | Fresh bound copies of every aggregate-visible resource. |
+| `state.fading` | `Mapping[str, ActiveFade]` | Fresh, read-only records for locally issued fades still inside their reporting window. |
+| `state.get(resource_id)` | `AnyResource \| None` | Local id lookup. |
+| `state.all(Model)` | `list[Model]` | Local lookup by concrete model class. |
+| `state.name_of(resource_id)` | `str` | Resource or owner name, or `"Unknown"`. |
+| `state.device_of(resource_id)` | `Device \| None` | Owning physical device. |
+| `state.room_of(resource_id)` | `Room \| None` | Containing room. |
+| `state.zones_of(resource_id)` | `list[Zone]` | Every containing zone. |
+| `state.lights_in(group)` | `list[Light]` | Resolvable lights in a room or zone. |
+| `state.changes(maxsize=4096)` | `AsyncGenerator[Change \| Resync]` | Independent bounded history stream. Requires the state context to be running. |
+| `state.close()` | `Coroutine[Any, Any, None]` | Stop observation and close every subscriber when awaited. Called by context exit. |
+
+Each `StateView` (`lights`, `rooms`, `zones`, `scenes`, and `devices`) has
+`get(id)`, `all()`, `by_name(name)`, `names()`, and `[...]`. These operations
+are synchronous and issue no bridge request. A missing `by_name` or subscript
+lookup raises `ResourceNotFoundError`.
+
+### State records
+
+The state package exports `HueState`, `StateView`, `Change`, `ChangeKind`,
+`Resync`, `ResyncReason`, `ActiveFade`, and the transport-level `PendingWrite`.
+
+| Record | Important fields |
+| --- | --- |
+| `Change` | `kind`, `at`, `observed_at`, `event_at`, `received_at`, `event_id`, `resource_id`, `resource_type`, `before`, `after`, `delta`, `resynced`, `origin`, `command_id`, `command_confirmed`, `observation`, `transition_ends_at` |
+| `Resync` | `reason`, `gap_started`, `gap_ended`, `dropped`, `detail` |
+| `ActiveFade` | `command_id`, `resource_id`, `target`, `sent_at`, `ends_at`, `unreliable_until`, `confirmed` |
+| `PendingWrite` | `command_id`, `path`, `payload`, `sent_at`, `completed_at`, `status` |
+
+`ChangeKind` contains `UPDATE`, `ADD`, and `DELETE`. `ResyncReason` contains
+`RECONNECT`, `LAGGED`, and `INCONSISTENT`. `Change.at` chooses the best
+available feature timestamp in the order `observed_at`, `event_at`, then
+`received_at`.
 
 ## `huepy.color`
 
@@ -791,7 +837,7 @@ All derive from `HueError`.
 | `AuthenticationError` | — | No application key, or the bridge refused one |
 | `BridgeConnectionError` | — | The bridge is unreachable |
 | `HueAPIError` | `status_code`, `message` | Non-2xx HTTP status |
-| `HueResponseError` | `errors: list[str]` | A 2xx body reporting a failure that changed nothing |
+| `HueResponseError` | `errors: list[str]` | A 2xx body containing a blocking error, or only advisory errors with no successful data |
 | `DetachedResourceError` | — | A command was issued on a model with no client |
 | `ResourceNotFoundError` | `name`, `known` | A name lookup matched nothing |
 
@@ -808,14 +854,16 @@ The bridge overloads `errors[]` for two different things, and only the
 | `communication_error` | The command was accepted, but a device's radio is flaky, so it "may not have effect" | Logged as a warning; the call returns normally |
 | anything else | The request itself was wrong, e.g. setting colour temperature on a light that has none | Raises `HueResponseError` |
 
-Both arrive as HTTP **207 Multi-Status** with the resource still listed in
-`data`, so `data` alone cannot tell them apart. Raising on both would mean one
+On the measured bridge these partial outcomes arrived as HTTP **207
+Multi-Status**, often with a resource still listed in `data`; neither the HTTP
+status nor `data` alone distinguishes them. Raising on both would mean one
 unreliable bulb breaks every call that touches it; raising on neither would
 silently drop an unsupported attribute. An advisory error that changed nothing
 at all still raises, since there is no success to preserve.
 
-Outright rejections never reach this path: a nonexistent resource is `404` and
-an invalid value is `400`, both of which surface as `HueAPIError`.
+Transport-level rejections do not reach this path. For example, a nonexistent
+resource is `404` and a negative transition is `400`; both surface as
+`HueAPIError` before envelope parsing.
 
 ## Complete example
 

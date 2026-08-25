@@ -5,8 +5,8 @@ keys over time, and a strict model would turn a harmless addition into a
 parse failure for every caller.
 
 This module also holds the `{errors, data}` envelope every v2 CLIP response is
-wrapped in. The bridge reports failures *inside* the body: a request can come
-back with HTTP 200 and a populated ``errors`` array. Routing every response
+wrapped in. The bridge reports failures *inside* successful response bodies: a
+request can come back with a populated ``errors`` array. Routing every response
 through :func:`unwrap` is what stops such a failure being reported to the
 caller as success.
 

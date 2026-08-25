@@ -1,7 +1,8 @@
-# Phase 0 fixtures
+# Real-bridge regression fixtures
 
-The scrubbed aggregate snapshot and raw SSE frames are generated only from an explicitly selected
-test bridge:
+The scrubbed representative snapshot and SSE frames are generated only from an
+explicitly selected test bridge. The capture module retains its original
+`phase0` filename for reproducibility:
 
 ```console
 HUEPY_INTEGRATION=1 uv run python -m tests.integration.capture_phase0
@@ -24,7 +25,7 @@ HUEPY_INTEGRATION=1 uv run python -m tests.integration.probe_phase0
 ```
 
 This writes `durability_probe.json`, covering the 6,000,000 ms transition
-boundary, `Last-Event-ID` after 80 paced writes exceed the measured replay buffer,
-and raw SSE comments during the quiet interval. It also restores its selected
-light in `finally`. Individual probes can be skipped with the command's
-`--skip-*` flags.
+boundary, `Last-Event-ID` after 80 paced writes exceed the measured replay
+buffer, and raw SSE comments during the quiet interval. Connection cleanup and
+light restoration are both attempted even if either fails. Individual probes
+can be skipped with the command's `--skip-*` flags.

@@ -17,7 +17,7 @@ A modern async Python wrapper for the **Philips Hue v2 CLIP API**.
 - An opt-in `hue.state()` view keeps a last-reported resource graph current
   from the event stream
 - Models tolerate unknown fields, so bridge firmware updates don't break parsing
-- Failures reported in the response body (HTTP 200 with `errors[]`) are raised, not silently ignored
+- Failures reported in a successful response body (`errors[]`) are raised, not silently ignored
 - Ships `py.typed` -- your type checker sees the annotations
 
 ## Installation
@@ -276,7 +276,7 @@ All errors derive from `HueError`:
 | `AuthenticationError` | No application key, or the bridge refused one |
 | `BridgeConnectionError` | The bridge is unreachable |
 | `HueAPIError` | Non-2xx HTTP status (carries `status_code`) |
-| `HueResponseError` | HTTP 200 with errors in the body (carries `errors`) |
+| `HueResponseError` | A successful HTTP response with blocking errors, or no successful data, in the body (carries `errors`) |
 | `ResourceNotFoundError` | No resource carries the requested name (carries `name` and `known`) |
 | `DetachedResourceError` | A command was issued on a model that was never fetched |
 
@@ -303,13 +303,24 @@ physically changes your lights:
 HUEPY_INTEGRATION=1 uv run pytest -m integration
 ```
 
-Every test snapshots the state of every light before it runs and restores it
-afterwards, including on failure. These are the tests that catch what unit
-tests cannot: every bug found this way has been real firmware sending a shape
-no fixture predicted.
+Every test that changes lights snapshots their state first and restores it
+afterwards, including on failure; a suite-wide safety fixture restores all
+lights touched through the standard integration fixtures. These are the tests
+that catch what unit tests cannot: real firmware sending a shape no fixture
+predicted.
+
+The runnable examples include direct control, typed events, the maintained
+state view, and a SQLite history recorder:
+
+- [`examples/basic.py`](examples/basic.py) — connect and list resources
+- [`examples/listen_events.py`](examples/listen_events.py) — print typed event deltas
+- [`examples/track_state.py`](examples/track_state.py) — query and follow `HueState`
+- [`examples/record_history.py`](examples/record_history.py) — persist changes and uncertainty markers
 
 See [`API_REFERENCE.md`](API_REFERENCE.md) for the full surface and
-[`examples/`](examples/) for runnable scripts.
+[`examples/`](examples/) for runnable scripts. The reconnect, state-folding,
+and write-correlation design is recorded in
+[`STATE_LAYER.md`](STATE_LAYER.md).
 
 ## License
 

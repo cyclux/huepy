@@ -1,4 +1,4 @@
-"""Capture and scrub Phase 0 bridge evidence for deterministic fixtures.
+"""Capture and scrub real-bridge evidence for deterministic fixtures.
 
 Run explicitly; this module is not collected as a test::
 

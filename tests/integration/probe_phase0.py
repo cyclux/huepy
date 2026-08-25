@@ -1,4 +1,4 @@
-"""Capture the remaining opt-in Phase 0 durability evidence.
+"""Capture opt-in real-bridge durability evidence.
 
 This complements :mod:`tests.integration.capture_phase0` with probes that
 need deliberate connection gaps or a long quiet listen::

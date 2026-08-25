@@ -1,0 +1,253 @@
+# HueState architecture and bridge evidence
+
+This document explains the architecture and measured bridge behaviour behind
+the current state layer. The user-facing contract lives in
+[`README.md`](README.md) and [`API_REFERENCE.md`](API_REFERENCE.md); the code
+and tests are authoritative when this rationale and the implementation differ.
+
+## Scope and status
+
+Version 0.3.0 added an opt-in, continuously maintained, last-reported view of
+the aggregate-visible Hue resource graph:
+
+```python
+async with Hue() as hue, hue.state() as state:
+    desk = state.lights["Desk lamp"]
+    print(desk.brightness)
+
+    async for item in state.changes():
+        print(item)
+```
+
+Ordinary handler reads remain uncached and continue to issue bridge requests.
+The state layer is explicit: `hue.state()` returns a stopped `HueState`, and
+entering its async context starts observation.
+
+The current implementation includes:
+
+- a typed aggregate snapshot with a generic fallback for future resource types;
+- complete SSE frame parsing, connection metadata, reconnect resume cursors,
+  and multi-stream cleanup;
+- reconnect reconciliation and explicit uncertainty markers;
+- independent bounded change subscribers;
+- write outcome observation, self-write correlation, and fade metadata;
+- read-side helpers for capture/restore, groups, scenes, sensors, and
+  connectivity;
+- typed motion, temperature, ambient-light, button, contact, battery, rotary,
+  and grouped-light event deltas;
+- a three-connection per-bridge pool and bounded retries for GET requests that
+  receive 429 or 503;
+- privacy-minimised real-bridge fixtures and opt-in live regression probes.
+
+## Current architecture
+
+### Snapshot and model registry
+
+`Hue.snapshot()` fetches `/clip/v2/resource` once and returns bound
+`models.AnyResource` instances. Known `type` values select a concrete model
+through `models.RESOURCE_MODELS`; an unknown value becomes a tolerant generic
+`HueResource`, preserving fields in `model_extra`.
+
+The registry is the shared source for aggregate parsing and `HueState`. Adding
+a concrete aggregate model requires updating the registry, the `AnyResource`
+union, exports, the matching handler where useful, API documentation, and
+tests.
+
+### Event transport
+
+The transport exposes three levels:
+
+- `subscribe_events()` yields individual decoded event dictionaries for
+  compatibility;
+- `subscribe_event_frames()` yields `SSEFrame(event_id, received_at, events)`;
+- `event_connections()` yields `EventConnection(opened_at, resumed_from,
+  frames)` so recovery boundaries remain visible.
+
+The frame parser handles SSE field ordering and multi-line `data:` payloads.
+Reconnects use exponential backoff and send the most recently observed SSE id
+as `Last-Event-ID`. TCP keepalive is enabled and tuned where the platform
+supports it. `Hue.close()` closes every stream it created, not only the latest
+subscriber.
+
+### Startup and reconnect reconciliation
+
+Entering `HueState` opens the event stream before requesting the aggregate
+snapshot. Frames received while the snapshot is in flight are buffered and
+folded before the context returns, without publishing artificial startup
+history.
+
+Every reconnect is conservative:
+
+1. the transport requests retained events with `Last-Event-ID`;
+2. `HueState` continues draining frames while it requests a fresh snapshot;
+3. it publishes `Resync(RECONNECT)` because replay completeness cannot be
+   proved;
+4. it emits `Change(resynced=True)` for differences between replayed history
+   and the fresh snapshot;
+5. the snapshot becomes canonical, with buffered frames folded over it.
+
+This intentionally over-reports possible gaps. The bridge silently truncates
+its replay buffer, so absence of an error is not proof of continuity.
+
+### State reads
+
+`HueState` stores raw detached payloads internally. Every public read reparses
+a deep copy and binds it to the owning client, preventing callers from mutating
+canonical state while keeping bound-model commands available.
+
+The named `lights`, `rooms`, `zones`, `scenes`, and `devices` views provide
+synchronous local `get`, `all`, `by_name`, `names`, and subscript lookup.
+Generic and topology helpers are `resources`, `get`, `all(Model)`, `name_of`,
+`device_of`, `room_of`, `zones_of`, and `lights_in`.
+
+### Folding and history
+
+Update deltas are deep-merged into the prior raw resource and revalidated.
+Multiple entries for the same resource in one event are merged in wire order.
+Add and delete events update the graph directly. An update for an id absent
+from the aggregate snapshot triggers a typed point fetch; an unresolvable or
+invalid shape produces `Resync(INCONSISTENT)` rather than silently claiming
+complete history.
+
+`state.changes(maxsize=4096)` gives each subscriber an independent bounded
+queue. Overflow is represented by `Resync(LAGGED)` and a dropped-count value.
+Slow subscribers cannot block state folding or other subscribers.
+
+`Change` records retain:
+
+- add/update/delete kind and complete before/after resources;
+- the raw delta;
+- sensor observation, bridge event, and local receive timestamps;
+- SSE event id;
+- reconnect-diff provenance;
+- write origin, command id/outcome, observation class, and transition end.
+
+The computed `Change.at` selects `observed_at`, then `event_at`, then
+`received_at`.
+
+### Write correlation and fades
+
+`HueHttpClient` publishes immutable `PendingWrite` lifecycle records around
+PUT requests. A write starts as `pending` and finishes as `accepted`,
+`rejected`, or `unknown`. Observers cannot fail the request.
+
+`HueState` registers one observer for its lifetime. Compatible deltas within
+the correlation window can be labelled `origin="self"`. Rejected commands are
+not attributed. Grouped-light writes are correlated with the group service and
+the member lights resolvable from the current topology.
+
+State is never updated optimistically. A locally issued transition appears in
+`state.fading` until the measured reporting allowance ends. The immediate
+target echo is marked `observation="command_echo"`; later bridge reports are
+marked `"reported"`.
+
+## Measured bridge behaviour
+
+These observations came from one BSB002 bridge running CLIP API 1.78.0. They
+are evidence for the current defensive design, not universal firmware
+guarantees.
+
+- `Last-Event-ID` was honoured and retained frames replayed immediately.
+- The observed replay buffer held roughly 15 frames and silently returned only
+  the surviving tail when an older cursor was requested.
+- No periodic application keepalive was observed: the bridge sent one `: hi`
+  comment at connection and could then remain quiet for more than 90 seconds.
+- SSE frame ids behaved as ordered cursors but no documented successor rule or
+  replay/live boundary was observed.
+- A transition PUT produced an immediate event containing the commanded target,
+  while physical progress reports arrived on a much slower device cadence.
+- The accepted transition ceiling was 6,000,000 milliseconds; 6,000,001 was
+  rejected.
+- The aggregate endpoint returned 186 resources across 27 types on the test
+  bridge but omitted resources available from the `motion_area_candidate`
+  endpoint. State topology therefore tolerates unresolved references.
+- A 40-request read burst completed fastest with three concurrent connections
+  on the measured bridge. No stable firmware-independent rejection threshold
+  was established, so the pool limit is a throughput choice, not a claimed Hue
+  protocol limit.
+
+## Models and read symmetry
+
+The 0.3.0 model work includes:
+
+- aware event and sensor timestamps;
+- grouped colour whose `xy` may legitimately be absent;
+- scene actions and status, including last recall;
+- service-group `services` references;
+- `Light.capture()` and `restore()` with resource-id validation;
+- computed `Light.kelvin`, `Light.rgb`, and `LightLevel.lux`;
+- `Device.service_id()` and group `service_id()` helpers;
+- `zigbee_connectivity` and tolerant `relative_rotary` support;
+- local enforcement of the measured 6,000-second transition ceiling.
+
+Stored configuration intentionally remains a tolerant standard-library
+dataclass. Malformed, unreadable, unknown, or wrong-typed stored values fall
+back to explicit arguments, environment variables, or defaults as already
+covered by the configuration tests.
+
+## Evidence and privacy
+
+Real-bridge tests are opt-in and double-guarded:
+
+```console
+HUEPY_INTEGRATION=1 uv run pytest -m integration
+```
+
+They physically change lights and must never be run without the operator's
+explicit request. Mutating tests capture state before writes and restore it in
+cleanup, including failure paths.
+
+Committed fixtures are deliberately not raw bridge dumps. The capture tools:
+
+- retain one representative resource per observed type;
+- reduce unknown resource bodies to `id` and `type`;
+- truncate relationship and scene-action lists;
+- replace identifiers consistently;
+- generalise names, product data, network identifiers, and timezone;
+- rebase absolute timestamps and SSE cursors;
+- remove schedules, geolocation-derived fields, and automation configuration.
+
+Regression tests enforce those privacy properties. The original aggregate
+resource count above is retained only as a research observation.
+
+## Known limits
+
+- `HueState` is last-reported state, not guaranteed physical state. This is
+  most visible during fades and when a device is unreachable.
+- The aggregate endpoint can omit resource types exposed by their individual
+  endpoints.
+- Every reconnect is marked uncertain because replay truncation is silent.
+- Writes issued through another client or process cannot be self-attributed.
+- Event `error` payloads remain tolerated but lack an observed live fixture.
+- `relative_rotary` is modelled from the known payload shape but was absent on
+  the bridge used for fixture capture.
+- Several of the 27 observed resource types intentionally remain generic until
+  a consumer needs their fields.
+
+## Optional future work
+
+This document is not a roadmap. Future work should start from a concrete
+consumer or new bridge observation. Reasonable candidates are:
+
+- promote another generic resource type when its fields have a caller;
+- add live evidence for `EventType.ERROR` or `relative_rotary` when suitable
+  hardware is available;
+- introduce an opt-in strict configuration mode without weakening the current
+  tolerant default;
+- suppress reconnect markers only if a firmware-independent continuity proof
+  becomes available.
+
+## Verification map
+
+- `tests/test_http.py` and `tests/test_sse_frames.py`: transport, retry, SSE,
+  cursor, connection, and cleanup semantics.
+- `tests/test_state.py`: startup, fold, history, lag, reconnect, topology,
+  isolation, write correlation, and fades.
+- `tests/test_models.py` and `tests/test_events.py`: typed resource and delta
+  shapes.
+- `tests/test_real_fixtures.py`: parser coverage, measured durability evidence,
+  and fixture privacy.
+- `tests/integration/test_live_state.py`: opt-in end-to-end snapshot, fade
+  attribution, replay overflow, reconnect marker, and reconciliation.
+- `examples/track_state.py` and `examples/record_history.py`: maintained state
+  and persistence usage.

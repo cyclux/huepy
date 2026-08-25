@@ -14,7 +14,7 @@ applyTo: '**'
 - Add type hints to ALL functions, class attributes, variables
 - Use specific types: `dict[str, str]` not `dict`
 - Use modern syntax: `list[str]` not `List[str]`
-- NO `Any` type - always specify concrete types
+- Use `Any` only at the raw JSON boundary, then narrow it immediately
 - Always include return types, including `None`
 
 ## Documentation (REQUIRED)
@@ -25,17 +25,17 @@ applyTo: '**'
 
 ## Logging & Output
 
-- NEVER use `print()` - use logging module only
-- Create module logger: `logger = get_logger(__name__)`
+- Library code uses `logging.getLogger(__name__)`; it never configures host logging
+- Runnable scripts in `examples/` may use `print()` for user-facing output
 - Use appropriate levels: DEBUG, INFO, WARNING, ERROR, CRITICAL
 - Include context in log messages
 
 ## Error Handling
 
-- Create custom exceptions inheriting from base service exception
+- Reuse the `HueError` hierarchy; add a subtype only for a distinct caller action
 - Include HTTP status codes for web exceptions
 - Provide detailed error context
-- Use structured error dictionaries for validation
+- Parse response-body errors through `HueResponse` and `HueErrorDetail`
 
 ## Function/Class Design
 
@@ -70,7 +70,7 @@ applyTo: '**'
 
 ## Configuration
 
-- Use Pydantic dataclasses (prefer dataclasses over BaseModel)
+- `HueConfig` is a standard-library dataclass; payload and record models use pydantic
 - Type all configuration values
 - Provide sensible defaults
 - Support environment separation
@@ -80,7 +80,7 @@ applyTo: '**'
 - Focus on meaningful tests over coverage percentage
 - Descriptive test names explaining scenarios
 - Arrange-Act-Assert structure
-- Mock external dependencies
+- Fake the `Transport` protocol with `tests/conftest.py`; do not mock `aiohttp`
 - Use pytest framework
 
 ## Performance
@@ -96,3 +96,15 @@ applyTo: '**'
 - Resource-based routing for APIs
 - Separate business logic from framework code
 - Centralized configuration
+
+## huepy Architecture
+
+- Keep `aiohttp` confined to `src/huepy/client/http.py`; other modules depend on the `Transport`
+  protocol in `client/protocol.py`
+- Keep `resources/` independent of `client/base.py` to preserve the acyclic import graph
+- Parse resource payloads through tolerant `HueModel` subclasses (`extra="allow"`)
+- Route v2 envelopes through `unwrap()` / `raise_for_errors()`; HTTP 207 is a transport success
+  whose `errors[]` still needs classification
+- Keep ordinary handler reads uncached. Maintained local state is explicit and opt-in through
+  `hue.state()`
+- One logical light command is one PUT composed by `build_light_payload()`

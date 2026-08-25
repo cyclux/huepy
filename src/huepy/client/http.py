@@ -236,7 +236,7 @@ class HueHttpClient:
             The decoded JSON body, or None for responses without one.
 
         Raises:
-            HueAPIError: If the bridge answers with a non-200 status.
+            HueAPIError: If the bridge answers outside the 2xx success range.
 
         """
         session = self._active_session
