@@ -55,7 +55,7 @@ markers = [
 [tool.basedpyright]
 venvPath = "."
 venv = ".venv"
-include = ["src", "tests"]
+include = ["src", "tests", "examples"]
 reportMissingTypeStubs = false
 
 # A bridge payload genuinely *is* arbitrary JSON, so `Any` is the honest type at
@@ -83,6 +83,14 @@ reportUnusedFunction = false
 reportUnreachable = false
 reportAny = false
 reportExplicitAny = false
+
+# Runnable scripts fire commands for effect. The `CommandResult` a write returns is
+# deliberately dropped -- that is the idiom README.md and API_REFERENCE.md teach in
+# every sample. Requiring `_ = await light.set(...)` here would document a
+# requirement that does not exist.
+[[tool.basedpyright.executionEnvironments]]
+root = "examples"
+reportUnusedCallResult = false
 
 [tool.coverage.run]
 source_pkgs = ["huepy", "tests"]

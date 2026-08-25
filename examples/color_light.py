@@ -55,10 +55,8 @@ async def main() -> None:
         target = rgb_to_xy(hex_to_rgb(wanted))
         if gamut is not None:
             target = clamp_to_gamut(target, gamut)
-        print(
-            f"Setting {wanted} -> xy ({target[0]:.4f}, {target[1]:.4f})"
-            f" on gamut {light.color.gamut_type}"
-        )
+        xy_text = f"({target[0]:.4f}, {target[1]:.4f})"
+        print(f"Setting {wanted} -> xy {xy_text} on gamut {light.color.gamut_type}")
 
         # One PUT: switch on, set the colour, fade over a second.
         await light.set(on=True, hex_color=wanted, transition=FADE_SECONDS)

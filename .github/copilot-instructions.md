@@ -27,6 +27,7 @@ applyTo: '**'
 
 - Library code uses `logging.getLogger(__name__)`; it never configures host logging
 - Runnable scripts in `examples/` may use `print()` for user-facing output
+- `examples/` is type-checked with `src` and `tests`; only `reportUnusedCallResult` is relaxed there
 - Use appropriate levels: DEBUG, INFO, WARNING, ERROR, CRITICAL
 - Include context in log messages
 

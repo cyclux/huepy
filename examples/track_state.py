@@ -3,7 +3,7 @@
 import asyncio
 
 from huepy import Hue
-from huepy.state import Change, Resync
+from huepy.state import Resync
 
 
 async def main() -> None:
@@ -13,18 +13,19 @@ async def main() -> None:
             print(f"{room.name}: {lights or '(no resolvable lights)'}")
 
         async for item in state.changes():
+            # The stream is a closed Change | Resync union, so everything past
+            # this guard is a Change -- a second isinstance would be dead code.
             if isinstance(item, Resync):
                 print(
                     f"possible gap: {item.reason} {item.gap_started}..{item.gap_ended}"
                 )
                 continue
-            if isinstance(item, Change):
-                print(
-                    item.event_id,
-                    item.kind,
-                    state.name_of(item.resource_id),
-                    item.delta,
-                )
+            print(
+                item.event_id,
+                item.kind,
+                state.name_of(item.resource_id),
+                item.delta,
+            )
 
 
 if __name__ == "__main__":

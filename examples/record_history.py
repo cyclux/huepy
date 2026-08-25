@@ -5,7 +5,7 @@ import sqlite3
 from pathlib import Path
 
 from huepy import Hue
-from huepy.state import Change, Resync
+from huepy.state import Resync
 
 DATABASE = Path("hue-history.sqlite3")
 
@@ -33,7 +33,20 @@ async def main() -> None:
     try:
         async with Hue() as hue, hue.state() as state:
             async for item in state.changes():
-                if isinstance(item, Change):
+                # The stream is a closed Change | Resync union, so everything
+                # past this guard is a Change -- a second isinstance, or a
+                # defensive else, would be dead code.
+                if isinstance(item, Resync):
+                    values = (
+                        item.gap_ended.isoformat(),
+                        "resync",
+                        None,
+                        None,
+                        None,
+                        None,
+                        item.model_dump_json(),
+                    )
+                else:
                     room = state.room_of(item.resource_id)
                     values = (
                         item.received_at.isoformat(),
@@ -44,18 +57,6 @@ async def main() -> None:
                         room.name if room is not None else None,
                         item.model_dump_json(),
                     )
-                elif isinstance(item, Resync):
-                    values = (
-                        item.gap_ended.isoformat(),
-                        "resync",
-                        None,
-                        None,
-                        None,
-                        None,
-                        item.model_dump_json(),
-                    )
-                else:  # pragma: no cover - the public union is exhaustive
-                    continue
                 database.execute(
                     "INSERT INTO history VALUES (?, ?, ?, ?, ?, ?, ?)", values
                 )
