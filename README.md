@@ -255,8 +255,8 @@ async with Hue(live=True) as hue:
 `event.resource_ids` lists the ids an event touches, and `hue.get_name(...)`
 turns any of them into the name you gave it. The stream reconnects on its own
 with exponential backoff, and drops an unparseable event with a warning rather
-than ending. For the raw decoded payloads, `hue.http.subscribe_events()` is
-the escape hatch.
+than ending. For the raw decoded payloads,
+`hue.api.raw.subscribe_events()` is the escape hatch.
 
 Event deltas are typed for lights, motion, temperature, ambient light, buttons,
 contact sensors, battery state and relative rotary input. Unknown future
@@ -332,13 +332,20 @@ lights touched through the standard integration fixtures. These are the tests
 that catch what unit tests cannot: real firmware sending a shape no fixture
 predicted.
 
-The runnable examples include direct control, typed events, the maintained
-state view, and a SQLite history recorder:
+The runnable examples are grouped by the API level they are meant to teach:
 
-- [`examples/basic.py`](examples/basic.py) — connect and list resources
-- [`examples/listen_events.py`](examples/listen_events.py) — print typed event deltas
-- [`examples/track_state.py`](examples/track_state.py) — query and follow `HueState`
-- [`examples/record_history.py`](examples/record_history.py) — persist changes and uncertainty markers
+- High level: [`basic.py`](examples/basic.py) lists bound models through the
+  name-oriented collections; [`control_room.py`](examples/control_room.py)
+  resolves and controls a room by name in one composed command; and
+  [`color_light.py`](examples/color_light.py) uses human colour units.
+- Lower level: [`low_level.py`](examples/low_level.py) shows typed, ID-addressed
+  handlers and the raw decoded transport side by side, without changing state.
+- Live state and events: [`listen_events.py`](examples/listen_events.py) prints
+  typed event deltas; [`track_state.py`](examples/track_state.py) queries and
+  follows `HueState`; and [`record_history.py`](examples/record_history.py)
+  persists changes and uncertainty markers.
+- Setup: [`authenticate.py`](examples/authenticate.py) performs the one-time
+  bridge registration used by every other example.
 
 See [`API_REFERENCE.md`](API_REFERENCE.md) for the full surface and
 [`examples/`](examples/) for runnable scripts. The reconnect, state-folding,

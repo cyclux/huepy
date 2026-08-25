@@ -8,6 +8,7 @@ gave it on the bridge, and the dim travels as a single request.
 
 import asyncio
 import sys
+from typing import TypedDict
 
 from huepy import Hue, ResourceNotFoundError, models
 
@@ -18,6 +19,15 @@ HOLD_SECONDS = 5.0
 EXPECTED_ARGS = 2
 
 
+class LightSnapshot(TypedDict):
+    """The mutually exclusive light fields needed for a safe restore."""
+
+    on: bool
+    brightness: float | None
+    mirek: int | None
+    xy: tuple[float, float] | None
+
+
 async def members(hue: Hue, room: models.Room) -> list[models.Light]:
     """Return the room's own lights.
 
@@ -25,12 +35,10 @@ async def members(hue: Hue, room: models.Room) -> list[models.Light]:
     expose, so the two are matched up through each light's `device_id`.
     """
     devices = {child.rid for child in room.children}
-    return [
-        light for light in await hue.api.lights.list() if light.device_id in devices
-    ]
+    return [light for light in await hue.lights.list() if light.device_id in devices]
 
 
-def snapshot(light: models.Light) -> dict[str, object]:
+def snapshot(light: models.Light) -> LightSnapshot:
     """Capture what it takes to put one light back.
 
     Per light, not per room: a room's `grouped_light` reports no aggregate
@@ -75,10 +83,10 @@ async def main() -> None:
         before = {light.id: snapshot(light) for light in lights}
 
         print(f"Dimming {room.name} to {DIM_BRIGHTNESS:.0f}% at {WARM_KELVIN} K...")
-        # One request, not four. A room arrives carrying the reference to its
-        # own grouped_light service, so power, brightness, colour temperature
-        # and the fade go to the bridge in a single PUT -- where the id-based
-        # API needed a fetch, a service lookup and one write per attribute.
+        # One PUT carries the complete change. The high-level API resolves the
+        # room's name, routes through its grouped_light service, translates
+        # Kelvin and seconds to bridge units, and builds the CLIP payload. See
+        # low_level.py for those same concerns expressed explicitly.
         await room.set(
             on=True,
             brightness=DIM_BRIGHTNESS,

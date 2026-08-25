@@ -5,7 +5,7 @@
 Runs until interrupted. The stream reconnects on its own with exponential
 backoff if the connection drops, and drops an event it cannot parse rather
 than ending. For the raw decoded payloads instead, use
-hue.http.subscribe_events().
+hue.api.raw.subscribe_events().
 """
 
 import asyncio

@@ -577,15 +577,15 @@ reconnects with exponential backoff, and is closed for you by `hue.close()`.
 For the raw decoded payloads instead, use the transport directly:
 
 ```python
-async for payload in hue.http.subscribe_events():
+async for payload in hue.api.raw.subscribe_events():
     print(payload)
 ```
 
 `models.parse_events(payload)` turns such a payload into `list[HueEvent]`.
 
-`hue.http.subscribe_event_frames()` yields complete `SSEFrame` objects. Each
+`hue.api.raw.subscribe_event_frames()` yields complete `SSEFrame` objects. Each
 has `event_id`, an aware `received_at`, and decoded `events`; multi-line SSE
-data stays one frame. `hue.http.event_connections()` additionally yields an
+data stays one frame. `hue.api.raw.event_connections()` additionally yields an
 `EventConnection` with `opened_at`, `resumed_from`, and its `frames` iterator.
 Both resume reconnects with the last event id. The compatibility
 `subscribe_events()` iterator continues to yield individual decoded event dictionaries.
@@ -828,10 +828,10 @@ an `InsecureConfigWarning` (exported from `huepy`) instead of silently leaving
 the credential world-readable.
 
 `HueHttpClient` is the concrete transport, also exported from `huepy`; the
-client builds one for you at `start()` and exposes it as `hue.http`. Its pool
-allows three connections per bridge. A GET that receives 429 or 503 is retried
-at most three times with bounded exponential backoff; PUT, POST and DELETE are
-never replayed automatically.
+client builds one for you at `start()` and exposes it through `hue.api.raw`.
+Its pool allows three connections per bridge. A GET that receives 429 or 503
+is retried at most three times with bounded exponential backoff; PUT, POST and
+DELETE are never replayed automatically.
 
 ## Exceptions
 
@@ -873,6 +873,9 @@ resource is `404` and a negative transition is `400`; both surface as
 
 ## Complete example
 
+The high-level API keeps names, human units, service routing, and composed
+commands in one uniform expression:
+
 ```python
 import asyncio
 
@@ -903,4 +906,27 @@ async def main() -> None:
 
 
 asyncio.run(main())
+```
+
+The lower-level typed API expresses the bridge mechanics explicitly. This is
+the right level when an application already stores ids or needs to construct a
+CLIP payload itself; it is not necessary boilerplate for ordinary control:
+
+```python
+from huepy import models
+
+room = await hue.api.rooms.get(room_id)
+grouped_light_id = room.service_id(models.ResourceType.GROUPED_LIGHT)
+if grouped_light_id is not None:
+    await hue.api.grouped_lights.update(
+        grouped_light_id,
+        {
+            "dimming": {"brightness": 40},
+            "color_temperature": {"mirek": 455},
+            "dynamics": {"duration": 2000},
+        },
+    )
+
+# For an operation without a typed handler, opt into decoded JSON explicitly.
+payload = await hue.api.raw.get(f"/clip/v2/resource/room/{room_id}")
 ```

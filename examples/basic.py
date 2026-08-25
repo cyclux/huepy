@@ -13,7 +13,10 @@ from huepy import Hue
 
 async def main() -> None:
     async with Hue() as hue:
-        lights = await hue.api.lights.list()
+        # Top-level collections are the normal, human-facing API. They return
+        # the same validated models as hue.api, but consistently use names for
+        # lookup and commands instead of exposing bridge ids.
+        lights = await hue.lights.list()
         print(f"Found {len(lights)} lights\n")
 
         for light in lights:
