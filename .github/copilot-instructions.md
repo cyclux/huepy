@@ -100,8 +100,9 @@ applyTo: '**'
 
 ## huepy Architecture
 
-- Keep `aiohttp` confined to `src/huepy/client/http.py`; other modules depend on the `Transport`
-  protocol in `client/protocol.py`
+- Keep `aiohttp` confined to `src/huepy/client/http.py` and `src/huepy/client/discovery.py` (the
+  latter runs before any bridge session exists); other modules depend on the `Transport` protocol
+  in `client/protocol.py`. Runtime deps are `aiohttp`, `pydantic`, `zeroconf` (mDNS only)
 - Keep `resources/` independent of `client/base.py` to preserve the acyclic import graph
 - TLS is verified against Signify's bundled root CAs by default (`client/tls.py`), pinning the
   bridge-id common name when known; `TlsMode.INSECURE` is the explicit opt-out. Writes are paced

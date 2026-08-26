@@ -21,6 +21,7 @@ from pydantic import ValidationError
 
 from huepy._version import package_version
 from huepy.client.api import HueAPI
+from huepy.client.discovery import DiscoveryMethod, discover
 from huepy.client.http import HueHttpClient
 from huepy.client.protocol import Transport
 from huepy.collections import (
@@ -33,7 +34,7 @@ from huepy.collections import (
     ZoneCollection,
 )
 from huepy.config import HueConfig, TlsMode, default_config_path
-from huepy.exceptions import AuthenticationError
+from huepy.exceptions import AuthenticationError, BridgeConnectionError
 from huepy.models import AnyResource, HueResponse, NamedResource
 from huepy.models.event import HueEvent, parse_events
 from huepy.utils.naming import build_name_map
@@ -144,6 +145,60 @@ class Hue:
         self.devices: DeviceCollection = DeviceCollection(self, self.api.devices)
         self.service_groups: ServiceGroupCollection = ServiceGroupCollection(
             self, self.api.service_groups
+        )
+
+    @classmethod
+    async def from_discovery(
+        cls,
+        *,
+        app_key: str | None = None,
+        config_path: str | Path | None = None,
+        method: DiscoveryMethod = "auto",
+        index: int | None = None,
+        state: bool = False,
+    ) -> Self:
+        """Find a bridge on the network and return a client bound to it.
+
+        The discovered bridge id is carried through, so TLS verification pins
+        the exact bridge without a second unverified lookup.
+
+        Args:
+            app_key: Application key; falls back to the usual sources.
+            config_path: Where settings are stored.
+            method: The discovery method: ``"auto"``, ``"mdns"`` or ``"cloud"``.
+            index: Which bridge to use when several are found. Required in that
+                case; a single bridge is used automatically.
+            state: Whether to maintain the local resource graph.
+
+        Returns:
+            An unstarted client, as if constructed with the bridge's address and
+            id. Enter it or call :meth:`start` to connect.
+
+        Raises:
+            BridgeConnectionError: If no bridge is found, or several are found
+                and ``index`` was not given.
+
+        """
+        bridges = await discover(method=method)
+        if not bridges:
+            msg = "No Hue bridge found on the network"
+            raise BridgeConnectionError(msg)
+        if index is None:
+            if len(bridges) > 1:
+                ids = ", ".join(bridge.bridge_id for bridge in bridges)
+                msg = f"Found {len(bridges)} bridges ({ids}); pass index= to choose"
+                raise BridgeConnectionError(msg)
+            index = 0
+        if not -len(bridges) <= index < len(bridges):
+            msg = f"index {index} is out of range; {len(bridges)} bridge(s) found"
+            raise BridgeConnectionError(msg)
+        bridge = bridges[index]
+        return cls(
+            bridge_ip=bridge.ip,
+            app_key=app_key,
+            config_path=config_path,
+            bridge_id=bridge.bridge_id,
+            state=state,
         )
 
     @property

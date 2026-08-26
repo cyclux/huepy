@@ -14,8 +14,6 @@ A modern async Python wrapper for the **Philips Hue v2 CLIP API**.
 - Colour in human units -- `rgb=`, `hex_color=`, `kelvin=` -- clamped to the
   gamut the bulb itself reports
 - Transitions in seconds on every light command
-- Dynamic effects, signals and smart scenes -- `await light.set_effect("candle")`,
-  `await hue.smart_scenes.activate("Daily rhythm")`
 - Every response is a validated **pydantic** model, not a bare dict
 - `Hue(state=True)` tracks the whole resource graph in the background
 - `Hue(record=SQLiteSink(...))` persists every change to a queryable file
@@ -35,6 +33,9 @@ Requires Python 3.13+.
 > colours). Install from git.
 
 ## Set up once
+
+Don't know the bridge's address yet? `await huepy.discover()` finds it on the
+local network via mDNS, falling back to Hue's cloud discovery endpoint.
 
 The bridge issues an application key when its link button is pressed:
 
@@ -152,10 +153,10 @@ await scene.activate()
 
 `update(data)`, `delete()` and `refresh()` are on every resource; `set()` and
 the light commands are on anything that behaves like a light, rooms and zones
-included. `set_effect()`, `set_timed_effect()`, `set_gradient()`,
-`set_powerup()`, `signal()`, `identify()`, `adjust_brightness()`,
-`adjust_color_temperature()` and `alert()` are lights only -- a
-`grouped_light` service does not accept them.
+included. `set_effect()` (optionally tinted with a colour or colour
+temperature), `set_timed_effect()`, `set_gradient()`, `set_powerup()`,
+`signal()`, `identify()` and `alert()` are lights only -- a `grouped_light`
+service does not accept them.
 
 A room or zone also resolves its own membership, and can save and put back the
 state of everything in it:
@@ -174,6 +175,10 @@ services for a zone -- so `lights()` does that join for you. `restore()`
 deliberately sends one concurrent request per light rather than one to the
 group: a `grouped_light` reports no aggregate colour temperature, so restoring
 through it drops the colour temperature and leaves the room the wrong colour.
+Those per-light writes are still safe on a large room, because the client paces
+writes to the bridge's throughput budget (~10/s per light, ~1/s to the shared
+broadcast budget that groups and scene recalls draw from); pass
+`rate_limit=False` to `Hue(...)` to manage pacing yourself.
 
 A model you built by hand has no client to talk to, and says so rather than
 failing obscurely:
@@ -237,6 +242,7 @@ fetching a bound model:
 await hue.lights.turn_on("Desk lamp", transition=1.5)
 await hue.rooms.set("Kitchen", brightness=40, kelvin=2200)
 await hue.scenes.activate("Relax")
+await hue.smart_scenes.activate("Daily rhythm")  # follows its weekly schedule
 ```
 
 The direct command first resolves the unique name, then delegates to the same
@@ -293,18 +299,14 @@ descriptions side by side and flags any disagreement.
 `hue.api.lights`, `grouped_lights`, `light_levels`, `grouped_light_levels`,
 `rooms`, `zones`, `scenes`, `smart_scenes`, `devices`, `device_powers`,
 `bridges`, `bridge_homes`, `service_groups`, `motions`, `grouped_motions`,
-`temperatures`, `buttons`, `contacts`, `relative_rotaries`,
-`zigbee_connectivities`, `zgp_connectivities`, `wifi_connectivities`,
-`entertainments`, `entertainment_configurations`, `behavior_scripts`,
-`behavior_instances`, `geolocations`, `geofence_clients`,
-`zigbee_device_discoveries`, `device_software_updates`, `homekits`,
-`matters`, `matter_fabrics`, `tampers`, and `camera_motions` expose the
-complete typed CLIP v2 resource API.
-
-New Zigbee devices -- lights, sensors, switches -- are paired through this
-layer: `await hue.api.zigbee_device_discoveries.search(discovery_id)` starts a
-search, and anything that joins shows up in `hue.lights.list()` or
-`hue.devices.list()` like any other resource.
+`temperatures`, `buttons`, `contacts`, `relative_rotaries`, and
+`zigbee_connectivities` expose the complete typed CLIP v2 resource API.
+`hue.api` also reaches entertainment areas, automation and presence,
+device firmware, extra connectivity services, and HomeKit/Matter/Hue Secure
+integrations -- see [`API_REFERENCE.md`](API_REFERENCE.md#resource-handlers)
+for the full table. Pairing a new light or other Zigbee device goes through
+`hue.api.zigbee_device_discoveries`; there is no other route to it in the v2
+API.
 
 ### Events
 

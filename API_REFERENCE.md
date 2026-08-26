@@ -26,6 +26,7 @@ when you already hold an id or need an unnamed resource type.
 - [Rooms and zones](#rooms-and-zones)
 - [Lights only](#lights-only)
 - [Scenes](#scenes)
+- [Smart scenes](#smart-scenes)
 - [Models](#models)
 - [Events](#events)
 - [Last-reported state](#last-reported-state)
@@ -121,6 +122,37 @@ async with Hue(bridge_ip="192.168.1.100") as hue:
 
 The package itself exposes `huepy.__version__`, read from the installed
 distribution metadata, or `"unknown"` when running from a source tree.
+
+### Discovering a bridge
+
+Find a bridge before any address, key or bridge id is configured. Manual
+configuration (`bridge_ip=` to `Hue`) remains the fallback, and the
+deprecated UPnP/SSDP method is deliberately not implemented.
+
+```python
+from huepy import Hue, discover
+
+bridges = await discover()
+if bridges:
+    hue = Hue(bridge_ip=bridges[0].ip, bridge_id=bridges[0].bridge_id)
+```
+
+The classmethod `Hue.from_discovery(*, app_key=None, config_path=None,
+method="auto", index=None, state=False)` wraps that into one awaitable call,
+carrying the discovered bridge id through so TLS pinning works without a second
+lookup, and returns an unstarted client. It raises `BridgeConnectionError` when
+no bridge is found, or when several are found and `index=` was not given.
+
+| Function | Returns | Notes |
+| --- | --- | --- |
+| `await discover(*, method="auto", validate=True, timeout=5.0, session=None)` | `list[DiscoveredBridge]` | `method` is `"mdns"`, `"cloud"`, or `"auto"` -- mDNS first, falling back to the rate-limited cloud endpoint when it finds nothing. `validate` confirms each candidate against its unauthenticated `/api/0/config`, filling in the bridge id and versions; candidates that do not answer are dropped. |
+| `await discover_bridge_id(ip, *, timeout=5.0, session=None)` | `str` | Reads one bridge's id from its unauthenticated config -- the value that pins its TLS certificate. Raises `BridgeConnectionError` if the bridge does not answer. |
+
+`DiscoveredBridge` is a frozen dataclass: `bridge_id` and `ip`, plus
+`model_id`, `sw_version` and `api_version` once validated. mDNS needs
+multicast reachability but is not rate limited; the cloud endpoint answers
+from anywhere but allows one request per 15 minutes per client, so discover
+once and store the result with `HueConfig.save()`.
 
 ## Fetching resources
 
@@ -258,7 +290,7 @@ async set(
 | `kelvin` | `int` | Colour temperature, 2000–6536; higher is cooler. Out-of-range values are clamped. |
 | `gamut` | `color.Gamut` | Triangle the colour is clamped into. Defaults to whatever the resource itself reports. |
 | `transition` | `float` | Duration of the change, in seconds. |
-| `speed` | `float` | Speed of the active dynamic palette, 0.0–1.0. Only takes effect while a dynamic scene is already running. |
+| `speed` | `float` | Speed of the active dynamic palette, 0.0–1.0. Only takes effect while a dynamic scene is running. |
 
 Everything supplied goes into **one** PUT:
 
@@ -274,7 +306,6 @@ Rules `set()` enforces before it sends anything:
   raises `ValueError` rather than silently preferring one.
 - A colour and a colour temperature cannot be combined — a light does one or
   the other. That, too, is a `ValueError`.
-- `speed` outside 0.0–1.0 raises `ValueError`.
 - A call that supplies nothing sends no request and returns
   `CommandResult(sent=False)`.
 
@@ -308,9 +339,7 @@ await hue.zones.turn_off("Downstairs", transition=3.0)
 ```
 
 `lights` also provides `set_effect(name, effect)` and `alert(name)`. `scenes`
-provides `activate(name, *, action=..., duration=..., brightness=...)`, and
-`smart_scenes` provides `activate(name)` and `deactivate(name)`. Every direct
-command returns `CommandResult`.
+provides `activate(name)`. Every direct command returns `CommandResult`.
 
 ## Transitions
 
@@ -326,8 +355,10 @@ await light.set(on=True, transition=-1)  # raises ValueError
 ```
 
 A negative transition or a duration over 6,000 seconds raises `ValueError`. Omitting it lets the bridge use its
-own default fade. The [effect, gradient, powerup and alert](#lights-only)
-commands take no transition, and neither do the id-based handler commands.
+own default fade. The [effect, timed effect, gradient, powerup, signal,
+identify and relative-adjustment](#lights-only) commands take no `transition`
+argument -- `set_timed_effect()` and `signal()` take their own `duration` in
+seconds instead -- and neither do the id-based handler commands.
 
 ## Colour
 
@@ -437,23 +468,23 @@ run an effect across a room, iterate its lights.
 
 | Command | Sends | Notes |
 | --- | --- | --- |
-| `await light.set_effect(effect, *, xy=None, rgb=None, hex_color=None, mirek=None, kelvin=None, speed=None)` | `{"effects_v2": {"action": {...}}}` | An `models.Effect` member or a raw name, optionally tinted by a colour or colour temperature and paced with `speed`. `Effect.NO_EFFECT` stops the running one and takes no tint. |
-| `await light.set_timed_effect(effect, *, duration=None)` | `{"timed_effects": {...}}` | A `models.TimedEffect` member (`SUNRISE`, `SUNSET`) or a raw name. `duration` is seconds and is required for a real effect, up to six hours; `TimedEffect.NO_EFFECT` stops one that is running. |
+| `await light.set_effect(effect, *, xy=None, rgb=None, hex_color=None, mirek=None, kelvin=None, speed=None)` | `{"effects_v2": {"action": {"effect": ..., "parameters": {...}}}}` | An `models.Effect` member or a raw name. `Effect.NO_EFFECT` stops the running one and takes no parameters. The tint and speed follow the same colour and 0.0–1.0 rules as `set()`. Sends the current `effects_v2` shape, not the deprecated `effects` key. |
+| `await light.set_timed_effect(effect, *, duration=None)` | `{"timed_effects": {"effect": ..., "duration": ...}}` | A `models.TimedEffect` member or a raw name, e.g. a sunrise or sunset fade. `duration` is seconds, sent in milliseconds; required for a real effect, at most six hours. |
 | `await light.set_gradient(colors, *, mode=None)` | `{"gradient": {...}}` | `colors` is a list of CIE `(x, y)` stops, at most `gradient.points_capable` of them. |
-| `await light.set_powerup(preset="custom", *, on=None, on_mode=None, brightness=None, xy=None, rgb=None, hex_color=None, mirek=None, kelvin=None)` | `{"powerup": {...}}` | `preset` is one of `"safety"`, `"powerfail"`, `"last_on_state"`, `"custom"`. Supplying any on/brightness/colour field configures a custom powerup and forces `preset` to `"custom"`. |
-| `await light.signal(signal, *, duration=None, colors=None)` | `{"signaling": {...}}` | A `models.Signal` member or a raw name. `colors` is one or two CIE `(x, y)` points, clamped to the light's gamut; only `ON_OFF_COLOR` and `ALTERNATING` accept them. `Signal.NO_SIGNAL` cancels one that is running. |
-| `await light.identify()` | `{"identify": {"action": "identify"}}` | Asks the light to identify itself with a short breathe cycle. |
-| `await light.adjust_brightness(delta)` | `{"dimming_delta": {...}}` | Nudges brightness up or down by `delta` percentage points, without reading the current value first; `0` halts an in-progress change. |
-| `await light.adjust_color_temperature(mirek_delta)` | `{"color_temperature_delta": {...}}` | Nudges colour temperature warmer or cooler by `mirek_delta`; `0` halts an in-progress change. |
+| `await light.set_powerup(preset="custom", *, on=None, on_mode=None, brightness=None, xy=None, rgb=None, hex_color=None, mirek=None, kelvin=None)` | `{"powerup": {"preset": ...}}` | `preset` is one of `"safety"`, `"powerfail"`, `"last_on_state"`, `"custom"`. Passing any `on`/brightness/colour field configures a custom powerup and forces `preset="custom"`. |
+| `await light.signal(signal, *, duration=None, colors=None)` | `{"signaling": {"signal": ..., "duration": ..., "colors": [{"xy": {...}}]}}` | A `models.Signal` member or a raw name. `duration` is seconds, sent in milliseconds. `colors` takes at most two CIE `(x, y)` points, clamped to the light's gamut, and only for `ON_OFF_COLOR` and `ALTERNATING`. |
+| `await light.identify()` | `{"identify": {"action": "identify"}}` | A short breathe cycle to identify the light, distinct from `alert()`'s wire shape below. |
+| `await light.adjust_brightness(delta)` | `{"dimming_delta": {"action": "up"\|"down"\|"stop", "brightness_delta": ...}}` | Nudges brightness by a relative percentage-point `delta` without reading the current value; `0` sends `"stop"`, halting an in-progress change. |
+| `await light.adjust_color_temperature(mirek_delta)` | `{"color_temperature_delta": {"action": "up"\|"down"\|"stop", "mirek_delta": ...}}` | Nudges colour temperature by a relative `mirek_delta`; `0` sends `"stop"`. |
 | `await light.alert()` | `{"alert": {"action": "breathe"}}` | One pulse to identify a light; it restores itself. |
 
 ```python
 strip = await hue.lights.get("Hallway strip")
-await strip.set_effect(models.Effect.CANDLE)
-await strip.set_timed_effect(models.TimedEffect.SUNRISE, duration=1800)
+await strip.set_effect(models.Effect.CANDLE, mirek=400, speed=0.6)
+await strip.set_timed_effect(models.TimedEffect.SUNSET, duration=1800)
 await strip.set_gradient([(0.6, 0.35), (0.2, 0.15)], mode="interpolated_palette")
 await strip.set_powerup("last_on_state")
-await strip.signal(models.Signal.ON_OFF_COLOR, duration=5, colors=[(0.6, 0.35)])
+await strip.signal(models.Signal.ON_OFF_COLOR, duration=10, colors=[(0.6, 0.35)])
 await strip.identify()
 await strip.adjust_brightness(-10)
 await strip.adjust_color_temperature(50)
@@ -471,111 +502,93 @@ all `None` on a plain white bulb:
 | Field | Type | Reports |
 | --- | --- | --- |
 | `effects` | `models.Effects` | The running effect and the ones this light can run. |
-| `timed_effects` | `models.TimedEffects` | Same, plus `duration` — the milliseconds left. Values are `models.TimedEffect` members. |
+| `timed_effects` | `models.TimedEffects` | Same, plus `duration` — the milliseconds left. |
 | `gradient` | `models.Gradient` | The colour stops, `points_capable` and `pixel_count`. |
 | `powerup` | `models.Powerup` | What the light does when mains power returns. |
 | `alert_actions` | `models.Alert` | The alert actions the light accepts. Named for the `alert()` command that would otherwise collide; the wire key is `alert`. |
-| `signaling` | `models.Signaling` | The signal being displayed, and the ones available. Values are `models.Signal` members. |
+| `signaling` | `models.Signaling` | The signal being displayed, and the ones available. |
 
 ## Scenes
 
 ```python
 scene = await hue.scenes.get("Movie night")
 await scene.activate()
+await scene.activate(action=models.RecallAction.DYNAMIC_PALETTE, duration=4.0)
 ```
 
-By default `activate()` sends `{"recall": {"action": "active"}}` — one PUT to
-the scene, which applies it to the room or zone in its `group` field. Scene
-names repeat across rooms far more often than room names do, so when several
-match, the first in bridge order wins.
+`activate(*, action=RecallAction.ACTIVE, duration=None, brightness=None)`
+sends one PUT to the scene's `recall`, applying it to the room or zone in its
+`group` field. The default call sends `{"recall": {"action": "active"}}`;
+`duration` (seconds, sent in milliseconds) and `brightness` (0–100,
+overriding the scene's own) are added only when given. `action` is a
+`models.RecallAction`: `ACTIVE` applies the stored actions once,
+`DYNAMIC_PALETTE` starts the scene cycling its palette, and `STATIC` applies
+the palette's first frame without animating. Scene names repeat across rooms
+far more often than room names do, so when several match, the first in bridge
+order wins.
 
-```
-async activate(
-    *,
-    action: RecallAction | str = RecallAction.ACTIVE,
-    duration: float | None = None,
-    brightness: float | None = None,
-) -> CommandResult
-```
-
-`action=models.RecallAction.DYNAMIC_PALETTE` starts the scene cycling its
-palette instead of applying it once; `STATIC` applies the palette's first
-frame without animating. `duration` is a transition time into the scene, in
-seconds; `brightness` overrides the scene's own stored brightness, clamped to
-0–100. The bound model, the named collection and the id-based handler all take
-the same three keywords:
+The named collection wraps the same call:
 
 ```python
-await scene.activate(action=models.RecallAction.DYNAMIC_PALETTE, duration=2.0)
-await hue.scenes.activate("Movie night", brightness=60)
-await hue.api.scenes.activate(scene.id, duration=1.5)
+await hue.scenes.activate("Movie night", duration=2.0)
 ```
+
+`hue.api.scenes.create(name, room_id, *, actions=None, speed=None,
+auto_dynamic=None)` stores a scene: `actions` are the per-target scene
+actions in the bridge's shape, `speed` paces its dynamic palette from 0.0 to
+1.0, and `auto_dynamic` starts it dynamically on recall.
 
 The model also exposes stored `actions` (`models.SceneAction`) and optional
 bridge `status` (`models.SceneStatus`), including `active` and the aware
 `last_recall` timestamp when reported.
 
-`hue.api.scenes.create(name, room_id, *, actions=None, speed=None,
-auto_dynamic=None)` stores a scene without recalling it: `actions` is the
-per-target state in the bridge's payload shape, `speed` sets the dynamic
-palette's speed (0.0–1.0), and `auto_dynamic` decides whether a plain recall
-starts the scene dynamically.
+## Smart scenes
 
-### Smart scenes
-
-A smart scene is not applied once like a `Scene`; it is started and then
-follows a weekly schedule of timeslots until stopped, so its verbs are
-`activate`/`deactivate` rather than a recall action.
+A smart scene recalls other scenes on a weekly schedule instead of once: it
+is started and then follows its `week_timeslots` through the day until
+stopped, which is why its verbs are `activate`/`deactivate` rather than a
+recall action.
 
 ```python
 await hue.smart_scenes.activate("Daily rhythm")
 await hue.smart_scenes.deactivate("Daily rhythm")
 ```
 
-Creation is id-based, like every other resource: `hue.api.smart_scenes.create`
-takes the room or zone it belongs to and the weekly schedule directly.
+`hue.smart_scenes` is the named counterpart to `hue.scenes`: `get`, `list`,
+`names`, `rename`, `delete`, plus `activate(name)` and `deactivate(name)`.
+Both resolve the unique name and delegate to the bound model, whose own
+commands take no arguments:
 
 ```
-async create(
-    name: str,
-    group_id: str,
-    week_timeslots: list[dict[str, Any]],
-    *,
-    group_rtype: ResourceType | str = ResourceType.ROOM,
-    transition_duration: float | None = None,
-) -> list[ResourceIdentifier]
+async SmartScene.activate() -> CommandResult    # {"recall": {"action": "activate"}}
+async SmartScene.deactivate() -> CommandResult  # {"recall": {"action": "deactivate"}}
 ```
 
-`week_timeslots` is the weekly schedule in the bridge's payload shape: a list
-of `{"timeslots": [...], "recurrence": [...]}` entries, each timeslot a
-`start_time` and a scene `target`, and each `recurrence` a list of
-`models.WeekDay` values. `group_rtype` says whether `group_id` names a room or
-a zone; `transition_duration` fades between timeslots, in seconds.
+Creation stays on the id-based handler:
 
 ```python
 await hue.api.smart_scenes.create(
     "Daily rhythm",
     room_id,
-    [
-        {
-            "timeslots": [
-                {
-                    "start_time": {"kind": "time", "time": {"hour": 7, "minute": 0}},
-                    "target": {"rid": scene.id, "rtype": "scene"},
-                },
-            ],
-            "recurrence": [models.WeekDay.MONDAY, models.WeekDay.TUESDAY],
-        },
-    ],
+    week_timeslots,
+    transition_duration=30.0,
 )
 ```
 
-`hue.api.smart_scenes.activate(scene_id)` and `.deactivate(scene_id)` send
-`{"recall": {"action": "activate"}}` and `{"recall": {"action":
-"deactivate"}}`; the bound model and `hue.smart_scenes` expose the same two
-verbs with no arguments. The model reports which timeslot is running in
-`active_timeslot` (`models.SmartSceneActiveTimeslot`) and its overall `state`
-while active.
+`create(name, group_id, week_timeslots, *, group_rtype=ResourceType.ROOM,
+transition_duration=None)` takes the schedule in the bridge's own shape:
+`week_timeslots` is a list of `models.SmartSceneWeekTimeslot`, each holding a
+day's `timeslots` (`models.SmartSceneTimeslot`, pairing a `start_time` --
+`models.SmartSceneStartTime`, a fixed clock `models.SmartSceneTime` or local
+sunset -- with a scene `target`) and the `recurrence` weekdays it repeats on
+(`models.WeekDay`). `transition_duration` fades between timeslots, in
+seconds. `hue.api.smart_scenes.activate(scene_id)` and
+`.deactivate(scene_id)` are the id-based equivalents of the bound commands
+above.
+
+The model reports its schedule back in `week_timeslots`, `transition_duration`,
+which timeslot is currently running in `active_timeslot`
+(`models.SmartSceneActiveTimeslot`), and `state`.
 
 ## Models
 
@@ -593,6 +606,8 @@ available in `model_extra`.
 | `models.Zone` | `metadata`, `children`, `services` | light commands, `service_id`, `contains_device` |
 | `models.Scene` | `metadata`, `group`, `speed`, `auto_dynamic`, `actions`, `status` | `activate` |
 | `models.SmartScene` | `metadata`, `group`, `week_timeslots`, `transition_duration`, `active_timeslot`, `state` | `activate`, `deactivate` |
+| `models.Entertainment` | `renderer`, `renderer_reference`, `proxy`, `equalizer`, `max_streams` | — |
+| `models.EntertainmentConfiguration` | `metadata`, `configuration_type`, `status`, `active_streamer`, `stream_proxy`, `channels`, `light_services` | — |
 | `models.Device` | `metadata`, `product_data`, `services` | `service_id`, `identify`, `usertest` |
 | `models.Bridge` | `bridge_id`, `time_zone` | `set_timezone` |
 | `models.BridgeHome` | `children`, `services` | — |
@@ -600,6 +615,7 @@ available in `model_extra`.
 | `models.DevicePower` | `power_state` | — |
 | `models.Motion` | `enabled`, `motion`, `sensitivity` | — |
 | `models.GroupedMotion` | as `Motion` | — |
+| `models.CameraMotion` | as `Motion` | — |
 | `models.Temperature` | `enabled`, `temperature` | — |
 | `models.LightLevel` | `enabled`, `light` | — |
 | `models.GroupedLightLevel` | `enabled`, `light` | — |
@@ -609,29 +625,25 @@ available in `model_extra`.
 | `models.ZigbeeConnectivity` | `status`, `mac_address`, `channel`, `extended_pan_id` | — |
 | `models.ZgpConnectivity` | `status`, `source_id` | — |
 | `models.WifiConnectivity` | `status` | — |
-| `models.Entertainment` | `renderer`, `renderer_reference`, `proxy`, `equalizer`, `max_streams` | — |
-| `models.EntertainmentConfiguration` | `metadata`, `configuration_type`, `status`, `active_streamer`, `stream_proxy`, `channels`, `light_services` | — |
+| `models.ZigbeeDeviceDiscovery` | `status`, `action_values` | `search`, `search_with_default_link_key` |
+| `models.DeviceSoftwareUpdate` | `state`, `auto_install`, `problems` | `install`, `set_auto_install` |
+| `models.Geolocation` | `is_configured`, `sun_today` | `set_location` |
+| `models.GeofenceClient` | `name`, `is_at_home` | `create` |
 | `models.BehaviorScript` | `metadata`, `description`, `configuration_schema`, `trigger_schema`, `state_schema`, `version`, `supported_features`, `max_number_instances` | — |
-| `models.BehaviorInstance` | `metadata`, `script_id`, `enabled`, `state`, `configuration`, `dependees`, `status`, `last_error` | — |
-| `models.Geolocation` | `is_configured`, `sun_today` | — |
-| `models.GeofenceClient` | `name`, `is_at_home` | — |
-| `models.ZigbeeDeviceDiscovery` | `status`, `action_values` | — |
-| `models.DeviceSoftwareUpdate` | `state`, `auto_install`, `problems` | — |
-| `models.Homekit` | `status`, `status_values` | — |
-| `models.Matter` | `max_fabrics`, `has_qr_code` | — |
+| `models.BehaviorInstance` | `metadata`, `script_id`, `enabled`, `state`, `configuration`, `dependees`, `status`, `last_error` | `create`, `enable`, `disable`, `configure` |
+| `models.Homekit` | `status`, `status_values` | `reset` |
+| `models.Matter` | `max_fabrics`, `has_qr_code` | `reset` |
 | `models.MatterFabric` | `status`, `creation_time`, `fabric_data` | — |
 | `models.Tamper` | `tamper_reports` | — |
-| `models.CameraMotion` | as `Motion` | — |
 
 "Light commands" is `set`, `turn_on`, `turn_off`, `set_brightness`,
 `set_color`, `set_rgb`, `set_color_temperature`, `set_kelvin`.
 
-`Device.identify(*, duration=None)` blinks the device to identify it
-physically -- the same idea as `Light.identify()`, but on the owning device
-rather than one of its services. `Device.usertest(*, enabled)` turns
-user-test mode on or off, in which the device signals its own state, e.g. a
-motion sensor flashing on each detection. `Bridge.set_timezone(time_zone)`
-sets the bridge's IANA time zone, e.g. `"Europe/Berlin"`.
+`Device.identify(*, duration=None)` and `Device.usertest(*, enabled)`, and
+`Bridge.set_timezone(time_zone)`, are bound-model commands only; there is no
+handler-level equivalent. Fetch the model first --
+`await hue.api.devices.get(device_id)` or `await hue.api.bridges.get(bridge_id)`
+-- then call the command on it.
 
 ### Convenience properties
 
@@ -657,9 +669,7 @@ sets the bridge's IANA time zone, e.g. `"Europe/Berlin"`.
 | `LightLevel` | `level` | `int \| None` |
 | `LightLevel` | `lux` | `float \| None`; only when the reported reading is valid |
 | `RelativeRotaryReading` | `value` | `RelativeRotaryReport \| RelativeRotaryEvent \| None`; prefers the timestamped report |
-| `ZigbeeConnectivity` | `is_connected` | `bool` |
-| `ZgpConnectivity` | `is_connected` | `bool` |
-| `WifiConnectivity` | `is_connected` | `bool` |
+| `ZigbeeConnectivity`, `ZgpConnectivity`, `WifiConnectivity` | `is_connected` | `bool` |
 | `EntertainmentConfiguration` | `is_streaming` | `bool` |
 | `ZigbeeDeviceDiscovery` | `is_searching` | `bool` |
 | `Tamper` | `is_tampered` | `bool` |
@@ -673,18 +683,18 @@ building payloads by hand.
 | --- | --- |
 | Shared | `HueModel`, `HueResource`, `NamedResource`, `Metadata`, `ResourceIdentifier`, `ResourceType` |
 | Light state | `On`, `Dimming`, `Color`, `GroupedColor`, `ColorXY`, `ColorGamut`, `ColorTemperature`, `MirekSchema` |
-| Light services | `Effect`, `TimedEffect`, `Signal`, `Effects`, `TimedEffects`, `Gradient`, `GradientPoint`, `Powerup`, `Alert`, `Signaling`, `LightCommands` |
+| Light services | `Effect`, `Effects`, `TimedEffect`, `TimedEffects`, `Signal`, `Gradient`, `GradientPoint`, `Powerup`, `Alert`, `Signaling`, `LightCommands` |
 | Sensors and input | `MotionReading`, `MotionReport`, `Sensitivity`, `TemperatureReading`, `TemperatureReport`, `ButtonReading`, `ButtonReport`, `ContactReport`, `LightLevelReading`, `LightLevelReport`, `RelativeRotaryReading`, `RelativeRotaryReport`, `RelativeRotaryEvent`, `RelativeRotaryRotation` |
 | Devices | `ProductData`, `PowerState`, `TimeZone` |
 | Connectivity | `ZigbeeConnectivity`, `ZigbeeChannel`, `ZgpConnectivity`, `WifiConnectivity` |
-| Entertainment | `EntertainmentChannel`, `StreamProxy` |
-| Automation and presence | `SunToday` |
-| Device management | `AutoInstall` |
-| Security | `FabricData`, `TamperReport` |
-| Groups | `ResourceGroup`, `RecallAction`, `SceneAction`, `SceneStatus`, `WeekDay`, `SmartSceneWeekTimeslot`, `SmartSceneTimeslot`, `SmartSceneStartTime`, `SmartSceneTime`, `SmartSceneActiveTimeslot` |
+| Groups | `ResourceGroup`, `SceneAction`, `SceneStatus`, `RecallAction`, `WeekDay`, `SmartScene`, `SmartSceneWeekTimeslot`, `SmartSceneTimeslot`, `SmartSceneStartTime`, `SmartSceneTime`, `SmartSceneActiveTimeslot` |
+| Entertainment | `Entertainment`, `EntertainmentConfiguration`, `EntertainmentChannel`, `StreamProxy` |
+| Automation and presence | `BehaviorScript`, `BehaviorInstance`, `Geolocation`, `SunToday`, `GeofenceClient` |
+| Device management | `ZigbeeDeviceDiscovery`, `DeviceSoftwareUpdate`, `AutoInstall` |
+| Smart-home integrations and Hue Secure | `Homekit`, `Matter`, `MatterFabric`, `FabricData`, `Tamper`, `TamperReport`, `CameraMotion` |
 | Events | `HueEvent`, `EventResource`, `EventType`, `parse_events` |
 | Envelope | `HueResponse`, `HueErrorDetail`, `unwrap`, `unwrap_one` |
-| Payload builder | `build_light_payload`, `build_effect_payload`, `build_powerup_payload`, `build_scene_recall` |
+| Payload builders | `build_light_payload`, `build_effect_payload`, `build_powerup_payload`, `build_scene_recall` |
 | Aggregate resources | `AnyResource`, `RESOURCE_MODELS`, `RESOURCE_LIST`, `parse_resource` |
 
 `ResourceType` is a `StrEnum` of every resource type with a concrete huepy
@@ -722,10 +732,10 @@ light = unwrap_one(payload, models.Light)  # and also if data[] came back empty
 `models/common.py`.
 
 `build_light_payload(**state)` composes the same payload `set()` sends, without
-a client — useful for `update()` calls you assemble yourself. Its
-purpose-built siblings do the same for the other light and scene commands:
-`build_effect_payload(...)` for `set_effect()`, `build_powerup_payload(...)`
-for `set_powerup()`, and `build_scene_recall(...)` for `scene.activate()`.
+a client — useful for `update()` calls you assemble yourself.
+`build_effect_payload(effect, **tint)`, `build_powerup_payload(preset,
+**config)` and `build_scene_recall(action, **recall)` do the same for
+`set_effect()`, `set_powerup()` and scene `activate()`.
 
 ## Events
 
@@ -1142,10 +1152,14 @@ instead return `CommandResult`.
 | `hue.api.scenes` | `Scene` | `models.Scene` | `create`, `activate` |
 | `hue.api.smart_scenes` | `SmartScene` | `models.SmartScene` | `create`, `activate`, `deactivate` |
 | `hue.api.service_groups` | `ServiceGroup` | `models.ServiceGroup` | `create` |
+| `hue.api.entertainments` | `Entertainment` | `models.Entertainment` | — |
+| `hue.api.entertainment_configurations` | `EntertainmentConfiguration` | `models.EntertainmentConfiguration` | `create`, `start`, `stop` |
 | `hue.api.motions` | `Motion` | `models.Motion` | `turn_on`, `turn_off`, `set_sensitivity`, `get_motion_state`, `get_last_motion` |
 | `hue.api.grouped_motions` | `GroupedMotion` | `models.GroupedMotion` | `turn_on`, `turn_off` |
 | `hue.api.temperatures` | `Temperature` | `models.Temperature` | `turn_on`, `turn_off` |
 | `hue.api.contacts` | `Contact` | `models.Contact` | `turn_on`, `turn_off` |
+| `hue.api.camera_motions` | `CameraMotion` | `models.CameraMotion` | `turn_on`, `turn_off` |
+| `hue.api.tampers` | `Tamper` | `models.Tamper` | — |
 | `hue.api.buttons` | `Button` | `models.Button` | — |
 | `hue.api.relative_rotaries` | `RelativeRotary` | `models.RelativeRotary` | — |
 | `hue.api.zigbee_connectivities` | `ZigbeeConnectivity` | `models.ZigbeeConnectivity` | — |
@@ -1153,33 +1167,46 @@ instead return `CommandResult`.
 | `hue.api.wifi_connectivities` | `WifiConnectivity` | `models.WifiConnectivity` | — |
 | `hue.api.devices` | `Device` | `models.Device` | — |
 | `hue.api.device_powers` | `DevicePower` | `models.DevicePower` | — |
+| `hue.api.zigbee_device_discoveries` | `ZigbeeDeviceDiscovery` | `models.ZigbeeDeviceDiscovery` | `search`, `search_with_default_link_key` |
+| `hue.api.device_software_updates` | `DeviceSoftwareUpdate` | `models.DeviceSoftwareUpdate` | `install`, `set_auto_install` |
 | `hue.api.light_levels` | `LightLevel` | `models.LightLevel` | — |
 | `hue.api.grouped_light_levels` | `GroupedLightLevel` | `models.GroupedLightLevel` | — |
 | `hue.api.bridges` | `Bridge` | `models.Bridge` | — |
 | `hue.api.bridge_homes` | `BridgeHome` | `models.BridgeHome` | — |
-| `hue.api.entertainments` | `Entertainment` | `models.Entertainment` | — |
-| `hue.api.entertainment_configurations` | `EntertainmentConfiguration` | `models.EntertainmentConfiguration` | `create`, `start`, `stop` |
-| `hue.api.behavior_scripts` | `BehaviorScript` | `models.BehaviorScript` | — |
-| `hue.api.behavior_instances` | `BehaviorInstance` | `models.BehaviorInstance` | `create`, `enable`, `disable`, `configure` |
 | `hue.api.geolocations` | `Geolocation` | `models.Geolocation` | `set_location` |
 | `hue.api.geofence_clients` | `GeofenceClient` | `models.GeofenceClient` | `create` |
-| `hue.api.zigbee_device_discoveries` | `ZigbeeDeviceDiscovery` | `models.ZigbeeDeviceDiscovery` | `search`, `search_with_default_link_key` |
-| `hue.api.device_software_updates` | `DeviceSoftwareUpdate` | `models.DeviceSoftwareUpdate` | `install`, `set_auto_install` |
+| `hue.api.behavior_scripts` | `BehaviorScript` | `models.BehaviorScript` | — |
+| `hue.api.behavior_instances` | `BehaviorInstance` | `models.BehaviorInstance` | `create`, `enable`, `disable`, `configure` |
 | `hue.api.homekits` | `Homekit` | `models.Homekit` | `reset` |
 | `hue.api.matters` | `Matter` | `models.Matter` | `reset` |
 | `hue.api.matter_fabrics` | `MatterFabric` | `models.MatterFabric` | — |
-| `hue.api.tampers` | `Tamper` | `models.Tamper` | — |
-| `hue.api.camera_motions` | `CameraMotion` | `models.CameraMotion` | `turn_on`, `turn_off` |
 
 `hue.api.raw` exposes the open decoded-JSON `Transport` for an advanced CLIP
 operation without a typed handler.
 
-The connectivity, entertainment, automation, management and security handlers
-above follow the same shape as the resource handlers documented elsewhere in
-this section: id-addressed, returning bridge `list[models.ResourceIdentifier]`
-from every write. `entertainments`, `behavior_scripts`, `matter_fabrics` and
-`tampers` are read-only -- there is no bridge write for them beyond the
-generic `update`/`delete` every handler already has.
+Entertainment areas stream colour to lights at high frame rate over a
+separate UDP/DTLS channel this library does not implement; the REST side --
+listing, configuring, and starting or stopping a session -- is what
+`hue.api.entertainments` and `hue.api.entertainment_configurations` expose.
+Entertainment configurations carry `metadata.name`, so they read like a named
+collection, but no high-level named collection exists for them yet; use the
+id-based handler above.
+
+`hue.api.zigbee_device_discoveries` is how new lights and other Zigbee
+devices are paired -- there is no other route to it in the v2 API.
+`hue.api.device_software_updates` reads and controls a device's firmware.
+`hue.api.geolocations` and `hue.api.geofence_clients` give automations sun
+and presence data to react to; `hue.api.behavior_scripts` and
+`hue.api.behavior_instances` are the v2 successor to the v1 rule engine, a
+script being a bridge-shipped template and an instance being one configured,
+running copy of it.
+
+`hue.api.homekits` and `hue.api.matters` expose the bridge to Apple Home and
+the Matter fabric, and each can be reset. `hue.api.matter_fabrics` lists
+commissioned fabrics and deletes one to decommission it -- there is no
+update. `hue.api.tampers` and `hue.api.camera_motions` are Hue Secure sensor
+services; the latter is enabled and disabled exactly like
+`hue.api.motions`.
 
 ### Light commands
 
@@ -1233,7 +1260,7 @@ async ServiceGroup.create(name, services, archetype="sensor_group") -> list[Reso
 
 `Zone.create` and `ServiceGroup.create` take service references, each a dict of
 `rid` and `rtype`; `Room.create` takes plain device ids. `SmartScene.create`
-takes the weekly schedule described in [Smart scenes](#smart-scenes).
+takes `week_timeslots` in the bridge's weekly-schedule shape.
 
 ### `Motion`
 
@@ -1254,79 +1281,72 @@ async start(resource_id) -> list[ResourceIdentifier]
 async stop(resource_id) -> list[ResourceIdentifier]
 ```
 
-`create` takes the configuration body directly, in the bridge's shape --
-channels, member light services and a stream proxy. `start` and `stop` toggle
-streaming to the area. huepy does not implement the low-latency DTLS streaming
-protocol itself, only this REST control surface; `hue.api.entertainments` is
-the read-only per-light service such an area streams to.
-
-### `BehaviorInstance`
-
-```
-async create(
-    script_id: str,
-    configuration: dict[str, Any],
-    *,
-    enabled: bool = True,
-    name: str | None = None,
-) -> list[ResourceIdentifier]
-async enable(resource_id) -> list[ResourceIdentifier]
-async disable(resource_id) -> list[ResourceIdentifier]
-async configure(resource_id, configuration: dict[str, Any]) -> list[ResourceIdentifier]
+```python
+areas = await hue.api.entertainment_configurations.list()
+await hue.api.entertainment_configurations.start(areas[0].id)
+await hue.api.entertainment_configurations.stop(areas[0].id)
 ```
 
-`hue.api.behavior_scripts` is read-only: the bridge ships these as templates,
-and a script's `configuration_schema` describes what `create`'s
-`configuration` must supply. `configure` replaces a running instance's
-configuration; `enable`/`disable` toggle it without deleting it.
+`create` takes the configuration body in the bridge's own shape -- its
+channels and members are not modelled as constructor arguments.
 
-### `Geolocation`, `GeofenceClient`
+### `BehaviorInstance`, `Geolocation`, `GeofenceClient`
 
 ```
+async BehaviorInstance.create(script_id, configuration: dict, *, enabled=True, name=None) -> list[ResourceIdentifier]
+async BehaviorInstance.enable(resource_id) -> list[ResourceIdentifier]
+async BehaviorInstance.disable(resource_id) -> list[ResourceIdentifier]
+async BehaviorInstance.configure(resource_id, configuration: dict) -> list[ResourceIdentifier]
 async Geolocation.set_location(resource_id, latitude: float, longitude: float) -> list[ResourceIdentifier]
-async GeofenceClient.create(name: str, *, is_at_home: bool = False) -> list[ResourceIdentifier]
+async GeofenceClient.create(name, *, is_at_home=False) -> list[ResourceIdentifier]
 ```
 
-`set_location` raises `ValueError` for a latitude outside ±90° or a longitude
-outside ±180°. Setting a location is what enables sun-based automations, e.g.
-a behaviour script that triggers at sunset.
-
-### `ZigbeeDeviceDiscovery`
-
-```
-async search(resource_id, *, install_codes: list[str] | None = None, channels: list[int] | None = None) -> list[ResourceIdentifier]
-async search_with_default_link_key(resource_id, *, install_codes=None, channels=None) -> list[ResourceIdentifier]
+```python
+scripts = await hue.api.behavior_scripts.list()
+await hue.api.behavior_instances.create(
+    scripts[0].id, {"when": {}}, name="Sunset dimming"
+)
+await hue.api.geolocations.set_location(geolocation_id, 52.5, 13.4)
+await hue.api.geofence_clients.create("Guest phone", is_at_home=True)
 ```
 
-This is how new lights and other Zigbee devices are paired -- pairing has no
-other route through the v2 API. `search_with_default_link_key` additionally
-accepts devices that only join using the well-known default link key, at a
-small security cost; both accept `install_codes` and `channels` to narrow the
-search.
+`configuration` is validated against the script's own `configuration_schema`,
+so its shape is carried as arbitrary JSON rather than modelled. `set_location`
+raises `ValueError` for a latitude outside -90..90 or a longitude outside
+-180..180.
 
-### `DeviceSoftwareUpdate`
+### `ZigbeeDeviceDiscovery`, `DeviceSoftwareUpdate`
 
 ```
-async install(resource_id) -> list[ResourceIdentifier]
-async set_auto_install(resource_id, *, on: bool, update_time: str | None = None) -> list[ResourceIdentifier]
+async ZigbeeDeviceDiscovery.search(resource_id, *, install_codes=None, channels=None) -> list[ResourceIdentifier]
+async ZigbeeDeviceDiscovery.search_with_default_link_key(resource_id, *, install_codes=None, channels=None) -> list[ResourceIdentifier]
+async DeviceSoftwareUpdate.install(resource_id) -> list[ResourceIdentifier]
+async DeviceSoftwareUpdate.set_auto_install(resource_id, *, on: bool, update_time=None) -> list[ResourceIdentifier]
 ```
 
-`install` applies an update already downloaded and ready (`state ==
-"ready_to_install"`); `set_auto_install` configures whether a device installs
-updates on its own and, optionally, the local time of day it does so.
+```python
+await hue.api.zigbee_device_discoveries.search(discovery_id, channels=[11, 15])
+await hue.api.device_software_updates.set_auto_install(
+    update_id, on=True, update_time="03:00:00"
+)
+```
 
-### `Homekit`, `Matter`, `MatterFabric`
+`search_with_default_link_key` additionally allows the well-known default
+link key, for older or third-party devices that join no other way -- at a
+small security cost.
+
+### `Homekit`, `Matter`
 
 ```
 async Homekit.reset(resource_id) -> list[ResourceIdentifier]
 async Matter.reset(resource_id) -> list[ResourceIdentifier]
 ```
 
-Each resets that integration's pairing on the bridge -- `Matter.reset()`
-clears every commissioned fabric at once. `hue.api.matter_fabrics` is the
-finer-grained alternative: it lists the individual fabrics, each removable on
-its own with `delete()` without disturbing the others; a fabric cannot be
-edited, only listed and removed.
+```python
+await hue.api.homekits.reset(homekit_id)
+fabrics = await hue.api.matter_fabrics.list()
+await hue.api.matter_fabrics.delete(fabrics[0].id)
+```
 
 ## Configuration
 

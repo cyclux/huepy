@@ -21,6 +21,7 @@ import logging
 from huepy import color, models
 from huepy._version import package_version
 from huepy.client.base import Hue
+from huepy.client.discovery import DiscoveredBridge, discover, discover_bridge_id
 from huepy.client.http import HueHttpClient
 from huepy.client.tls import InsecureTlsWarning, UnverifiedBridgeIdentityWarning
 from huepy.config import HueConfig, InsecureConfigWarning, TlsMode
@@ -50,6 +51,7 @@ __all__ = [
     "BridgeConnectionError",
     "CommandResult",
     "DetachedResourceError",
+    "DiscoveredBridge",
     "Hue",
     "HueAPIError",
     "HueConfig",
@@ -63,6 +65,8 @@ __all__ = [
     "TlsMode",
     "UnverifiedBridgeIdentityWarning",
     "color",
+    "discover",
+    "discover_bridge_id",
     "models",
     "summarize",
 ]
