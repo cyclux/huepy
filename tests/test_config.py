@@ -8,11 +8,16 @@ import pytest
 
 from huepy.config import (
     ENV_APP_KEY,
+    ENV_BRIDGE_ID,
     ENV_BRIDGE_IP,
     ENV_CONFIG_PATH,
+    ENV_RATE_LIMIT,
+    ENV_TLS,
     ENV_XDG_CONFIG_HOME,
+    KEY_BRIDGE_ID,
     HueConfig,
     InsecureConfigWarning,
+    TlsMode,
     default_config_path,
 )
 
@@ -21,9 +26,12 @@ from huepy.config import (
 def _clear_hue_env(monkeypatch):
     """Keep the developer's real environment out of these tests."""
     monkeypatch.delenv(ENV_BRIDGE_IP, raising=False)
+    monkeypatch.delenv(ENV_BRIDGE_ID, raising=False)
     monkeypatch.delenv(ENV_APP_KEY, raising=False)
     monkeypatch.delenv(ENV_CONFIG_PATH, raising=False)
     monkeypatch.delenv(ENV_XDG_CONFIG_HOME, raising=False)
+    monkeypatch.delenv(ENV_TLS, raising=False)
+    monkeypatch.delenv(ENV_RATE_LIMIT, raising=False)
 
 
 class TestBridgeIp:
@@ -108,6 +116,99 @@ class TestAppKey:
         path = tmp_path / "c.json"
         path.mkdir()
         assert HueConfig(bridge_ip="10.0.0.5", config_path=path).app_key is None
+
+
+class TestTls:
+    def test_defaults_to_verified(self, tmp_path):
+        config = HueConfig(bridge_ip="10.0.0.5", config_path=tmp_path / "c.json")
+        assert config.tls is TlsMode.VERIFIED
+
+    def test_explicit_insecure_is_kept(self, tmp_path):
+        config = HueConfig(
+            bridge_ip="10.0.0.5",
+            tls=TlsMode.INSECURE,
+            config_path=tmp_path / "c.json",
+        )
+        assert config.tls is TlsMode.INSECURE
+
+    def test_environment_selects_the_mode(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(ENV_TLS, "insecure")
+        config = HueConfig(bridge_ip="10.0.0.5", config_path=tmp_path / "c.json")
+        assert config.tls is TlsMode.INSECURE
+
+    def test_explicit_argument_beats_environment(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(ENV_TLS, "verified")
+        config = HueConfig(
+            bridge_ip="10.0.0.5",
+            tls=TlsMode.INSECURE,
+            config_path=tmp_path / "c.json",
+        )
+        assert config.tls is TlsMode.INSECURE
+
+    def test_explicit_verified_beats_insecure_environment(self, tmp_path, monkeypatch):
+        # The security-critical direction: a stale HUE_TLS must not downgrade a
+        # caller who explicitly asked to verify.
+        monkeypatch.setenv(ENV_TLS, "insecure")
+        config = HueConfig(
+            bridge_ip="10.0.0.5",
+            tls=TlsMode.VERIFIED,
+            config_path=tmp_path / "c.json",
+        )
+        assert config.tls is TlsMode.VERIFIED
+
+    def test_invalid_environment_mode_raises_naming_the_variable(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv(ENV_TLS, "yes-please")
+        with pytest.raises(ValueError, match=ENV_TLS):
+            HueConfig(bridge_ip="10.0.0.5", config_path=tmp_path / "c.json")
+
+
+class TestBridgeId:
+    def test_explicit_value_is_used(self, tmp_path):
+        config = HueConfig(
+            bridge_ip="10.0.0.5", bridge_id="abc", config_path=tmp_path / "c.json"
+        )
+        assert config.bridge_id == "abc"
+
+    def test_falls_back_to_environment(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(ENV_BRIDGE_ID, "from-env")
+        config = HueConfig(bridge_ip="10.0.0.5", config_path=tmp_path / "c.json")
+        assert config.bridge_id == "from-env"
+
+    def test_round_trips_through_save(self, tmp_path):
+        path = tmp_path / "c.json"
+        HueConfig(bridge_ip="10.0.0.5", bridge_id="stored-id", config_path=path).save()
+        assert json.loads(path.read_text())[KEY_BRIDGE_ID] == "stored-id"
+        assert HueConfig(config_path=path).bridge_id == "stored-id"
+
+    def test_absent_when_never_set(self, tmp_path):
+        config = HueConfig(bridge_ip="10.0.0.5", config_path=tmp_path / "c.json")
+        assert config.bridge_id is None
+
+
+class TestRateLimit:
+    def test_defaults_to_on(self, tmp_path):
+        config = HueConfig(bridge_ip="10.0.0.5", config_path=tmp_path / "c.json")
+        assert config.rate_limit is True
+
+    def test_environment_can_disable_it(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(ENV_RATE_LIMIT, "0")
+        config = HueConfig(bridge_ip="10.0.0.5", config_path=tmp_path / "c.json")
+        assert config.rate_limit is False
+
+    def test_explicit_false_is_kept(self, tmp_path):
+        config = HueConfig(
+            bridge_ip="10.0.0.5", rate_limit=False, config_path=tmp_path / "c.json"
+        )
+        assert config.rate_limit is False
+
+    def test_explicit_true_beats_disabling_environment(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(ENV_RATE_LIMIT, "0")
+        config = HueConfig(
+            bridge_ip="10.0.0.5", rate_limit=True, config_path=tmp_path / "c.json"
+        )
+        assert config.rate_limit is True
 
 
 class TestSave:

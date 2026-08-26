@@ -20,6 +20,7 @@ import os
 import stat
 import warnings
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import cast
 
@@ -27,15 +28,36 @@ APP_NAME = "huepy"
 CONFIG_FILENAME = "config.json"
 
 ENV_BRIDGE_IP = "HUE_BRIDGE_IP"
+ENV_BRIDGE_ID = "HUE_BRIDGE_ID"
 ENV_APP_KEY = "HUE_APP_KEY"
 ENV_CONFIG_PATH = "HUE_CONFIG_PATH"
 ENV_XDG_CONFIG_HOME = "XDG_CONFIG_HOME"
+ENV_TLS = "HUE_TLS"
+ENV_RATE_LIMIT = "HUE_RATE_LIMIT"
 
 KEY_BRIDGE_IP = "bridge_ip"
+KEY_BRIDGE_ID = "bridge_id"
 KEY_APP_KEY = "app_key"
+
+_FALSE_VALUES = frozenset({"0", "false", "no", "off", ""})
 
 CREDENTIAL_MODE = stat.S_IRUSR | stat.S_IWUSR
 """Owner read/write only: the stored key controls the whole bridge."""
+
+
+class TlsMode(StrEnum):
+    """How huepy validates the bridge's TLS certificate.
+
+    Attributes:
+        VERIFIED: Verify the certificate against Signify's bundled root CAs, and
+            pin its common name to ``bridge_id`` when one is known. The default.
+        INSECURE: Skip verification entirely -- development against a proxy or
+            emulator only, never production.
+
+    """
+
+    VERIFIED = "verified"
+    INSECURE = "insecure"
 
 
 class InsecureConfigWarning(UserWarning):
@@ -75,15 +97,21 @@ class HueConfig:
         bridge_ip: Address of the bridge on the local network.
         app_key: The Hue application key, if one is known yet.
         config_path: Where the settings are persisted.
-        verify_ssl: Whether to verify the bridge's TLS certificate. Bridges
-            ship a self-signed certificate, so this is off by default.
+        tls: How to validate the bridge's TLS certificate. Genuine bridges carry
+            a certificate signed by Signify's private CA, so verification is on
+            by default; it degrades to certificate-only when ``bridge_id`` is
+            unknown, and can be turned off with ``TlsMode.INSECURE``.
+        bridge_id: The bridge id, used to pin the certificate's common name.
+        rate_limit: Whether to pace writes to the bridge's throughput budget.
 
     """
 
     bridge_ip: str = ""
     app_key: str | None = None
     config_path: Path = field(default_factory=default_config_path)
-    verify_ssl: bool = False
+    tls: TlsMode | None = None
+    bridge_id: str | None = None
+    rate_limit: bool | None = None
 
     def __post_init__(self) -> None:
         """Resolve settings from the environment and the config file.
@@ -112,6 +140,53 @@ class HueConfig:
         self.app_key = (
             self.app_key or os.getenv(ENV_APP_KEY) or _as_str(stored.get(KEY_APP_KEY))
         )
+        self.bridge_id = (
+            self.bridge_id
+            or os.getenv(ENV_BRIDGE_ID)
+            or _as_str(stored.get(KEY_BRIDGE_ID))
+        )
+        # A None field means the caller passed nothing, so the environment may
+        # choose; an explicit argument is never None and always wins -- crucial
+        # for tls, so a stale HUE_TLS cannot silently downgrade a caller who
+        # explicitly asked to verify.
+        self.tls = self._resolve_tls()
+        self.rate_limit = self._resolve_rate_limit()
+
+    def _resolve_tls(self) -> TlsMode:
+        """Resolve the TLS mode: explicit argument, then env, then verified.
+
+        Returns:
+            The mode to use.
+
+        Raises:
+            ValueError: If ``HUE_TLS`` holds a value that is not a TLS mode.
+
+        """
+        if self.tls is not None:
+            return self.tls
+        env_tls = os.getenv(ENV_TLS)
+        if not env_tls:
+            return TlsMode.VERIFIED
+        try:
+            return TlsMode(env_tls.strip().lower())
+        except ValueError:
+            valid = ", ".join(repr(mode.value) for mode in TlsMode)
+            msg = f"{ENV_TLS}={env_tls!r} is not a valid TLS mode; use {valid}"
+            raise ValueError(msg) from None
+
+    def _resolve_rate_limit(self) -> bool:
+        """Resolve write pacing: explicit argument, then env, then on.
+
+        Returns:
+            Whether to pace writes.
+
+        """
+        if self.rate_limit is not None:
+            return self.rate_limit
+        env_rl = os.getenv(ENV_RATE_LIMIT)
+        if env_rl is None:
+            return True
+        return env_rl.strip().lower() not in _FALSE_VALUES
 
     def _read_stored(self) -> dict[str, object]:
         """Read the config file, or an empty mapping if absent or invalid."""
@@ -142,6 +217,8 @@ class HueConfig:
             self.app_key = app_key
 
         contents: dict[str, str] = {KEY_BRIDGE_IP: self.bridge_ip}
+        if self.bridge_id:
+            contents[KEY_BRIDGE_ID] = self.bridge_id
         if self.app_key:
             contents[KEY_APP_KEY] = self.app_key
 

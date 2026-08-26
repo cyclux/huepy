@@ -31,7 +31,7 @@ from huepy.collections import (
     ServiceGroupCollection,
     ZoneCollection,
 )
-from huepy.config import HueConfig, default_config_path
+from huepy.config import HueConfig, TlsMode, default_config_path
 from huepy.exceptions import AuthenticationError
 from huepy.models import AnyResource, HueResponse, NamedResource
 from huepy.models.event import HueEvent, parse_events
@@ -85,7 +85,9 @@ class Hue:
         app_key: str | None = None,
         config_path: str | Path | None = None,
         *,
-        verify_ssl: bool = False,
+        tls: TlsMode | None = None,
+        bridge_id: str | None = None,
+        rate_limit: bool | None = None,
         state: bool = False,
         record: HistorySink | Sequence[HistorySink] | None = None,
     ) -> None:
@@ -98,7 +100,12 @@ class Hue:
             config_path: Where settings are stored; defaults to
                 ``$XDG_CONFIG_HOME/huepy/config.json``, or
                 ``HUE_CONFIG_PATH`` when set.
-            verify_ssl: Whether to verify the bridge's TLS certificate.
+            tls: How to validate the bridge's TLS certificate. Verified against
+                Signify's bundled roots by default; pass ``TlsMode.INSECURE`` to
+                skip verification for development against a proxy or emulator.
+            bridge_id: The bridge id, used to pin the certificate's common name;
+                falls back to ``HUE_BRIDGE_ID`` then the config file.
+            rate_limit: Whether to pace writes to the bridge's throughput budget.
             state: Whether to maintain the local resource graph in the
                 background from the aggregate snapshot and event stream.
             record: One sink, or several, to persist the change history into.
@@ -112,7 +119,9 @@ class Hue:
             config_path=(
                 Path(config_path) if config_path is not None else default_config_path()
             ),
-            verify_ssl=verify_ssl,
+            tls=tls,
+            bridge_id=bridge_id,
+            rate_limit=rate_limit,
         )
         self._http: Transport | None = None
         self._names: dict[str, str] = {}

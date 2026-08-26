@@ -22,7 +22,8 @@ from huepy import color, models
 from huepy._version import package_version
 from huepy.client.base import Hue
 from huepy.client.http import HueHttpClient
-from huepy.config import HueConfig, InsecureConfigWarning
+from huepy.client.tls import InsecureTlsWarning, UnverifiedBridgeIdentityWarning
+from huepy.config import HueConfig, InsecureConfigWarning, TlsMode
 from huepy.exceptions import (
     AmbiguousResourceError,
     AuthenticationError,
@@ -56,8 +57,11 @@ __all__ = [
     "HueHttpClient",
     "HueResponseError",
     "InsecureConfigWarning",
+    "InsecureTlsWarning",
     "ResourceNotFoundError",
     "StateNotStartedError",
+    "TlsMode",
+    "UnverifiedBridgeIdentityWarning",
     "color",
     "models",
     "summarize",

@@ -47,7 +47,9 @@ class Hue:
         app_key: str | None = None,
         config_path: str | Path | None = None,
         *,
-        verify_ssl: bool = False,
+        tls: TlsMode | None = None,
+        bridge_id: str | None = None,
+        rate_limit: bool | None = None,
         state: bool = False,
         record: HistorySink | Sequence[HistorySink] | None = None,
     )
@@ -61,9 +63,27 @@ order:
 | Bridge address | `bridge_ip=` | `HUE_BRIDGE_IP` | `bridge_ip` | `ValueError` from the constructor |
 | Application key | `app_key=` | `HUE_APP_KEY` | `app_key` | Stays `None`; `ensure_authenticated()` then raises |
 | Config file path | `config_path=` | `HUE_CONFIG_PATH` | — | `$XDG_CONFIG_HOME/huepy/config.json` |
-| TLS verification | `verify_ssl=` | — | — | `False` — bridges ship a self-signed certificate |
+| TLS verification | `tls=` | `HUE_TLS` | — | `TlsMode.VERIFIED` — verify against Signify's bundled roots |
+| Bridge id (cert pinning) | `bridge_id=` | `HUE_BRIDGE_ID` | `bridge_id` | `None` — verified but the identity is not pinned |
+| Write pacing | `rate_limit=` | `HUE_RATE_LIMIT` | — | `True` — space writes to the bridge's budget |
 | State tracking | `state=` | — | — | `False` — a plain client opens no event stream |
 | History recording | `record=` | — | — | `None` — implies `state=True` when given |
+
+TLS is verified by default. A genuine bridge presents a certificate signed by
+one of Signify's two private root CAs (bundled in `huepy.client.tls`), with the
+bridge id as its common name. `TlsMode.VERIFIED` checks the chain against those
+roots; when a `bridge_id` is known it also pins the common name to it. Without a
+`bridge_id` verification degrades to certificate-only and emits an
+`UnverifiedBridgeIdentityWarning` — the peer is still proven to be a real Hue
+bridge, but *which* bridge is not asserted. `TlsMode.INSECURE` skips verification
+entirely and emits an `InsecureTlsWarning`; use it only for development against a
+proxy or emulator, never production.
+
+Writes are paced to the bridge's documented throughput budget: roughly ten per
+second to a light and one per second to the shared broadcast budget that
+`grouped_light` writes and scene recalls draw from. This spaces the start of
+each write so a burst — a `room.restore()` fanning out over many lights — cannot
+flood the bridge. Pass `rate_limit=False` to manage pacing yourself.
 
 Use the client as an async context manager. Normal startup opens the HTTP
 session and does no resource GETs:
@@ -1072,21 +1092,31 @@ class HueConfig:
     bridge_ip: str = ""
     app_key: str | None = None
     config_path: Path = default_config_path()
-    verify_ssl: bool = False
+    tls: TlsMode | None = None
+    bridge_id: str | None = None
+    rate_limit: bool | None = None
 ```
 
-`bridge_ip` and `app_key` resolve as argument, then environment
-(`HUE_BRIDGE_IP`, `HUE_APP_KEY`), then the config file. A missing address is a
-`ValueError`; there is no built-in default.
+`bridge_ip`, `app_key` and `bridge_id` resolve as argument, then environment
+(`HUE_BRIDGE_IP`, `HUE_APP_KEY`, `HUE_BRIDGE_ID`), then the config file. A
+missing address is a `ValueError`; there is no built-in default.
+
+`tls` and `rate_limit` resolve as argument, then environment (`HUE_TLS`,
+`HUE_RATE_LIMIT`), then the secure default (`TlsMode.VERIFIED`, pacing on). An
+explicit argument always wins — a `None` field is what marks "unset", so a
+stale `HUE_TLS=insecure` can never downgrade a caller who passed
+`tls=TlsMode.VERIFIED`. An unrecognised `HUE_TLS` value is a `ValueError`.
+`TlsMode` is a `StrEnum` with members `VERIFIED` and `INSECURE`, exported from
+`huepy`.
 
 `config_path` resolves as argument, then `HUE_CONFIG_PATH`, then
 `$XDG_CONFIG_HOME/huepy/config.json` (`~/.config/huepy/config.json` by
 default). The default is deliberately absolute: a relative one would tie the
 stored credential to whichever directory a program was started from.
 
-`save()` persists both to the config file with mode `0600`. Passing
-`save(app_key)` also replaces the stored key; calling `save()` bare records the
-address on its own and keeps any existing key. Because the address is stored,
+`save()` persists the address, key and bridge id to the config file with mode
+`0600`. Passing `save(app_key)` also replaces the stored key; calling `save()`
+bare records the address (and any known bridge id) and keeps any existing key. Because the address is stored,
 a configured machine needs neither arguments nor environment — and no address
 has to be committed to source.
 

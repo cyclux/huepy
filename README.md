@@ -57,6 +57,13 @@ WSL, say -- huepy raises an `InsecureConfigWarning` rather than leaving you
 believing the key is protected. Point `HUE_CONFIG_PATH` at a native path to
 resolve it.
 
+TLS is verified by default: a real bridge's certificate is signed by Signify's
+private root CA (bundled with huepy) and carries the bridge id as its common
+name. Supply `bridge_id=` (or `HUE_BRIDGE_ID`) to pin that identity; without it,
+huepy still proves the peer is a genuine Hue bridge but warns that the exact
+bridge is not pinned. For development against a proxy or emulator, pass
+`tls=TlsMode.INSECURE` to skip verification.
+
 ## Usage
 
 ```python

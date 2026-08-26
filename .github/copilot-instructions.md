@@ -103,6 +103,9 @@ applyTo: '**'
 - Keep `aiohttp` confined to `src/huepy/client/http.py`; other modules depend on the `Transport`
   protocol in `client/protocol.py`
 - Keep `resources/` independent of `client/base.py` to preserve the acyclic import graph
+- TLS is verified against Signify's bundled root CAs by default (`client/tls.py`), pinning the
+  bridge-id common name when known; `TlsMode.INSECURE` is the explicit opt-out. Writes are paced
+  to the bridge's budget in `client/ratelimit.py`, gated at the top of `HueHttpClient._request`
 - Parse resource payloads through tolerant `HueModel` subclasses (`extra="allow"`)
 - Route v2 envelopes through `unwrap()` / `raise_for_errors()`; HTTP 207 is a transport success
   whose `errors[]` still needs classification

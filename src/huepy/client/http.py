@@ -14,7 +14,6 @@ import asyncio
 import json
 import logging
 import socket
-import ssl
 from collections.abc import AsyncGenerator, Callable
 from contextlib import aclosing
 from datetime import UTC, datetime
@@ -31,6 +30,8 @@ from huepy.client.protocol import (
     SSEFrame,
     WriteObserver,
 )
+from huepy.client.ratelimit import RateLimiter
+from huepy.client.tls import build_ssl_context
 from huepy.config import HueConfig
 from huepy.exceptions import (
     ADVISORY_ERROR_CODES,
@@ -136,14 +137,6 @@ def backoff_delay(retry_count: int) -> float:
     return float(min(DELAY_INITIAL * (2 ** (retry_count - 1)), DELAY_MAX))
 
 
-def _unverified_ssl_context() -> ssl.SSLContext:
-    """Build an SSL context that accepts the bridge's self-signed certificate."""
-    context = ssl.create_default_context()
-    context.check_hostname = False
-    context.verify_mode = ssl.CERT_NONE
-    return context
-
-
 def _keepalive_socket(addr_info: tuple[Any, ...]) -> socket.socket:
     """Create a TCP socket with keepalive probes tuned where supported."""
     family, sock_type, proto, *_ = addr_info
@@ -174,23 +167,34 @@ class HueHttpClient:
 
     """
 
-    def __init__(self, config: HueConfig) -> None:
+    def __init__(
+        self,
+        config: HueConfig,
+        *,
+        rate_limiter: RateLimiter | None = None,
+    ) -> None:
         """Initialise the client.
 
         Args:
             config: The bridge connection settings.
+            rate_limiter: The write pacer. Defaults to one built from
+                ``config.rate_limit``; injectable so tests drive a virtual clock.
 
         """
         self.config: HueConfig = config
         self.session: aiohttp.ClientSession | None = None
         self._write_observers: set[WriteObserver] = set()
+        self._server_hostname: str | None = None
+        # config.rate_limit is resolved to a concrete bool in HueConfig, but the
+        # field type stays optional; fall back to on for the type checker.
+        self._rate_limiter: RateLimiter = rate_limiter or RateLimiter(
+            enabled=config.rate_limit if config.rate_limit is not None else True
+        )
 
     async def __aenter__(self) -> Self:
         """Open the HTTP session."""
-        ssl_context = (
-            ssl.create_default_context()
-            if self.config.verify_ssl
-            else _unverified_ssl_context()
+        ssl_context, self._server_hostname = build_ssl_context(
+            self.config.tls, self.config.bridge_id
         )
         headers = (
             {"hue-application-key": self.config.app_key} if self.config.app_key else {}
@@ -251,6 +255,10 @@ class HueHttpClient:
 
         """
         session = self._active_session
+        # Pace writes before anything else: the gate may sleep, and a cancelled
+        # request here has no pending record to reconcile yet.
+        if method == "PUT":
+            await self._rate_limiter.acquire(path)
         pending: PendingWrite | None = None
         if method == "PUT" and data is not None:
             pending = PendingWrite(
@@ -264,7 +272,9 @@ class HueHttpClient:
             retry_count = 0
             while True:
                 retry_status: int | None = None
-                async with session.request(method, path, json=data) as response:
+                async with session.request(
+                    method, path, json=data, server_hostname=self._server_hostname
+                ) as response:
                     # GET is safe to replay. The bridge uses 429 for transient
                     # load shedding and 503 while temporarily unavailable, but
                     # does not send a useful Retry-After header for either.
@@ -462,6 +472,7 @@ class HueHttpClient:
                 async with session.post(
                     "/api",
                     json={"devicetype": app_name, "generateclientkey": True},
+                    server_hostname=self._server_hostname,
                 ) as response:
                     payload = await response.json()
             except aiohttp.ClientError as exc:
@@ -530,6 +541,7 @@ class HueHttpClient:
                 response = await session.get(
                     "/eventstream/clip/v2",
                     headers=headers,
+                    server_hostname=self._server_hostname,
                     timeout=aiohttp.ClientTimeout(total=None, sock_read=None),
                 )
                 if response.status != _HTTP_OK:

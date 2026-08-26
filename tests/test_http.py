@@ -56,6 +56,7 @@ class FakeSession:
     def __init__(self, response: FakeResponse | list[FakeResponse]) -> None:
         self.responses = response if isinstance(response, list) else [response]
         self.calls: list[tuple[str, str, Any]] = []
+        self.server_hostnames: list[str | None] = []
         self.headers: dict[str, str] = {}
 
     @property
@@ -66,20 +67,38 @@ class FakeSession:
         return self.responses[0]
 
     def request(
-        self, method: str, path: str, json: Any = None, **_: Any
+        self,
+        method: str,
+        path: str,
+        json: Any = None,
+        server_hostname: str | None = None,
+        **_: Any,
     ) -> FakeResponse:
         self.calls.append((method, path, json))
+        self.server_hostnames.append(server_hostname)
         return self.response
 
-    def post(self, path: str, json: Any = None, **_: Any) -> FakeResponse:
+    def post(
+        self,
+        path: str,
+        json: Any = None,
+        server_hostname: str | None = None,
+        **_: Any,
+    ) -> FakeResponse:
         self.calls.append(("POST", path, json))
+        self.server_hostnames.append(server_hostname)
         return self.response
 
 
 @pytest.fixture
 def config(tmp_path):
+    # A bridge_id keeps VERIFIED mode from warning about an unpinned identity
+    # when a test opens a real session.
     return HueConfig(
-        bridge_ip="10.0.0.1", app_key="k", config_path=tmp_path / "config.json"
+        bridge_ip="10.0.0.1",
+        app_key="k",
+        bridge_id="001788fffe25b8f8",
+        config_path=tmp_path / "config.json",
     )
 
 
@@ -115,6 +134,17 @@ class TestRequests:
         client, session = make_client(config, FakeResponse(200, {"data": []}))
         await client.delete(f"{PATH}/a")
         assert session.calls[-1] == ("DELETE", f"{PATH}/a", None)
+
+    async def test_request_threads_server_hostname_for_pinning(self, config):
+        client, session = make_client(config, FakeResponse(200, {"data": []}))
+        client._server_hostname = "001788fffe25b8f8"
+        await client.put(f"{PATH}/a", {"on": {"on": True}})
+        assert session.server_hostnames[-1] == "001788fffe25b8f8"
+
+    async def test_request_leaves_hostname_alone_without_pinning(self, config):
+        client, session = make_client(config, FakeResponse(200, {"data": []}))
+        await client.get(PATH)
+        assert session.server_hostnames[-1] is None
 
     async def test_empty_body_returns_none(self, config):
         client, _session = make_client(config, FakeResponse(200))
@@ -249,7 +279,11 @@ class TestSessionLifecycle:
             assert session.headers["hue-application-key"] == "k"
 
     async def test_no_auth_header_without_a_key(self, tmp_path):
-        config = HueConfig(bridge_ip="10.0.0.1", config_path=tmp_path / "config.json")
+        config = HueConfig(
+            bridge_ip="10.0.0.1",
+            bridge_id="001788fffe25b8f8",
+            config_path=tmp_path / "config.json",
+        )
         async with HueHttpClient(config) as client:
             session = client.session
             assert session is not None

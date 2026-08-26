@@ -159,6 +159,9 @@ class ResourceGroup(NamedResource, LightCommands):
             msg = f"state belongs to group {state.group_id}, not {self.id}"
             raise ValueError(msg)
         present = {light.id: light for light in await self.lights()}
+        # Fanned out concurrently, but each PUT targets /light, so the transport
+        # rate limiter spaces their starts and a large room cannot flood the
+        # bridge -- the throughput budget is enforced there, not here.
         return list(
             await asyncio.gather(
                 *(
