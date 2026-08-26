@@ -49,12 +49,20 @@ from huepy.models.event import (
 from huepy.models.group import (
     BridgeHome,
     GroupState,
+    RecallAction,
     ResourceGroup,
     Room,
     Scene,
     SceneAction,
     SceneStatus,
     ServiceGroup,
+    SmartScene,
+    SmartSceneActiveTimeslot,
+    SmartSceneStartTime,
+    SmartSceneTime,
+    SmartSceneTimeslot,
+    SmartSceneWeekTimeslot,
+    WeekDay,
     Zone,
 )
 from huepy.models.light import (
@@ -73,7 +81,9 @@ from huepy.models.light import (
     LightLevelReport,
     LightState,
     Powerup,
+    Signal,
     Signaling,
+    TimedEffect,
     TimedEffects,
 )
 from huepy.models.sensor import (
@@ -96,7 +106,12 @@ from huepy.models.sensor import (
     TemperatureReading,
     TemperatureReport,
 )
-from huepy.models.state import build_light_payload
+from huepy.models.state import (
+    build_effect_payload,
+    build_light_payload,
+    build_powerup_payload,
+    build_scene_recall,
+)
 
 UNKNOWN_RESOURCE_TAG = "_unknown"
 
@@ -118,6 +133,7 @@ _RESOURCE_MODELS = {
     "room": Room,
     "scene": Scene,
     "service_group": ServiceGroup,
+    "smart_scene": SmartScene,
     "temperature": Temperature,
     "zone": Zone,
     "zigbee_connectivity": ZigbeeConnectivity,
@@ -155,6 +171,7 @@ AnyResource = Annotated[
     | Annotated[Room, Tag("room")]
     | Annotated[Scene, Tag("scene")]
     | Annotated[ServiceGroup, Tag("service_group")]
+    | Annotated[SmartScene, Tag("smart_scene")]
     | Annotated[Temperature, Tag("temperature")]
     | Annotated[Zone, Tag("zone")]
     | Annotated[ZigbeeConnectivity, Tag("zigbee_connectivity")]
@@ -222,6 +239,7 @@ __all__ = [
     "PowerState",
     "Powerup",
     "ProductData",
+    "RecallAction",
     "RelativeRotary",
     "RelativeRotaryEvent",
     "RelativeRotaryReading",
@@ -236,16 +254,28 @@ __all__ = [
     "SceneStatus",
     "Sensitivity",
     "ServiceGroup",
+    "Signal",
     "Signaling",
+    "SmartScene",
+    "SmartSceneActiveTimeslot",
+    "SmartSceneStartTime",
+    "SmartSceneTime",
+    "SmartSceneTimeslot",
+    "SmartSceneWeekTimeslot",
     "Temperature",
     "TemperatureReading",
     "TemperatureReport",
     "TimeZone",
+    "TimedEffect",
     "TimedEffects",
+    "WeekDay",
     "ZigbeeChannel",
     "ZigbeeConnectivity",
     "Zone",
+    "build_effect_payload",
     "build_light_payload",
+    "build_powerup_payload",
+    "build_scene_recall",
     "parse_events",
     "parse_resource",
     "unwrap",

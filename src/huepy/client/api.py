@@ -21,6 +21,7 @@ from huepy.resources import (
     Room,
     Scene,
     ServiceGroup,
+    SmartScene,
     Temperature,
     ZigbeeConnectivity,
     Zone,
@@ -44,6 +45,7 @@ class HueAPI:
         self.rooms = Room(hue)
         self.zones = Zone(hue)
         self.scenes = Scene(hue)
+        self.smart_scenes = SmartScene(hue)
         self.devices = Device(hue)
         self.device_powers = DevicePower(hue)
         self.bridges = Bridge(hue)

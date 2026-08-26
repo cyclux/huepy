@@ -6,8 +6,17 @@ from typing import TYPE_CHECKING, Protocol
 
 from huepy.color import Gamut
 from huepy.exceptions import AmbiguousResourceError, ResourceNotFoundError
-from huepy.models import Device, Light, Room, Scene, ServiceGroup, Zone
+from huepy.models import (
+    Device,
+    Light,
+    Room,
+    Scene,
+    ServiceGroup,
+    SmartScene,
+    Zone,
+)
 from huepy.models.common import CommandResult, NamedResource
+from huepy.models.group import RecallAction
 from huepy.models.light import Effect
 from huepy.resources.base import NamedResourceHandler
 from huepy.resources.device import Device as DeviceHandler
@@ -19,6 +28,9 @@ from huepy.resources.group import (
 )
 from huepy.resources.group import (
     ServiceGroup as ServiceGroupHandler,
+)
+from huepy.resources.group import (
+    SmartScene as SmartSceneHandler,
 )
 from huepy.resources.group import (
     Zone as ZoneHandler,
@@ -358,9 +370,35 @@ class SceneCollection(NamedCollection[Scene]):
         """Create a high-level scene collection."""
         super().__init__(hue, handler, Scene)
 
-    async def activate(self, name: str) -> CommandResult:
+    async def activate(
+        self,
+        name: str,
+        *,
+        action: RecallAction | str = RecallAction.ACTIVE,
+        duration: float | None = None,
+        brightness: float | None = None,
+    ) -> CommandResult:
         """Activate the uniquely named scene."""
+        scene = await self.get(name)
+        return await scene.activate(
+            action=action, duration=duration, brightness=brightness
+        )
+
+
+class SmartSceneCollection(NamedCollection[SmartScene]):
+    """Named smart-scene collection."""
+
+    def __init__(self, hue: CollectionClient, handler: SmartSceneHandler) -> None:
+        """Create a high-level smart-scene collection."""
+        super().__init__(hue, handler, SmartScene)
+
+    async def activate(self, name: str) -> CommandResult:
+        """Start the uniquely named smart scene running its schedule."""
         return await (await self.get(name)).activate()
+
+    async def deactivate(self, name: str) -> CommandResult:
+        """Stop the uniquely named smart scene."""
+        return await (await self.get(name)).deactivate()
 
 
 class DeviceCollection(NamedCollection[Device]):

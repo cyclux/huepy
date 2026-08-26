@@ -29,6 +29,7 @@ from huepy.collections import (
     RoomCollection,
     SceneCollection,
     ServiceGroupCollection,
+    SmartSceneCollection,
     ZoneCollection,
 )
 from huepy.config import HueConfig, TlsMode, default_config_path
@@ -72,6 +73,7 @@ class Hue:
         rooms: Human-facing named room collection.
         zones: Human-facing named zone collection.
         scenes: Human-facing named scene collection.
+        smart_scenes: Human-facing named smart-scene collection.
         devices: Human-facing named device collection.
         service_groups: Human-facing named service-group collection.
         state: The local state graph; observing when ``Hue(state=True)``.
@@ -136,6 +138,9 @@ class Hue:
         self.rooms: RoomCollection = RoomCollection(self, self.api.rooms)
         self.zones: ZoneCollection = ZoneCollection(self, self.api.zones)
         self.scenes: SceneCollection = SceneCollection(self, self.api.scenes)
+        self.smart_scenes: SmartSceneCollection = SmartSceneCollection(
+            self, self.api.smart_scenes
+        )
         self.devices: DeviceCollection = DeviceCollection(self, self.api.devices)
         self.service_groups: ServiceGroupCollection = ServiceGroupCollection(
             self, self.api.service_groups

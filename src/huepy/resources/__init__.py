@@ -9,6 +9,7 @@ from huepy.resources.group import (
     Room,
     Scene,
     ServiceGroup,
+    SmartScene,
     Zone,
 )
 from huepy.resources.light import (
@@ -50,6 +51,7 @@ __all__ = [
     "Room",
     "Scene",
     "ServiceGroup",
+    "SmartScene",
     "Temperature",
     "ToggleableSensorMixin",
     "ZigbeeConnectivity",

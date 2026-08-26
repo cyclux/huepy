@@ -1,10 +1,12 @@
 """Handlers for grouping resources: rooms, zones, homes, scenes, service groups."""
 
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from huepy.models import common as common_models
 from huepy.models import group as group_models
 from huepy.models.common import ResourceIdentifier, ResourceType
+from huepy.models.group import RecallAction
+from huepy.models.state import MILLISECONDS_PER_SECOND, build_scene_recall
 from huepy.resources.base import BaseResource, NamedResourceHandler
 from huepy.resources.light import Light
 
@@ -179,32 +181,133 @@ class Scene(NamedResourceHandler[group_models.Scene]):
     resource_type: ClassVar[ResourceType] = ResourceType.SCENE
     model: ClassVar[type[common_models.HueModel]] = group_models.Scene
 
-    async def create(self, name: str, room_id: str) -> list[ResourceIdentifier]:
+    async def create(
+        self,
+        name: str,
+        room_id: str,
+        *,
+        actions: list[dict[str, Any]] | None = None,
+        speed: float | None = None,
+        auto_dynamic: bool | None = None,
+    ) -> list[ResourceIdentifier]:
         """Create a scene attached to a room.
 
         Args:
             name: The scene's display name.
             room_id: The room the scene belongs to.
+            actions: The per-target scene actions, in the bridge's shape. A
+                scene with no actions stores nothing to recall.
+            speed: Speed of the dynamic palette, from 0.0 to 1.0.
+            auto_dynamic: Whether recalling the scene starts it dynamically.
 
         Returns:
             A reference to the created scene.
 
         """
-        return await self._create(
-            {
-                "metadata": {"name": name},
-                "group": {"rid": room_id, "rtype": ResourceType.ROOM},
-            },
-        )
+        body: dict[str, Any] = {
+            "metadata": {"name": name},
+            "group": {"rid": room_id, "rtype": ResourceType.ROOM},
+        }
+        if actions is not None:
+            body["actions"] = actions
+        if speed is not None:
+            body["speed"] = speed
+        if auto_dynamic is not None:
+            body["auto_dynamic"] = auto_dynamic
+        return await self._create(body)
 
-    async def activate(self, scene_id: str) -> list[ResourceIdentifier]:
+    async def activate(
+        self,
+        scene_id: str,
+        *,
+        action: RecallAction | str = RecallAction.ACTIVE,
+        duration: float | None = None,
+        brightness: float | None = None,
+    ) -> list[ResourceIdentifier]:
         """Recall a scene.
 
         Args:
             scene_id: The scene's id.
+            action: How to recall it: ``RecallAction.ACTIVE`` applies it once,
+                ``DYNAMIC_PALETTE`` starts it cycling its palette.
+            duration: Transition time into the scene, in seconds.
+            brightness: A brightness percentage to override the scene's own.
 
         Returns:
             References to the updated resources.
 
         """
-        return await self.update(scene_id, {"recall": {"action": "active"}})
+        return await self.update(
+            scene_id,
+            build_scene_recall(str(action), duration=duration, brightness=brightness),
+        )
+
+
+class SmartScene(NamedResourceHandler[group_models.SmartScene]):
+    """Handler for smart scenes -- scenes that follow a weekly schedule.
+
+    Smart scenes carry a `metadata.name`, so they can be looked up by it:
+    ``await hue.smart_scenes.get("Daily rhythm")``.
+    """
+
+    resource_type: ClassVar[ResourceType] = ResourceType.SMART_SCENE
+    model: ClassVar[type[common_models.HueModel]] = group_models.SmartScene
+
+    async def create(
+        self,
+        name: str,
+        group_id: str,
+        week_timeslots: list[dict[str, Any]],
+        *,
+        group_rtype: ResourceType | str = ResourceType.ROOM,
+        transition_duration: float | None = None,
+    ) -> list[ResourceIdentifier]:
+        """Create a smart scene on a room or zone.
+
+        Args:
+            name: The smart scene's display name.
+            group_id: The room or zone it belongs to.
+            week_timeslots: The weekly schedule, in the bridge's shape: each
+                entry a day's ``timeslots`` (each a ``start_time`` and a scene
+                ``target``) and its ``recurrence`` weekdays.
+            group_rtype: The kind of group ``group_id`` names, room or zone.
+            transition_duration: Fade between timeslots, in seconds.
+
+        Returns:
+            A reference to the created smart scene.
+
+        """
+        body: dict[str, Any] = {
+            "metadata": {"name": name},
+            "group": {"rid": group_id, "rtype": str(group_rtype)},
+            "week_timeslots": week_timeslots,
+        }
+        if transition_duration is not None:
+            body["transition_duration"] = int(
+                transition_duration * MILLISECONDS_PER_SECOND
+            )
+        return await self._create(body)
+
+    async def activate(self, scene_id: str) -> list[ResourceIdentifier]:
+        """Start a smart scene running its daily schedule.
+
+        Args:
+            scene_id: The smart scene's id.
+
+        Returns:
+            References to the updated resources.
+
+        """
+        return await self.update(scene_id, {"recall": {"action": "activate"}})
+
+    async def deactivate(self, scene_id: str) -> list[ResourceIdentifier]:
+        """Stop a running smart scene.
+
+        Args:
+            scene_id: The smart scene's id.
+
+        Returns:
+            References to the updated resources.
+
+        """
+        return await self.update(scene_id, {"recall": {"action": "deactivate"}})

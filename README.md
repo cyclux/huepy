@@ -14,6 +14,8 @@ A modern async Python wrapper for the **Philips Hue v2 CLIP API**.
 - Colour in human units -- `rgb=`, `hex_color=`, `kelvin=` -- clamped to the
   gamut the bulb itself reports
 - Transitions in seconds on every light command
+- Dynamic effects, signals and smart scenes -- `await light.set_effect("candle")`,
+  `await hue.smart_scenes.activate("Daily rhythm")`
 - Every response is a validated **pydantic** model, not a bare dict
 - `Hue(state=True)` tracks the whole resource graph in the background
 - `Hue(record=SQLiteSink(...))` persists every change to a queryable file
@@ -98,9 +100,10 @@ one GET to resolve `"Kitchen"`; the room then carries the reference to its own
 ### Lookup by name
 
 The top-level collections are the human-facing API: `lights`, `rooms`,
-`zones`, `scenes`, `devices`, and `service_groups`. Every collection uses the
-same `get(name)`, `list()`, `names()`, `rename(name, new_name)`, and
-`delete(name)` vocabulary. Matching ignores case and surrounding whitespace.
+`zones`, `scenes`, `smart_scenes`, `devices`, and `service_groups`. Every
+collection uses the same `get(name)`, `list()`, `names()`, `rename(name,
+new_name)`, and `delete(name)` vocabulary. Matching ignores case and
+surrounding whitespace.
 
 ```python
 kitchen = await hue.rooms.get("Kitchen")
@@ -149,8 +152,10 @@ await scene.activate()
 
 `update(data)`, `delete()` and `refresh()` are on every resource; `set()` and
 the light commands are on anything that behaves like a light, rooms and zones
-included. `set_effect()`, `set_gradient()`, `set_powerup()` and `alert()` are
-lights only -- a `grouped_light` service does not accept them.
+included. `set_effect()`, `set_timed_effect()`, `set_gradient()`,
+`set_powerup()`, `signal()`, `identify()`, `adjust_brightness()`,
+`adjust_color_temperature()` and `alert()` are lights only -- a
+`grouped_light` service does not accept them.
 
 A room or zone also resolves its own membership, and can save and put back the
 state of everything in it:
@@ -286,8 +291,8 @@ descriptions side by side and flags any disagreement.
 ### Resources
 
 `hue.api.lights`, `grouped_lights`, `light_levels`, `grouped_light_levels`,
-`rooms`, `zones`, `scenes`, `devices`, `device_powers`, `bridges`,
-`bridge_homes`, `service_groups`, `motions`, `grouped_motions`,
+`rooms`, `zones`, `scenes`, `smart_scenes`, `devices`, `device_powers`,
+`bridges`, `bridge_homes`, `service_groups`, `motions`, `grouped_motions`,
 `temperatures`, `buttons`, `contacts`, `relative_rotaries`, and
 `zigbee_connectivities` expose the complete typed CLIP v2 resource API.
 

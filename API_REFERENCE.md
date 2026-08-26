@@ -117,7 +117,7 @@ async with Hue(bridge_ip="192.168.1.100") as hue:
 | `state` | `huepy.state.HueState` | The local resource graph. Present from construction; observing when `Hue(state=True)`. See [Last-reported state](#last-reported-state). |
 | `recorder` | `huepy.recording.Recorder \| None` | The running history recorder, when `record=` was given. See [Recording history](#recording-history). |
 | `api` | `HueAPI` | Typed, strictly id-addressed CLIP v2 handlers. |
-| `lights`, `rooms`, `zones`, `scenes`, `devices`, `service_groups` | named collections | Human-facing collections addressed by display name. |
+| `lights`, `rooms`, `zones`, `scenes`, `smart_scenes`, `devices`, `service_groups` | named collections | Human-facing collections addressed by display name. |
 
 The package itself exposes `huepy.__version__`, read from the installed
 distribution metadata, or `"unknown"` when running from a source tree.
@@ -145,8 +145,9 @@ on_now = [light.name for light in lights if light.is_on]
 ## Lookup by name
 
 The human-facing collections are `hue.lights`, `hue.rooms`, `hue.zones`,
-`hue.scenes`, `hue.devices`, and `hue.service_groups`. Their names are matched
-case-insensitively after surrounding whitespace is removed.
+`hue.scenes`, `hue.smart_scenes`, `hue.devices`, and `hue.service_groups`.
+Their names are matched case-insensitively after surrounding whitespace is
+removed.
 
 ```python
 kitchen = await hue.rooms.get("Kitchen")
@@ -180,9 +181,9 @@ names: a name resolved here is the target of a rename, a delete, or a command,
 so a graph known to be stale must not answer. Reading `hue.state` directly is
 last-reported state and stays readable while disconnected.
 
-Resource creation stays under `hue.api`: room, zone, scene, and service-group
-creation inherently requires ids or typed CLIP reference shapes, so exposing
-it on the name-oriented layer would mix abstraction levels.
+Resource creation stays under `hue.api`: room, zone, scene, smart-scene, and
+service-group creation inherently requires ids or typed CLIP reference shapes,
+so exposing it on the name-oriented layer would mix abstraction levels.
 
 ## Bound and detached models
 
@@ -242,6 +243,7 @@ async set(
     kelvin: int | None = None,
     gamut: color.Gamut | None = None,
     transition: float | None = None,
+    speed: float | None = None,
 ) -> CommandResult
 ```
 
@@ -256,6 +258,7 @@ async set(
 | `kelvin` | `int` | Colour temperature, 2000–6536; higher is cooler. Out-of-range values are clamped. |
 | `gamut` | `color.Gamut` | Triangle the colour is clamped into. Defaults to whatever the resource itself reports. |
 | `transition` | `float` | Duration of the change, in seconds. |
+| `speed` | `float` | Speed of the active dynamic palette, 0.0–1.0. Only takes effect while a dynamic scene is already running. |
 
 Everything supplied goes into **one** PUT:
 
@@ -271,6 +274,7 @@ Rules `set()` enforces before it sends anything:
   raises `ValueError` rather than silently preferring one.
 - A colour and a colour temperature cannot be combined — a light does one or
   the other. That, too, is a `ValueError`.
+- `speed` outside 0.0–1.0 raises `ValueError`.
 - A call that supplies nothing sends no request and returns
   `CommandResult(sent=False)`.
 
@@ -304,7 +308,9 @@ await hue.zones.turn_off("Downstairs", transition=3.0)
 ```
 
 `lights` also provides `set_effect(name, effect)` and `alert(name)`. `scenes`
-provides `activate(name)`. Every direct command returns `CommandResult`.
+provides `activate(name, *, action=..., duration=..., brightness=...)`, and
+`smart_scenes` provides `activate(name)` and `deactivate(name)`. Every direct
+command returns `CommandResult`.
 
 ## Transitions
 
@@ -431,16 +437,26 @@ run an effect across a room, iterate its lights.
 
 | Command | Sends | Notes |
 | --- | --- | --- |
-| `await light.set_effect(effect)` | `{"effects": {"effect": ...}}` | An `models.Effect` member or a raw name. `Effect.NO_EFFECT` stops the running one. |
+| `await light.set_effect(effect, *, xy=None, rgb=None, hex_color=None, mirek=None, kelvin=None, speed=None)` | `{"effects_v2": {"action": {...}}}` | An `models.Effect` member or a raw name, optionally tinted by a colour or colour temperature and paced with `speed`. `Effect.NO_EFFECT` stops the running one and takes no tint. |
+| `await light.set_timed_effect(effect, *, duration=None)` | `{"timed_effects": {...}}` | A `models.TimedEffect` member (`SUNRISE`, `SUNSET`) or a raw name. `duration` is seconds and is required for a real effect, up to six hours; `TimedEffect.NO_EFFECT` stops one that is running. |
 | `await light.set_gradient(colors, *, mode=None)` | `{"gradient": {...}}` | `colors` is a list of CIE `(x, y)` stops, at most `gradient.points_capable` of them. |
-| `await light.set_powerup(preset)` | `{"powerup": {"preset": ...}}` | One of `"safety"`, `"powerfail"`, `"last_on_state"`, `"custom"`. |
+| `await light.set_powerup(preset="custom", *, on=None, on_mode=None, brightness=None, xy=None, rgb=None, hex_color=None, mirek=None, kelvin=None)` | `{"powerup": {...}}` | `preset` is one of `"safety"`, `"powerfail"`, `"last_on_state"`, `"custom"`. Supplying any on/brightness/colour field configures a custom powerup and forces `preset` to `"custom"`. |
+| `await light.signal(signal, *, duration=None, colors=None)` | `{"signaling": {...}}` | A `models.Signal` member or a raw name. `colors` is one or two CIE `(x, y)` points, clamped to the light's gamut; only `ON_OFF_COLOR` and `ALTERNATING` accept them. `Signal.NO_SIGNAL` cancels one that is running. |
+| `await light.identify()` | `{"identify": {"action": "identify"}}` | Asks the light to identify itself with a short breathe cycle. |
+| `await light.adjust_brightness(delta)` | `{"dimming_delta": {...}}` | Nudges brightness up or down by `delta` percentage points, without reading the current value first; `0` halts an in-progress change. |
+| `await light.adjust_color_temperature(mirek_delta)` | `{"color_temperature_delta": {...}}` | Nudges colour temperature warmer or cooler by `mirek_delta`; `0` halts an in-progress change. |
 | `await light.alert()` | `{"alert": {"action": "breathe"}}` | One pulse to identify a light; it restores itself. |
 
 ```python
 strip = await hue.lights.get("Hallway strip")
 await strip.set_effect(models.Effect.CANDLE)
+await strip.set_timed_effect(models.TimedEffect.SUNRISE, duration=1800)
 await strip.set_gradient([(0.6, 0.35), (0.2, 0.15)], mode="interpolated_palette")
 await strip.set_powerup("last_on_state")
+await strip.signal(models.Signal.ON_OFF_COLOR, duration=5, colors=[(0.6, 0.35)])
+await strip.identify()
+await strip.adjust_brightness(-10)
+await strip.adjust_color_temperature(50)
 await strip.alert()
 ```
 
@@ -455,11 +471,11 @@ all `None` on a plain white bulb:
 | Field | Type | Reports |
 | --- | --- | --- |
 | `effects` | `models.Effects` | The running effect and the ones this light can run. |
-| `timed_effects` | `models.TimedEffects` | Same, plus `duration` — the milliseconds left. |
+| `timed_effects` | `models.TimedEffects` | Same, plus `duration` — the milliseconds left. Values are `models.TimedEffect` members. |
 | `gradient` | `models.Gradient` | The colour stops, `points_capable` and `pixel_count`. |
 | `powerup` | `models.Powerup` | What the light does when mains power returns. |
 | `alert_actions` | `models.Alert` | The alert actions the light accepts. Named for the `alert()` command that would otherwise collide; the wire key is `alert`. |
-| `signaling` | `models.Signaling` | The signal being displayed, and the ones available. |
+| `signaling` | `models.Signaling` | The signal being displayed, and the ones available. Values are `models.Signal` members. |
 
 ## Scenes
 
@@ -468,14 +484,98 @@ scene = await hue.scenes.get("Movie night")
 await scene.activate()
 ```
 
-`activate()` is `update({"recall": {"action": "active"}})` — one PUT to the
-scene, which applies it to the room or zone in its `group` field. Scene names
-repeat across rooms far more often than room names do, so when several match,
-the first in bridge order wins.
+By default `activate()` sends `{"recall": {"action": "active"}}` — one PUT to
+the scene, which applies it to the room or zone in its `group` field. Scene
+names repeat across rooms far more often than room names do, so when several
+match, the first in bridge order wins.
+
+```
+async activate(
+    *,
+    action: RecallAction | str = RecallAction.ACTIVE,
+    duration: float | None = None,
+    brightness: float | None = None,
+) -> CommandResult
+```
+
+`action=models.RecallAction.DYNAMIC_PALETTE` starts the scene cycling its
+palette instead of applying it once; `STATIC` applies the palette's first
+frame without animating. `duration` is a transition time into the scene, in
+seconds; `brightness` overrides the scene's own stored brightness, clamped to
+0–100. The bound model, the named collection and the id-based handler all take
+the same three keywords:
+
+```python
+await scene.activate(action=models.RecallAction.DYNAMIC_PALETTE, duration=2.0)
+await hue.scenes.activate("Movie night", brightness=60)
+await hue.api.scenes.activate(scene.id, duration=1.5)
+```
 
 The model also exposes stored `actions` (`models.SceneAction`) and optional
 bridge `status` (`models.SceneStatus`), including `active` and the aware
 `last_recall` timestamp when reported.
+
+`hue.api.scenes.create(name, room_id, *, actions=None, speed=None,
+auto_dynamic=None)` stores a scene without recalling it: `actions` is the
+per-target state in the bridge's payload shape, `speed` sets the dynamic
+palette's speed (0.0–1.0), and `auto_dynamic` decides whether a plain recall
+starts the scene dynamically.
+
+### Smart scenes
+
+A smart scene is not applied once like a `Scene`; it is started and then
+follows a weekly schedule of timeslots until stopped, so its verbs are
+`activate`/`deactivate` rather than a recall action.
+
+```python
+await hue.smart_scenes.activate("Daily rhythm")
+await hue.smart_scenes.deactivate("Daily rhythm")
+```
+
+Creation is id-based, like every other resource: `hue.api.smart_scenes.create`
+takes the room or zone it belongs to and the weekly schedule directly.
+
+```
+async create(
+    name: str,
+    group_id: str,
+    week_timeslots: list[dict[str, Any]],
+    *,
+    group_rtype: ResourceType | str = ResourceType.ROOM,
+    transition_duration: float | None = None,
+) -> list[ResourceIdentifier]
+```
+
+`week_timeslots` is the weekly schedule in the bridge's payload shape: a list
+of `{"timeslots": [...], "recurrence": [...]}` entries, each timeslot a
+`start_time` and a scene `target`, and each `recurrence` a list of
+`models.WeekDay` values. `group_rtype` says whether `group_id` names a room or
+a zone; `transition_duration` fades between timeslots, in seconds.
+
+```python
+await hue.api.smart_scenes.create(
+    "Daily rhythm",
+    room_id,
+    [
+        {
+            "timeslots": [
+                {
+                    "start_time": {"kind": "time", "time": {"hour": 7, "minute": 0}},
+                    "target": {"rid": scene.id, "rtype": "scene"},
+                },
+            ],
+            "recurrence": [models.WeekDay.MONDAY, models.WeekDay.TUESDAY],
+        },
+    ],
+)
+```
+
+`hue.api.smart_scenes.activate(scene_id)` and `.deactivate(scene_id)` send
+`{"recall": {"action": "activate"}}` and `{"recall": {"action":
+"deactivate"}}`; the bound model and `hue.smart_scenes` expose the same two
+verbs with no arguments. The model reports which timeslot is running in
+`active_timeslot` (`models.SmartSceneActiveTimeslot`) and its overall `state`
+while active.
 
 ## Models
 
@@ -487,11 +587,12 @@ available in `model_extra`.
 
 | Model | Fields beyond `id`, `type`, `id_v1`, `owner` | Commands beyond `update` / `delete` / `refresh` |
 | --- | --- | --- |
-| `models.Light` | `metadata`, `on`, `dimming`, `color`, `color_temperature`, `mode`, `effects`, `timed_effects`, `gradient`, `powerup`, `alert_actions`, `signaling` | light commands, `set_effect`, `set_gradient`, `set_powerup`, `alert` |
+| `models.Light` | `metadata`, `on`, `dimming`, `color`, `color_temperature`, `mode`, `effects`, `timed_effects`, `gradient`, `powerup`, `alert_actions`, `signaling` | light commands, `set_effect`, `set_timed_effect`, `set_gradient`, `set_powerup`, `signal`, `identify`, `adjust_brightness`, `adjust_color_temperature`, `alert` |
 | `models.GroupedLight` | `on`, `dimming`, `color` (`GroupedColor`, whose `xy` may be absent), `color_temperature` | light commands |
 | `models.Room` | `metadata`, `children`, `services` | light commands, `service_id`, `contains_device` |
 | `models.Zone` | `metadata`, `children`, `services` | light commands, `service_id`, `contains_device` |
 | `models.Scene` | `metadata`, `group`, `speed`, `auto_dynamic`, `actions`, `status` | `activate` |
+| `models.SmartScene` | `metadata`, `group`, `week_timeslots`, `transition_duration`, `active_timeslot`, `state` | `activate`, `deactivate` |
 | `models.Device` | `metadata`, `product_data`, `services` | `service_id` |
 | `models.Bridge` | `bridge_id`, `time_zone` | — |
 | `models.BridgeHome` | `children`, `services` | — |
@@ -545,14 +646,14 @@ building payloads by hand.
 | --- | --- |
 | Shared | `HueModel`, `HueResource`, `NamedResource`, `Metadata`, `ResourceIdentifier`, `ResourceType` |
 | Light state | `On`, `Dimming`, `Color`, `GroupedColor`, `ColorXY`, `ColorGamut`, `ColorTemperature`, `MirekSchema` |
-| Light services | `Effect`, `Effects`, `TimedEffects`, `Gradient`, `GradientPoint`, `Powerup`, `Alert`, `Signaling`, `LightCommands` |
+| Light services | `Effect`, `TimedEffect`, `Signal`, `Effects`, `TimedEffects`, `Gradient`, `GradientPoint`, `Powerup`, `Alert`, `Signaling`, `LightCommands` |
 | Sensors and input | `MotionReading`, `MotionReport`, `Sensitivity`, `TemperatureReading`, `TemperatureReport`, `ButtonReading`, `ButtonReport`, `ContactReport`, `LightLevelReading`, `LightLevelReport`, `RelativeRotaryReading`, `RelativeRotaryReport`, `RelativeRotaryEvent`, `RelativeRotaryRotation` |
 | Devices | `ProductData`, `PowerState`, `TimeZone` |
 | Connectivity | `ZigbeeConnectivity`, `ZigbeeChannel` |
-| Groups | `ResourceGroup`, `SceneAction`, `SceneStatus` |
+| Groups | `ResourceGroup`, `RecallAction`, `SceneAction`, `SceneStatus`, `WeekDay`, `SmartSceneWeekTimeslot`, `SmartSceneTimeslot`, `SmartSceneStartTime`, `SmartSceneTime`, `SmartSceneActiveTimeslot` |
 | Events | `HueEvent`, `EventResource`, `EventType`, `parse_events` |
 | Envelope | `HueResponse`, `HueErrorDetail`, `unwrap`, `unwrap_one` |
-| Payload builder | `build_light_payload` |
+| Payload builder | `build_light_payload`, `build_effect_payload`, `build_powerup_payload`, `build_scene_recall` |
 | Aggregate resources | `AnyResource`, `RESOURCE_MODELS`, `RESOURCE_LIST`, `parse_resource` |
 
 `ResourceType` is a `StrEnum` of every resource type with a concrete huepy
@@ -590,7 +691,10 @@ light = unwrap_one(payload, models.Light)  # and also if data[] came back empty
 `models/common.py`.
 
 `build_light_payload(**state)` composes the same payload `set()` sends, without
-a client — useful for `update()` calls you assemble yourself.
+a client — useful for `update()` calls you assemble yourself. Its
+purpose-built siblings do the same for the other light and scene commands:
+`build_effect_payload(...)` for `set_effect()`, `build_powerup_payload(...)`
+for `set_powerup()`, and `build_scene_recall(...)` for `scene.activate()`.
 
 ## Events
 
@@ -1005,6 +1109,7 @@ instead return `CommandResult`.
 | `hue.api.rooms` | `Room` | `models.Room` | `create`, `grouped_light_id`, `get_from_light_service_id` |
 | `hue.api.zones` | `Zone` | `models.Zone` | `create`, `grouped_light_id` |
 | `hue.api.scenes` | `Scene` | `models.Scene` | `create`, `activate` |
+| `hue.api.smart_scenes` | `SmartScene` | `models.SmartScene` | `create`, `activate`, `deactivate` |
 | `hue.api.service_groups` | `ServiceGroup` | `models.ServiceGroup` | `create` |
 | `hue.api.motions` | `Motion` | `models.Motion` | `turn_on`, `turn_off`, `set_sensitivity`, `get_motion_state`, `get_last_motion` |
 | `hue.api.grouped_motions` | `GroupedMotion` | `models.GroupedMotion` | `turn_on`, `turn_off` |
@@ -1059,19 +1164,23 @@ async get_service_ids_on() -> list[str]          # their service ids
 async get_device_ids_on() -> list[str]           # their owning device ids
 ```
 
-### `Room`, `Zone`, `Scene`, `ServiceGroup`
+### `Room`, `Zone`, `Scene`, `SmartScene`, `ServiceGroup`
 
 ```
 async Room.create(name, devices: list[str]) -> list[ResourceIdentifier]
 async Room.get_from_light_service_id(light_id) -> str | None
 async Zone.create(name, services: list[dict[str, str]]) -> list[ResourceIdentifier]
-async Scene.create(name, room_id) -> list[ResourceIdentifier]
-async Scene.activate(scene_id) -> list[ResourceIdentifier]
+async Scene.create(name, room_id, *, actions=None, speed=None, auto_dynamic=None) -> list[ResourceIdentifier]
+async Scene.activate(scene_id, *, action=RecallAction.ACTIVE, duration=None, brightness=None) -> list[ResourceIdentifier]
+async SmartScene.create(name, group_id, week_timeslots, *, group_rtype=ResourceType.ROOM, transition_duration=None) -> list[ResourceIdentifier]
+async SmartScene.activate(scene_id) -> list[ResourceIdentifier]
+async SmartScene.deactivate(scene_id) -> list[ResourceIdentifier]
 async ServiceGroup.create(name, services, archetype="sensor_group") -> list[ResourceIdentifier]
 ```
 
 `Zone.create` and `ServiceGroup.create` take service references, each a dict of
-`rid` and `rtype`; `Room.create` takes plain device ids.
+`rid` and `rtype`; `Room.create` takes plain device ids. `SmartScene.create`
+takes the weekly schedule described in [Smart scenes](#smart-scenes).
 
 ### `Motion`
 

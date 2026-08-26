@@ -192,6 +192,7 @@ class ResourceType(StrEnum):
     ROOM = "room"
     SCENE = "scene"
     SERVICE_GROUP = "service_group"
+    SMART_SCENE = "smart_scene"
     TEMPERATURE = "temperature"
     ZONE = "zone"
     ZIGBEE_CONNECTIVITY = "zigbee_connectivity"

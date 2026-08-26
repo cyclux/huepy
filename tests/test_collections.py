@@ -126,6 +126,44 @@ class TestCollectionCrud:
         assert http.last == ("DELETE", f"{ROOM}/room-1", None)
 
 
+SMART_SCENE = "/clip/v2/resource/smart_scene"
+
+
+class TestSmartSceneCollection:
+    """A smart scene is addressed by the name a human gave it."""
+
+    @staticmethod
+    def _smart_scene(name: str = "Rhythm", scene_id: str = "ss-1") -> dict[str, Any]:
+        return {
+            "id": scene_id,
+            "type": "smart_scene",
+            "metadata": {"name": name},
+            "week_timeslots": [],
+        }
+
+    async def test_activate_resolves_by_name_then_recalls(self, hue, http):
+        http.queue_collection("smart_scene", [self._smart_scene()])
+
+        await hue.smart_scenes.activate("rhythm")
+
+        assert http.last == (
+            "PUT",
+            f"{SMART_SCENE}/ss-1",
+            {"recall": {"action": "activate"}},
+        )
+
+    async def test_deactivate_resolves_by_name_then_recalls(self, hue, http):
+        http.queue_collection("smart_scene", [self._smart_scene()])
+
+        await hue.smart_scenes.deactivate("Rhythm")
+
+        assert http.last == (
+            "PUT",
+            f"{SMART_SCENE}/ss-1",
+            {"recall": {"action": "deactivate"}},
+        )
+
+
 def track(hue: Hue, raw: dict[str, Any], *, connected: bool = True):
     """Make ``hue.state`` report as tracking ``raw``, with no event stream.
 

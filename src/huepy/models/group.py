@@ -2,6 +2,7 @@
 
 import asyncio
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, override
 
 from pydantic import AwareDatetime, Field
@@ -17,6 +18,32 @@ from huepy.models.common import (
     unwrap,
 )
 from huepy.models.light import Light, LightCommands, LightState
+from huepy.models.state import build_scene_recall
+
+
+class RecallAction(StrEnum):
+    """How a scene is recalled onto its room or zone.
+
+    ``ACTIVE`` applies the stored actions once; ``DYNAMIC_PALETTE`` starts the
+    scene cycling through its palette; ``STATIC`` applies the palette's first
+    frame without animating.
+    """
+
+    ACTIVE = "active"
+    DYNAMIC_PALETTE = "dynamic_palette"
+    STATIC = "static"
+
+
+class WeekDay(StrEnum):
+    """A day of the week, as a smart scene's recurrence names them."""
+
+    MONDAY = "monday"
+    TUESDAY = "tuesday"
+    WEDNESDAY = "wednesday"
+    THURSDAY = "thursday"
+    FRIDAY = "friday"
+    SATURDAY = "saturday"
+    SUNDAY = "sunday"
 
 
 @dataclass(frozen=True)
@@ -236,8 +263,21 @@ class Scene(NamedResource):
     actions: list[SceneAction] = Field(default_factory=list)
     status: SceneStatus | None = None
 
-    async def activate(self) -> CommandResult:
+    async def activate(
+        self,
+        *,
+        action: RecallAction | str = RecallAction.ACTIVE,
+        duration: float | None = None,
+        brightness: float | None = None,
+    ) -> CommandResult:
         """Recall this scene, applying it to the room or zone it belongs to.
+
+        Args:
+            action: How to recall it. ``RecallAction.ACTIVE`` applies the stored
+                state once; ``DYNAMIC_PALETTE`` starts it cycling its palette.
+            duration: Transition time into the scene, in seconds.
+            brightness: A brightness percentage to override the scene's own,
+                clamped to 0-100.
 
         Returns:
             A CommandResult containing the bridge references affected.
@@ -247,4 +287,88 @@ class Scene(NamedResource):
             HueResponseError: If the bridge rejects the recall.
 
         """
-        return await self.update({"recall": {"action": "active"}})
+        return await self.update(
+            build_scene_recall(str(action), duration=duration, brightness=brightness)
+        )
+
+
+class SmartSceneTime(HueModel):
+    """A wall-clock time within a smart scene's day."""
+
+    hour: int | None = None
+    minute: int | None = None
+    second: int | None = None
+
+
+class SmartSceneStartTime(HueModel):
+    """When a smart scene's timeslot begins.
+
+    ``kind`` is ``"time"`` for a fixed clock time carried in ``time``, or
+    ``"sunset"`` to track local sunset instead.
+    """
+
+    kind: str | None = None
+    time: SmartSceneTime | None = None
+
+
+class SmartSceneTimeslot(HueModel):
+    """One timeslot: the scene to recall and when it starts."""
+
+    start_time: SmartSceneStartTime | None = None
+    target: ResourceIdentifier | None = None
+
+
+class SmartSceneWeekTimeslot(HueModel):
+    """A day's timeslots and the weekdays they recur on."""
+
+    timeslots: list[SmartSceneTimeslot] = Field(default_factory=list)
+    recurrence: list[str] = Field(default_factory=list)
+
+
+class SmartSceneActiveTimeslot(HueModel):
+    """Which timeslot a running smart scene is currently in."""
+
+    timeslot_id: int | None = None
+    weekday: str | None = None
+
+
+class SmartScene(NamedResource):
+    """A 24-hour scene that recalls other scenes on a weekly schedule.
+
+    Unlike a :class:`Scene`, a smart scene is not applied once; it is started
+    and then follows its ``week_timeslots`` through the day until stopped, which
+    is why its recall verbs are ``activate``/``deactivate`` rather than a scene
+    action.
+    """
+
+    group: ResourceIdentifier | None = None
+    week_timeslots: list[SmartSceneWeekTimeslot] = Field(default_factory=list)
+    transition_duration: int | None = None
+    active_timeslot: SmartSceneActiveTimeslot | None = None
+    state: str | None = None
+
+    async def activate(self) -> CommandResult:
+        """Start this smart scene running its daily schedule.
+
+        Returns:
+            A CommandResult containing the bridge references affected.
+
+        Raises:
+            DetachedResourceError: If this scene is not bound to a client.
+            HueResponseError: If the bridge rejects the recall.
+
+        """
+        return await self.update({"recall": {"action": "activate"}})
+
+    async def deactivate(self) -> CommandResult:
+        """Stop this smart scene, leaving the lights where they are.
+
+        Returns:
+            A CommandResult containing the bridge references affected.
+
+        Raises:
+            DetachedResourceError: If this scene is not bound to a client.
+            HueResponseError: If the bridge rejects the recall.
+
+        """
+        return await self.update({"recall": {"action": "deactivate"}})

@@ -16,6 +16,23 @@ GROUPED = "/clip/v2/resource/grouped_light"
 ROOM = "/clip/v2/resource/room"
 ZONE = "/clip/v2/resource/zone"
 MOTION = "/clip/v2/resource/motion"
+SCENE = "/clip/v2/resource/scene"
+SMART_SCENE = "/clip/v2/resource/smart_scene"
+
+# One day of a smart scene's schedule, in the bridge's shape: a fixed clock
+# time that recalls a scene, recurring every Monday.
+WEEK_TIMESLOT = {
+    "timeslots": [
+        {
+            "start_time": {
+                "kind": "time",
+                "time": {"hour": 7, "minute": 30, "second": 0},
+            },
+            "target": {"rid": "scene-1", "rtype": "scene"},
+        }
+    ],
+    "recurrence": ["monday"],
+}
 
 
 class TestLight:
@@ -237,6 +254,22 @@ class TestScene:
             "PUT",
             "/clip/v2/resource/scene/scene-1",
             {"recall": {"action": "active"}},
+        )
+
+    async def test_activate_with_dynamic_palette_carries_the_recall(self, hue, http):
+        await hue.api.scenes.activate(
+            "scene-1", action="dynamic_palette", duration=0.8, brightness=80
+        )
+        assert http.last == (
+            "PUT",
+            f"{SCENE}/scene-1",
+            {
+                "recall": {
+                    "action": "dynamic_palette",
+                    "duration": 800,
+                    "dimming": {"brightness": 80.0},
+                }
+            },
         )
 
     async def test_create(self, hue, http):
@@ -771,8 +804,111 @@ class TestBoundScene:
             ),
         ]
 
+    async def test_activate_can_override_action_duration_and_brightness(
+        self, hue, http
+    ):
+        http.queue_resource(
+            "scene",
+            "scene-1",
+            {"id": "scene-1", "type": "scene", "metadata": {"name": "Movie"}},
+        )
+        scene = await hue.api.scenes.get("scene-1")
+        http.calls.clear()
+
+        await scene.activate(action="dynamic_palette", duration=0.8, brightness=80)
+
+        assert http.calls == [
+            (
+                "PUT",
+                f"{SCENE}/scene-1",
+                {
+                    "recall": {
+                        "action": "dynamic_palette",
+                        "duration": 800,
+                        "dimming": {"brightness": 80.0},
+                    }
+                },
+            ),
+        ]
+
     async def test_a_hand_built_scene_cannot_activate(self):
         scene = models.Scene.model_validate({"id": "scene-1"})
+        with pytest.raises(DetachedResourceError):
+            await scene.activate()
+
+
+class TestSmartScene:
+    """Handler shaping for smart scenes -- schedules recalled as a whole."""
+
+    async def test_create_posts_the_schedule_and_group(self, hue, http):
+        await hue.api.smart_scenes.create(
+            "Rhythm", "room-1", [WEEK_TIMESLOT], transition_duration=60
+        )
+        assert http.last == (
+            "POST",
+            SMART_SCENE,
+            {
+                "metadata": {"name": "Rhythm"},
+                "group": {"rid": "room-1", "rtype": "room"},
+                "week_timeslots": [WEEK_TIMESLOT],
+                "transition_duration": 60000,
+            },
+        )
+
+    async def test_activate_recalls_the_schedule(self, hue, http):
+        await hue.api.smart_scenes.activate("ss-1")
+        assert http.last == (
+            "PUT",
+            f"{SMART_SCENE}/ss-1",
+            {"recall": {"action": "activate"}},
+        )
+
+    async def test_deactivate_stops_the_schedule(self, hue, http):
+        await hue.api.smart_scenes.deactivate("ss-1")
+        assert http.last == (
+            "PUT",
+            f"{SMART_SCENE}/ss-1",
+            {"recall": {"action": "deactivate"}},
+        )
+
+
+class TestBoundSmartScene:
+    @staticmethod
+    async def _scene(hue, http, scene_id="ss-1"):
+        http.queue_resource(
+            "smart_scene",
+            scene_id,
+            {
+                "id": scene_id,
+                "type": "smart_scene",
+                "metadata": {"name": "Rhythm"},
+                "week_timeslots": [WEEK_TIMESLOT],
+            },
+        )
+        return await hue.api.smart_scenes.get(scene_id)
+
+    async def test_activate_sends_the_recall_payload(self, hue, http):
+        scene = await self._scene(hue, http)
+        http.calls.clear()
+
+        await scene.activate()
+
+        assert http.calls == [
+            ("PUT", f"{SMART_SCENE}/ss-1", {"recall": {"action": "activate"}}),
+        ]
+
+    async def test_deactivate_sends_the_recall_payload(self, hue, http):
+        scene = await self._scene(hue, http)
+        http.calls.clear()
+
+        await scene.deactivate()
+
+        assert http.calls == [
+            ("PUT", f"{SMART_SCENE}/ss-1", {"recall": {"action": "deactivate"}}),
+        ]
+
+    async def test_a_hand_built_smart_scene_cannot_activate(self):
+        scene = models.SmartScene.model_validate({"id": "ss-1"})
         with pytest.raises(DetachedResourceError):
             await scene.activate()
 
