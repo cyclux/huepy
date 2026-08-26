@@ -346,7 +346,9 @@ hue.state.on_resync(lambda marker: print("gap", marker.reason))
 `on_change` takes `name`, `model`, `resource_id`, `kind` and `room` filters, all
 ANDed, and returns a `Subscription` you can `cancel()` or scope with `with`.
 `room=` resolves through the resource's owning device, and still matches a
-delete, whose resource has already left the graph. Markers reach `on_resync`
+delete, whose resource has already left the graph. It is the costliest of the
+filters, since resolving topology revalidates the room set per change; reach
+for another one when it will do. Markers reach `on_resync`
 only, so no `isinstance` guard is needed. A handler that raises is logged and
 skipped. `state.watch(...)` is the same filtering as an async iterator, for
 callers who want the loop, and `change.summary` renders the delta the same way

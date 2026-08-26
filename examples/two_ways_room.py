@@ -100,6 +100,11 @@ async def main() -> None:
     async with Hue() as hue:
         print("the long way (hue.api, ids, hand-built payloads):")
         await the_long_way(hue, sys.argv[1].strip().casefold())
+
+        # Let the restore fade land before re-reading. Without this the second
+        # half captures the room mid-fade and "restores" it to a dimmed state.
+        await asyncio.sleep(FADE_SECONDS)
+
         print("\nthe short way (names, human units):")
         await the_short_way(hue, sys.argv[1])
         print("\nSame lights, same two fades.")

@@ -733,6 +733,8 @@ ignores surrounding whitespace, so no resource id need appear in caller code.
 one before it so a delete still matches. `room=` matches the containing room's
 display name, resolved through the resource's owning device — and, for a delete,
 through what the record carried, since the resource has already left the graph.
+It is the costliest filter: resolving topology revalidates the room set per
+change, where `name=` reads a cached map.
 `Subscription` has `cancel()` and `active`, and cancels on exit when used as a
 `with` block.
 

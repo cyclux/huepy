@@ -16,6 +16,7 @@ does, the same functions the library uses internally are right there.
 
 import asyncio
 import sys
+from typing import Any
 
 from huepy import Hue, ResourceNotFoundError, models
 from huepy.color import (
@@ -43,9 +44,24 @@ async def the_long_way(hue: Hue, light: models.Light, wanted: str) -> None:
     # Reading the current colour back means undoing the same conversion by
     # hand, and brightness is part of it: xy alone does not make an RGB value.
     was = light.color.xy
+    shown = (
+        rgb_to_hex(xy_to_rgb((was.x, was.y), brightness=light.brightness))
+        if light.brightness is not None
+        else None
+    )
+    print(f"  showing {shown}")
+
+    # Everything the restore below has to put back, remembered by hand -- the
+    # power state included, since the PUT below switches the light on. This is
+    # the dict `light.capture()` builds for you, and the piece most easily got
+    # wrong: forget `on` here and a light that started off stays lit.
+    before: dict[str, Any] = {
+        "on": {"on": light.is_on},
+        "color": {"xy": {"x": was.x, "y": was.y}},
+        "dynamics": {"duration": int(FADE_SECONDS * MILLISECONDS)},
+    }
     if light.brightness is not None:
-        shown = rgb_to_hex(xy_to_rgb((was.x, was.y), brightness=light.brightness))
-        print(f"  showing {shown}")
+        before["dimming"] = {"brightness": light.brightness}
 
     # The bulb's gamut is a triangle; a colour outside it is substituted by the
     # bridge unless it is clamped first, and then you never learn what was sent.
@@ -64,13 +80,7 @@ async def the_long_way(hue: Hue, light: models.Light, wanted: str) -> None:
         },
     )
     await asyncio.sleep(HOLD_SECONDS)
-    await hue.api.lights.update(
-        light.id,
-        {
-            "color": {"xy": {"x": was.x, "y": was.y}},
-            "dynamics": {"duration": int(FADE_SECONDS * MILLISECONDS)},
-        },
-    )
+    await hue.api.lights.update(light.id, before)
 
 
 async def the_short_way(light: models.Light, wanted: str) -> None:
@@ -80,6 +90,8 @@ async def the_short_way(light: models.Light, wanted: str) -> None:
         return
 
     print(f"  showing {light.hex_color}")
+    # Power, brightness and whichever of colour/temperature the light is
+    # actually in -- captured, and put back, without naming any of them.
     before = light.capture()
 
     # One PUT. `set()` resolves the hex, clamps it into the gamut this light
@@ -105,6 +117,11 @@ async def main() -> None:
 
         print(f"the long way (huepy.color by hand, hue.api by id) -> {wanted}:")
         await the_long_way(hue, light, wanted)
+
+        # Let the restore fade land before re-reading. Without this the second
+        # half captures a light mid-fade and "restores" it to the wrong colour.
+        await asyncio.sleep(FADE_SECONDS)
+
         print(f"\nthe short way (one call) -> {wanted}:")
         await the_short_way(await light.refresh(), wanted)
         print("\nSame colour, both times.")

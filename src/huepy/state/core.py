@@ -581,7 +581,9 @@ class HueState:
             kind: Only ``UPDATE``, ``ADD`` or ``DELETE``.
             room: Containing room's display name, matched case-insensitively.
                 Resolved through the owning device, so a light's change matches
-                the room its device sits in.
+                the room its device sits in. The costliest filter -- resolving
+                topology revalidates the room set per change, where ``name``
+                reads a cached map -- so prefer another filter when one will do.
 
         Returns:
             A :class:`Subscription` that unregisters on ``cancel()`` or on
