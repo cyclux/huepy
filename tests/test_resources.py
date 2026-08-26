@@ -573,6 +573,136 @@ class TestBoundRoomRoundTrips:
         assert http.calls == []
 
 
+class TestBoundGroupMembership:
+    """A group's children are references; resolving them to lights is one join."""
+
+    @staticmethod
+    def _queue(http, *, children, lights):
+        http.queue_resource(
+            "room",
+            "room-1",
+            {"id": "room-1", "type": "room", "children": children},
+        )
+        http.queue_collection("light", lights)
+
+    @staticmethod
+    def _light(light_id, owner, *, brightness=50.0, mirek=300):
+        return {
+            "id": light_id,
+            "type": "light",
+            "owner": {"rid": owner, "rtype": "device"},
+            "on": {"on": True},
+            "dimming": {"brightness": brightness},
+            "color_temperature": {"mirek": mirek, "mirek_valid": True},
+        }
+
+    async def test_lights_lists_once_and_keeps_only_members(self, hue, http):
+        self._queue(
+            http,
+            children=[{"rid": "dev-1", "rtype": "device"}],
+            lights=[self._light("light-1", "dev-1"), self._light("light-2", "dev-9")],
+        )
+        room = await hue.api.rooms.get("room-1")
+        http.calls.clear()
+
+        lights = await room.lights()
+
+        assert [light.id for light in lights] == ["light-1"]
+        assert http.paths == [LIGHT]
+
+    async def test_lights_come_back_bound(self, hue, http):
+        """An unbound light would raise the moment anyone tried to command it."""
+        self._queue(
+            http,
+            children=[{"rid": "dev-1", "rtype": "device"}],
+            lights=[self._light("light-1", "dev-1")],
+        )
+        room = await hue.api.rooms.get("room-1")
+        http.calls.clear()
+
+        (light,) = await room.lights()
+        await light.turn_on()
+
+        assert http.writes == [("PUT", f"{LIGHT}/light-1", {"on": {"on": True}})]
+
+    async def test_capture_and_restore_round_trip_per_light(self, hue, http):
+        """Per light, because a grouped_light carries no colour temperature."""
+        self._queue(
+            http,
+            children=[
+                {"rid": "dev-1", "rtype": "device"},
+                {"rid": "dev-2", "rtype": "device"},
+            ],
+            lights=[
+                self._light("light-1", "dev-1", brightness=40.0, mirek=300),
+                self._light("light-2", "dev-2", brightness=80.0, mirek=450),
+            ],
+        )
+        room = await hue.api.rooms.get("room-1")
+        captured = await room.capture()
+        assert captured.group_id == "room-1"
+        assert [state.light_id for state in captured.lights] == ["light-1", "light-2"]
+        http.calls.clear()
+
+        results = await room.restore(captured, transition=1.5)
+
+        assert len(results) == 2
+        assert http.writes == [
+            (
+                "PUT",
+                f"{LIGHT}/light-1",
+                {
+                    "on": {"on": True},
+                    "dimming": {"brightness": 40.0},
+                    "color_temperature": {"mirek": 300},
+                    "dynamics": {"duration": 1500},
+                },
+            ),
+            (
+                "PUT",
+                f"{LIGHT}/light-2",
+                {
+                    "on": {"on": True},
+                    "dimming": {"brightness": 80.0},
+                    "color_temperature": {"mirek": 450},
+                    "dynamics": {"duration": 1500},
+                },
+            ),
+        ]
+
+    async def test_restore_skips_a_light_that_has_since_left(self, hue, http):
+        """Resurrecting a light that moved rooms would be worse than a gap."""
+        self._queue(
+            http,
+            children=[{"rid": "dev-1", "rtype": "device"}],
+            lights=[self._light("light-1", "dev-1")],
+        )
+        room = await hue.api.rooms.get("room-1")
+        captured = await room.capture()
+        http.queue_collection("light", [])
+        http.calls.clear()
+
+        assert await room.restore(captured) == []
+        assert http.writes == []
+
+    async def test_restore_refuses_a_snapshot_from_another_group(self, hue, http):
+        self._queue(
+            http,
+            children=[{"rid": "dev-1", "rtype": "device"}],
+            lights=[self._light("light-1", "dev-1")],
+        )
+        room = await hue.api.rooms.get("room-1")
+        foreign = models.GroupState(group_id="room-9", lights=())
+
+        with pytest.raises(ValueError, match="belongs to group room-9"):
+            await room.restore(foreign)
+
+    async def test_lights_needs_a_bound_group(self):
+        room = models.Room.model_validate({"id": "room-1", "type": "room"})
+        with pytest.raises(DetachedResourceError):
+            await room.lights()
+
+
 class TestRefresh:
     async def test_refresh_returns_a_new_bound_instance_with_fresh_state(
         self, hue, http

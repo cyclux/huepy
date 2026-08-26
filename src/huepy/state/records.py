@@ -9,6 +9,7 @@ from uuid import UUID
 from pydantic import AwareDatetime, BaseModel, ConfigDict, computed_field
 
 from huepy.models import AnyResource, Room
+from huepy.summary import summarize
 
 
 class ChangeKind(StrEnum):
@@ -46,6 +47,20 @@ class Change(BaseModel):
     def at(self) -> datetime:
         """Best feature timestamp while retaining every source timestamp."""
         return self.observed_at or self.event_at or self.received_at
+
+    @property
+    def summary(self) -> str:
+        """Describe what this transition changed, in the units people read.
+
+        Rendered from :attr:`delta` rather than from ``after``, so it reports
+        what moved rather than restating the resource's whole state.
+
+        Returns:
+            A summary such as ``"on, 62%"``, or ``""`` for a delta carrying
+            nothing recognisable -- a delete, for instance.
+
+        """
+        return summarize(self.delta)
 
 
 class ResyncReason(StrEnum):

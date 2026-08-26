@@ -287,6 +287,189 @@ class TestTerminalFailure:
         assert state._dispatch_task is None
 
 
+DEVICE = {
+    "id": "device-1",
+    "type": "device",
+    "metadata": {"name": "Desk device"},
+    "services": [{"rid": "light-1", "rtype": "light"}],
+}
+OTHER_DEVICE = {
+    "id": "device-2",
+    "type": "device",
+    "metadata": {"name": "Hob device"},
+    "services": [{"rid": "light-2", "rtype": "light"}],
+}
+ROOM = {
+    "id": "room-1",
+    "type": "room",
+    "metadata": {"name": "Office"},
+    "children": [{"rid": "device-1", "rtype": "device"}],
+}
+OTHER_ROOM = {
+    "id": "room-2",
+    "type": "room",
+    "metadata": {"name": "Kitchen"},
+    "children": [{"rid": "device-2", "rtype": "device"}],
+}
+OTHER_LIGHT = {
+    "id": "light-2",
+    "type": "light",
+    "owner": {"rid": "device-2", "rtype": "device"},
+    "metadata": {"name": "Hob"},
+    "on": {"on": True},
+    "dimming": {"brightness": 10},
+}
+
+
+@pytest.fixture
+def rooms_http(hue: Hue) -> StateHttp:
+    """Two rooms, one light each, so a room filter has something to exclude."""
+    http = StateHttp([[light(10), DEVICE, ROOM, OTHER_DEVICE, OTHER_ROOM, OTHER_LIGHT]])
+    hue._http = http
+    return http
+
+
+def other_light_frame(brightness: float) -> Any:
+    return update_frame(
+        brightness,
+        entries=[
+            {"id": "light-2", "type": "light", "dimming": {"brightness": brightness}}
+        ],
+    )
+
+
+class TestRoomFilter:
+    async def test_only_changes_in_that_room_arrive(
+        self, hue: Hue, rooms_http: StateHttp
+    ) -> None:
+        """Resolved through the owning device: a light's own owner is not a room."""
+        seen: list[Change] = []
+        async with hue.state:
+            hue.state.on_change(seen.append, room="Office")
+            await rooms_http.connections[0].put(update_frame(70))
+            await rooms_http.connections[0].put(other_light_frame(80))
+            await settle()
+
+        assert [c.resource_id for c in seen] == ["light-1"]
+
+    async def test_the_room_name_is_matched_case_insensitively(
+        self, hue: Hue, rooms_http: StateHttp
+    ) -> None:
+        seen: list[Change] = []
+        async with hue.state:
+            hue.state.on_change(seen.append, room="  office ")
+            await rooms_http.connections[0].put(update_frame(70))
+            await settle()
+
+        assert len(seen) == 1
+
+    async def test_a_room_filter_still_matches_a_delete(
+        self, hue: Hue, rooms_http: StateHttp
+    ) -> None:
+        """The light has left the graph, so the room resolves via what it carried."""
+        seen: list[Change] = []
+        async with hue.state:
+            hue.state.on_change(seen.append, room="Office")
+            await rooms_http.connections[0].put(
+                event_frame("delete", {"id": "light-1", "type": "light"})
+            )
+            await settle()
+
+        assert [c.kind for c in seen] == [ChangeKind.DELETE]
+
+    async def test_room_and_name_filters_are_anded(
+        self, hue: Hue, rooms_http: StateHttp
+    ) -> None:
+        seen: list[Change] = []
+        async with hue.state:
+            hue.state.on_change(seen.append, name="Desk", room="Kitchen")
+            await rooms_http.connections[0].put(update_frame(70))
+            await settle()
+
+        assert seen == []
+
+    async def test_watch_filters_by_room_too(
+        self, hue: Hue, rooms_http: StateHttp
+    ) -> None:
+        async with hue.state as state:
+            stream = state.watch(room="Office")
+            await rooms_http.connections[0].put(other_light_frame(80))
+            await rooms_http.connections[0].put(update_frame(70))
+            change = await asyncio.wait_for(anext(stream), 1)
+
+            assert change.resource_id == "light-1"
+            await stream.aclose()
+
+
+class TestWaitFor:
+    async def test_returns_the_first_matching_change(
+        self, hue: Hue, state_http: StateHttp
+    ) -> None:
+        async with hue.state as state:
+            waiting = asyncio.ensure_future(state.wait_for(name="Desk"))
+            await settle()
+            await state_http.connections[0].put(update_frame(70))
+
+            change = await asyncio.wait_for(waiting, 1)
+
+        assert change.resource_id == "light-1"
+
+    async def test_a_predicate_narrows_past_the_filters(
+        self, hue: Hue, state_http: StateHttp
+    ) -> None:
+        """Filters cannot express "brightness above 50"; a predicate can."""
+        async with hue.state as state:
+            waiting = asyncio.ensure_future(
+                state.wait_for(
+                    predicate=lambda c: c.delta["dimming"]["brightness"] > 50
+                )
+            )
+            await settle()
+            await state_http.connections[0].put(update_frame(20))
+            await state_http.connections[0].put(update_frame(70))
+
+            change = await asyncio.wait_for(waiting, 1)
+
+        assert change.delta["dimming"]["brightness"] == 70
+
+    async def test_the_subscriber_is_registered_before_the_first_await(
+        self, hue: Hue, state_http: StateHttp
+    ) -> None:
+        """Otherwise a change caused by the write you just issued is missed."""
+        async with hue.state as state:
+            waiting = asyncio.ensure_future(state.wait_for())
+            await settle()
+
+            assert len(state._subscribers) == 1
+            await state_http.connections[0].put(update_frame(70))
+            await asyncio.wait_for(waiting, 1)
+
+    async def test_a_timeout_raises_and_leaves_no_subscriber_behind(
+        self, hue: Hue, state_http: StateHttp
+    ) -> None:
+        async with hue.state as state:
+            with pytest.raises(TimeoutError):
+                await state.wait_for(name="Nothing", timeout=0.01)
+            await settle()
+
+            assert state._subscribers == set()
+
+    async def test_a_non_matching_change_does_not_end_the_wait(
+        self, hue: Hue, rooms_http: StateHttp
+    ) -> None:
+        async with hue.state as state:
+            waiting = asyncio.ensure_future(state.wait_for(room="Office", timeout=1))
+            await settle()
+            await rooms_http.connections[0].put(other_light_frame(80))
+            await settle()
+            assert not waiting.done()
+
+            await rooms_http.connections[0].put(update_frame(70))
+            change = await asyncio.wait_for(waiting, 1)
+
+        assert change.resource_id == "light-1"
+
+
 class TestDeletes:
     async def test_a_name_filter_still_matches_a_delete(
         self, hue: Hue, state_http: StateHttp

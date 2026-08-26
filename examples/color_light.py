@@ -6,21 +6,14 @@
 huepy turns the hex string into the CIE xy pair the bridge wants, and clamps
 it into the gamut this particular bulb reports -- so a colour the bulb cannot
 reproduce lands on the nearest one it can, instead of on whatever the bridge
-decides to substitute.
+decides to substitute. See two_ways_color.py for the same task done by hand.
 """
 
 import asyncio
 import sys
 
 from huepy import Hue, ResourceNotFoundError
-from huepy.color import (
-    clamp_to_gamut,
-    gamut_for,
-    hex_to_rgb,
-    rgb_to_hex,
-    rgb_to_xy,
-    xy_to_rgb,
-)
+from huepy.color import clamp_to_gamut, gamut_for, hex_to_rgb, rgb_to_xy
 
 DEFAULT_HEX = "#ff8800"
 FADE_SECONDS = 1.0
@@ -47,7 +40,8 @@ async def main() -> None:
             raise SystemExit(1)
 
         was = light.color.xy
-        print(f"{light.name} is showing {rgb_to_hex(xy_to_rgb((was.x, was.y)))}")
+        # `hex_color` is the read side of the `hex_color=` below.
+        print(f"{light.name} is showing {light.hex_color}")
 
         # huepy.color is pure: the same conversion the command below performs,
         # run here so the script can report what the bulb will actually show.

@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Self, final
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
 
+    from huepy.models import Room
     from huepy.models.common import HueResource
     from huepy.state.records import Change, ChangeKind, Resync
 
@@ -41,8 +42,14 @@ class ChangeFilter:
     model: type[HueResource] | None = None
     resource_id: str | None = None
     kind: ChangeKind | None = None
+    room: str | None = None
 
-    def matches(self, change: Change, name_for: Callable[[Change], str]) -> bool:
+    def matches(
+        self,
+        change: Change,
+        name_for: Callable[[Change], str],
+        room_for: Callable[[Change], Room | None] | None = None,
+    ) -> bool:
         """Report whether ``change`` satisfies every supplied condition.
 
         Args:
@@ -51,6 +58,10 @@ class ChangeFilter:
                 delete resolves from what it carried rather than from a graph
                 it has already been folded out of. Consulted only when ``name``
                 is set, so an id-only filter costs no topology lookup.
+            room_for: Containing-room resolver, on the same terms. Consulted
+                only when ``room`` is set; omitting it makes a ``room`` filter
+                match nothing, which is the safe reading for a caller that
+                cannot resolve topology.
 
         Returns:
             True when the change should reach the handler.
@@ -68,7 +79,12 @@ class ChangeFilter:
                 return False
         if self.name is not None:
             wanted = self.name.strip().casefold()
-            return name_for(change).strip().casefold() == wanted
+            if name_for(change).strip().casefold() != wanted:
+                return False
+        if self.room is not None:
+            room = room_for(change) if room_for is not None else None
+            wanted = self.room.strip().casefold()
+            return room is not None and room.name.strip().casefold() == wanted
         return True
 
 

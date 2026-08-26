@@ -145,6 +145,24 @@ the light commands are on anything that behaves like a light, rooms and zones
 included. `set_effect()`, `set_gradient()`, `set_powerup()` and `alert()` are
 lights only -- a `grouped_light` service does not accept them.
 
+A room or zone also resolves its own membership, and can save and put back the
+state of everything in it:
+
+```python
+kitchen = await hue.rooms.get("Kitchen")
+lights = await kitchen.lights()
+
+before = await kitchen.capture()
+await kitchen.set(brightness=30, kelvin=2200, transition=2.0)
+await kitchen.restore(before, transition=2.0)
+```
+
+A group's children are references, not lights -- devices for a room, light
+services for a zone -- so `lights()` does that join for you. `restore()`
+deliberately sends one concurrent request per light rather than one to the
+group: a `grouped_light` reports no aggregate colour temperature, so restoring
+through it drops the colour temperature and leaves the room the wrong colour.
+
 A model you built by hand has no client to talk to, and says so rather than
 failing obscurely:
 
@@ -175,6 +193,9 @@ await light.set_color(0.5, 0.4)  # CIE xy, if you have it already
 `mirek` two spellings of one colour temperature: passing two of either, or a
 colour together with a colour temperature, is a `ValueError` rather than a
 silent choice.
+
+Reading a colour back uses the same words: `light.hex_color`, `light.rgb`,
+`light.kelvin` and `light.mirek` are the read side of the arguments above.
 
 `huepy.color` is public and free of any bridge dependency, for converting
 before you are anywhere near a light:
@@ -231,6 +252,30 @@ id-addressed and uniformly provide `list()`, `get(resource_id)`,
 `update(resource_id, data)`, and `delete(resource_id)`, plus resource-specific
 commands. `hue.api.raw` is the decoded-JSON transport escape hatch.
 
+### Same task, two ways
+
+Neither level is the "old" one. The named layer is where the work is already
+done for you; `hue.api` and `huepy.color` are where you go when you hold an id,
+need a type with no collection, or want to see the conversion happen. Three
+examples solve one task both ways in a single file, over the same input:
+
+| Task | Lower level | Named layer |
+| --- | --- | --- |
+| Describe an event | walk every optional section by hand | `resource.summary` |
+| Describe a change | read `change.delta` as a nested dict | `change.summary` |
+| Dim and warm a room | resolve the name, hop to `grouped_light`, convert Kelvin and seconds, build the payload | `await room.set(brightness=30, kelvin=2200, transition=2.0)` |
+| List a room's lights | join `room.children` to each light's `device_id` | `await room.lights()` |
+| Save and put a room back | a dict of `capture()` plus a restore loop | `await room.capture()` / `await room.restore(before)` |
+| Set a hex colour | hex to RGB to xy, clamp to the bulb's gamut, build the payload | `await light.set(hex_color="#3366ff")` |
+| Read a colour back | `rgb_to_hex(xy_to_rgb((x, y), brightness))` | `light.hex_color` |
+| Wait for one change | loop with a break, and remember to close the iterator | `await hue.state.wait_for(name="Desk lamp", timeout=5)` |
+| Only changes in one room | resolve the room inside every handler | `on_change(handler, room="Kitchen")` |
+
+Run them with [`two_ways_events.py`](examples/two_ways_events.py),
+[`two_ways_room.py`](examples/two_ways_room.py) and
+[`two_ways_color.py`](examples/two_ways_color.py); the events one prints both
+descriptions side by side and flags any disagreement.
+
 ### Resources
 
 `hue.api.lights`, `grouped_lights`, `light_levels`, `grouped_light_levels`,
@@ -246,12 +291,14 @@ The stream yields parsed events, not dicts:
 ```python
 async with Hue(state=True) as hue:
     async for event in hue.get_event_stream():
-        if not event.is_update:
-            continue
         for resource in event.data:
-            state = "on" if resource.on is not None and resource.on.on else "-"
-            print(hue.get_name(resource.id), resource.type, state)
+            print(hue.get_name(resource.id), resource.summary)
 ```
+
+`resource.summary` describes whichever sections the event carries -- `"on, 62%,
+2700 K"`, `"motion"`, `"22.4 °C"` -- so following a stream does not mean
+checking every optional section by hand. `huepy.summarize` is the same function
+over a plain payload, for a raw event or a section huepy has no model for yet.
 
 `event.resource_ids` lists the ids an event touches, and `hue.get_name(...)`
 turns any of them into the name you gave it. The stream reconnects on its own
@@ -261,7 +308,7 @@ than ending. For the raw decoded payloads,
 
 Event deltas are typed for lights, motion, temperature, ambient light, buttons,
 contact sensors, battery state and relative rotary input. Unknown future
-sections remain available through `model_extra`.
+sections remain available through `model_extra`, and `summary` renders those too.
 
 ### Last-reported state
 
@@ -291,15 +338,30 @@ bound copies and cannot mutate the canonical state.
 Register a handler instead of owning the loop:
 
 ```python
-hue.state.on_change(lambda change: print(change.at, change.delta), name="Desk lamp")
+hue.state.on_change(lambda change: print(change.at, change.summary), name="Desk lamp")
+hue.state.on_change(lambda change: print(change.summary), room="Kitchen")
 hue.state.on_resync(lambda marker: print("gap", marker.reason))
 ```
 
-`on_change` takes `name`, `model`, `resource_id` and `kind` filters, all ANDed,
-and returns a `Subscription` you can `cancel()` or scope with `with`. Markers
-reach `on_resync` only, so no `isinstance` guard is needed. A handler that
-raises is logged and skipped. `state.watch(...)` is the same filtering as an
-async iterator, for callers who want the loop.
+`on_change` takes `name`, `model`, `resource_id`, `kind` and `room` filters, all
+ANDed, and returns a `Subscription` you can `cancel()` or scope with `with`.
+`room=` resolves through the resource's owning device, and still matches a
+delete, whose resource has already left the graph. Markers reach `on_resync`
+only, so no `isinstance` guard is needed. A handler that raises is logged and
+skipped. `state.watch(...)` is the same filtering as an async iterator, for
+callers who want the loop, and `change.summary` renders the delta the same way
+an event's does.
+
+To wait for one change rather than follow all of them:
+
+```python
+await hue.lights.turn_on("Desk lamp")
+change = await hue.state.wait_for(name="Desk lamp", timeout=5.0)
+```
+
+`wait_for` registers before it yields to the event loop, so the change caused by
+the write above it is not missed, and it closes its iterator on every exit --
+including a `TimeoutError`.
 
 `state.changes()` yields `huepy.state.Change` records plus `Resync` markers.
 Each subscriber has bounded independent history; a marker records reconnect,
@@ -372,6 +434,11 @@ predicted.
 
 The runnable examples are grouped by the API level they are meant to teach:
 
+- Same task, two ways: [`two_ways_events.py`](examples/two_ways_events.py),
+  [`two_ways_room.py`](examples/two_ways_room.py) and
+  [`two_ways_color.py`](examples/two_ways_color.py) each solve one task twice in
+  one file -- once against the raw or id-addressed API, once against the named
+  one -- over the same input, so the two can be compared line for line.
 - High level: [`basic.py`](examples/basic.py) lists bound models through the
   name-oriented collections; [`control_room.py`](examples/control_room.py)
   resolves and controls a room by name in one composed command; and

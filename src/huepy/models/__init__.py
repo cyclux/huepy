@@ -48,6 +48,7 @@ from huepy.models.event import (
 )
 from huepy.models.group import (
     BridgeHome,
+    GroupState,
     ResourceGroup,
     Room,
     Scene,
@@ -195,6 +196,7 @@ __all__ = [
     "EventType",
     "Gradient",
     "GradientPoint",
+    "GroupState",
     "GroupedColor",
     "GroupedLight",
     "GroupedLightLevel",

@@ -29,6 +29,7 @@ SAMPLE_RECEIVERS: dict[str, type[models.HueModel]] = {
     "kitchen": models.Room,
     "light": models.Light,
     "resource": models.HueResource,
+    "room": models.Room,
     "scene": models.Scene,
     "strip": models.Light,
 }

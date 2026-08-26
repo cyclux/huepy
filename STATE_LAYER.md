@@ -104,6 +104,12 @@ synchronous local `get(name)`, `by_id(id)`, `list()`, and `names()` lookup.
 Generic and topology helpers are `resources`, `by_id`, `list(Model)`, `name_of`,
 `device_of`, `room_of`, `zones_of`, and `lights_in`.
 
+`lights_in` delegates group membership to `ResourceGroup.contains_light`, the
+same rule the stateless `await room.lights()` applies. One rule in one place:
+a room's children are devices and a zone's are light services, and the two id
+spaces do not overlap, so testing a light's own id and its owner's covers both
+without a branch.
+
 ### Folding and history
 
 Update deltas are deep-merged into the prior raw resource and revalidated.
@@ -117,6 +123,18 @@ complete history.
 queue. Overflow is represented by `Resync(LAGGED)` and a dropped-count value.
 Slow subscribers cannot block state folding or other subscribers.
 
+`ChangeFilter` narrows on `name`, `model`, `resource_id`, `kind`, and `room`,
+all ANDed. Its `matches(change, name_for, room_for=None)` takes the two
+resolvers rather than the graph, and consults each only when the filter that
+needs it is set, so an id-only filter costs no topology lookup. Both resolvers
+fall back to what the record carried, which is what keeps a delete matching a
+`name=` or `room=` filter after the resource has been folded out of the graph.
+
+`state.wait_for(...)` is the one-shot form of `watch()`: the same filters plus
+an optional `predicate` and `timeout`. It registers its subscriber before
+yielding to the event loop, so a change caused by a write issued after the call
+is still observed, and it closes its iterator on every exit path.
+
 `Change` records retain:
 
 - add/update/delete kind and complete before/after resources;
@@ -127,7 +145,9 @@ Slow subscribers cannot block state folding or other subscribers.
 - write origin, command id/outcome, observation class, and transition end.
 
 The computed `Change.at` selects `observed_at`, then `event_at`, then
-`received_at`.
+`received_at`. `Change.summary` renders the delta through `huepy.summarize`,
+the same dict-in formatter `EventResource.summary` uses -- one implementation,
+because the event stream and the fold produce the same nested section shape.
 
 ### Write correlation and fades
 

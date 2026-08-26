@@ -39,6 +39,7 @@ from huepy.models.sensor import (
     RelativeRotaryReading,
     TemperatureReading,
 )
+from huepy.summary import summarize
 
 
 class EventType(StrEnum):
@@ -74,6 +75,21 @@ class EventResource(HueModel):
     contact_report: ContactReport | None = None
     power_state: PowerState | None = None
     relative_rotary: RelativeRotaryReading | None = None
+
+    @property
+    def summary(self) -> str:
+        """Describe whichever pieces of state this event actually carries.
+
+        Dumped rather than read field by field so a section arriving on
+        ``model_extra`` -- firmware this library has not modelled yet -- is
+        summarised on the same terms as one that has a field here.
+
+        Returns:
+            A summary such as ``"on, 62%, 2700 K"``, or ``""`` when the event
+            carries nothing recognisable.
+
+        """
+        return summarize(self.model_dump(exclude_none=True))
 
 
 class HueEvent(HueModel):

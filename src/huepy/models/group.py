@@ -1,5 +1,7 @@
 """Models for resources that group other resources: rooms, zones, homes, scenes."""
 
+import asyncio
+from dataclasses import dataclass
 from typing import Any, override
 
 from pydantic import AwareDatetime, Field
@@ -12,8 +14,24 @@ from huepy.models.common import (
     NamedResource,
     ResourceIdentifier,
     ResourceType,
+    unwrap,
 )
-from huepy.models.light import LightCommands
+from huepy.models.light import Light, LightCommands, LightState
+
+
+@dataclass(frozen=True)
+class GroupState:
+    """A restorable snapshot of every light in one room or zone.
+
+    Attributes:
+        group_id: The room or zone the snapshot was taken from. Restoring it
+            onto a different group is refused.
+        lights: One captured state per light, in the order they were read.
+
+    """
+
+    group_id: str
+    lights: tuple[LightState, ...]
 
 
 class ResourceGroup(NamedResource, LightCommands):
@@ -46,6 +64,109 @@ class ResourceGroup(NamedResource, LightCommands):
         return any(
             child.rid == device_id and child.rtype == ResourceType.DEVICE
             for child in self.children
+        )
+
+    def contains_light(self, light: Light) -> bool:
+        """Whether this group's children resolve to ``light``.
+
+        One rule covers both group kinds: a room's children are the devices
+        that own their light services, while a zone's children are the light
+        services themselves. Testing the light's own id *and* its owner's
+        matches whichever of the two this group uses, and the two id spaces
+        do not overlap, so neither can match by accident.
+
+        Args:
+            light: The light to test for membership.
+
+        Returns:
+            True when the light belongs to this room or zone.
+
+        """
+        child_ids = {child.rid for child in self.children}
+        return light.id in child_ids or (
+            light.owner is not None and light.owner.rid in child_ids
+        )
+
+    async def lights(self) -> list[Light]:
+        """Fetch this group's own lights.
+
+        A group's ``children`` are references, not lights, so answering "which
+        lights are in this room?" always meant a fetch plus a join. One request
+        lists every light; the join is :meth:`contains_light`.
+
+        Returns:
+            The bound lights belonging to this group, empty when it has none.
+
+        Raises:
+            DetachedResourceError: If this resource is not bound to a client.
+            HueResponseError: If the bridge reports a blocking error.
+
+        """
+        client = self._client
+        payload = await client.http.get(f"{RESOURCE_ROOT}/{ResourceType.LIGHT}")
+        return [
+            light.bind(client, ResourceType.LIGHT)
+            for light in unwrap(payload, Light)
+            if self.contains_light(light)
+        ]
+
+    async def capture(self) -> GroupState:
+        """Capture the state of every light in this group, ready to restore.
+
+        Returns:
+            A snapshot tied to this group's id.
+
+        Raises:
+            DetachedResourceError: If this resource is not bound to a client.
+
+        """
+        return GroupState(
+            group_id=self.id,
+            lights=tuple(light.capture() for light in await self.lights()),
+        )
+
+    async def restore(
+        self,
+        state: GroupState,
+        *,
+        transition: float | None = None,
+    ) -> list[CommandResult]:
+        """Restore a snapshot captured from this same group.
+
+        One request per light rather than one for the group, which is the one
+        place a group command is worth splitting: a group's ``grouped_light``
+        reports no aggregate colour temperature, so restoring through it
+        silently drops the colour temperature and leaves the room the wrong
+        colour. The requests are issued concurrently.
+
+        A light that has left the group since the capture is skipped rather
+        than resurrected.
+
+        Args:
+            state: A snapshot from :meth:`capture` on this same group.
+            transition: Fade duration in seconds, applied to every light.
+
+        Returns:
+            One CommandResult per light restored.
+
+        Raises:
+            ValueError: If the snapshot came from a different group.
+            DetachedResourceError: If this resource is not bound to a client.
+            HueResponseError: If the bridge rejects a write.
+
+        """
+        if state.group_id != self.id:
+            msg = f"state belongs to group {state.group_id}, not {self.id}"
+            raise ValueError(msg)
+        present = {light.id: light for light in await self.lights()}
+        return list(
+            await asyncio.gather(
+                *(
+                    present[captured.light_id].restore(captured, transition=transition)
+                    for captured in state.lights
+                    if captured.light_id in present
+                )
+            )
         )
 
     @override

@@ -3,29 +3,20 @@
     python examples/control_room.py "Living Room"
 
 No resource id appears anywhere below. The room is resolved from the name you
-gave it on the bridge, and the dim travels as a single request.
+gave it on the bridge, and the dim travels as a single request. See
+two_ways_room.py for the same task written against the id-addressed API.
 """
 
 import asyncio
 import sys
 
-from huepy import Hue, ResourceNotFoundError, models
+from huepy import Hue, ResourceNotFoundError
 
 DIM_BRIGHTNESS = 30.0
 WARM_KELVIN = 2200
 FADE_SECONDS = 2.0
 HOLD_SECONDS = 5.0
 EXPECTED_ARGS = 2
-
-
-async def members(hue: Hue, room: models.Room) -> list[models.Light]:
-    """Return the room's own lights.
-
-    A room's `children` are devices; the lights are the services those devices
-    expose, so the two are matched up through each light's `device_id`.
-    """
-    devices = {child.rid for child in room.children}
-    return [light for light in await hue.lights.list() if light.device_id in devices]
 
 
 async def main() -> None:
@@ -43,21 +34,20 @@ async def main() -> None:
             print(f"Known rooms: {', '.join(exc.known) or 'none'}")
             raise SystemExit(1) from None
 
-        lights = await members(hue, room)
-        if not lights:
-            print(f"{room.name} has no lights to control.")
-            raise SystemExit(1)
         # Per light, not per room: a room's `grouped_light` reports no aggregate
         # colour temperature, so restoring through the group silently drops it
-        # and leaves the room the wrong colour. `capture()` also picks the one
-        # of colour/temperature the light is actually in, which `set()` requires.
-        before = {light.id: light.capture() for light in lights}
+        # and leaves the room the wrong colour. `capture()` handles that, and
+        # picks the one of colour/temperature each light is actually in.
+        before = await room.capture()
+        if not before.lights:
+            print(f"{room.name} has no lights to control.")
+            raise SystemExit(1)
+        print(f"Captured {len(before.lights)} lights in {room.name}")
 
         print(f"Dimming {room.name} to {DIM_BRIGHTNESS:.0f}% at {WARM_KELVIN} K...")
         # One PUT carries the complete change. The high-level API resolves the
         # room's name, routes through its grouped_light service, translates
-        # Kelvin and seconds to bridge units, and builds the CLIP payload. See
-        # low_level.py for those same concerns expressed explicitly.
+        # Kelvin and seconds to bridge units, and builds the CLIP payload.
         await room.set(
             on=True,
             brightness=DIM_BRIGHTNESS,
@@ -68,8 +58,8 @@ async def main() -> None:
         await asyncio.sleep(HOLD_SECONDS)
 
         print(f"Restoring {room.name}...")
-        for light in lights:
-            await light.restore(before[light.id], transition=FADE_SECONDS)
+        # Concurrent, one request per light, skipping any that has since left.
+        await room.restore(before, transition=FADE_SECONDS)
 
 
 if __name__ == "__main__":

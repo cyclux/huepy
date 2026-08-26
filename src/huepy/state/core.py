@@ -517,15 +517,12 @@ class HueState:
         ]
 
     def lights_in(self, group: Room | Zone) -> list[Light]:
-        """Resolve the lights belonging to a room or zone, skipping holes."""
-        child_ids = {child.rid for child in group.children}
-        if isinstance(group, Room):
-            return [
-                light
-                for light in self.lights.list()
-                if light.owner is not None and light.owner.rid in child_ids
-            ]
-        return [light for light in self.lights.list() if light.id in child_ids]
+        """Resolve the lights belonging to a room or zone, skipping holes.
+
+        The membership rule itself lives on the group model, so this and the
+        stateless :meth:`~huepy.models.ResourceGroup.lights` cannot drift apart.
+        """
+        return [light for light in self.lights.list() if group.contains_light(light)]
 
     def changes(
         self,
@@ -552,7 +549,7 @@ class HueState:
         """
         return self._track(self._subscribe(maxsize))
 
-    def on_change(
+    def on_change(  # noqa: PLR0913 - one independent filter per keyword
         self,
         handler: ChangeHandler,
         /,
@@ -561,6 +558,7 @@ class HueState:
         model: type[HueResource] | None = None,
         resource_id: str | None = None,
         kind: ChangeKind | None = None,
+        room: str | None = None,
     ) -> Subscription:
         """Call ``handler`` for every change matching every supplied filter.
 
@@ -581,6 +579,9 @@ class HueState:
                 the change, or before it for a delete.
             resource_id: Exact resource id.
             kind: Only ``UPDATE``, ``ADD`` or ``DELETE``.
+            room: Containing room's display name, matched case-insensitively.
+                Resolved through the owning device, so a light's change matches
+                the room its device sits in.
 
         Returns:
             A :class:`Subscription` that unregisters on ``cancel()`` or on
@@ -588,7 +589,7 @@ class HueState:
 
         """
         registration = _Registration(
-            handler, ChangeFilter(name, model, resource_id, kind)
+            handler, ChangeFilter(name, model, resource_id, kind, room)
         )
         self._change_handlers.append(registration)
         self._ensure_dispatching()
@@ -609,13 +610,14 @@ class HueState:
         self._ensure_dispatching()
         return Subscription(lambda: self._discard(self._resync_handlers, registration))
 
-    def watch(
+    def watch(  # noqa: PLR0913 - one independent filter per keyword
         self,
         *,
         name: str | None = None,
         model: type[HueResource] | None = None,
         resource_id: str | None = None,
         kind: ChangeKind | None = None,
+        room: str | None = None,
         maxsize: int = DEFAULT_SUBSCRIBER_SIZE,
     ) -> AsyncGenerator[Change]:
         """Yield matching changes only, discarding continuity markers.
@@ -629,6 +631,7 @@ class HueState:
             model: Concrete resource model.
             resource_id: Exact resource id.
             kind: Only ``UPDATE``, ``ADD`` or ``DELETE``.
+            room: Containing room's display name, matched case-insensitively.
             maxsize: Bounded newest-wins buffer depth for this subscriber.
 
         Returns:
@@ -641,8 +644,59 @@ class HueState:
         subscriber = self._subscribe(maxsize)
         return self._track(
             subscriber,
-            self._watch(ChangeFilter(name, model, resource_id, kind), subscriber),
+            self._watch(ChangeFilter(name, model, resource_id, kind, room), subscriber),
         )
+
+    async def wait_for(  # noqa: PLR0913 - one independent filter per keyword
+        self,
+        *,
+        name: str | None = None,
+        model: type[HueResource] | None = None,
+        resource_id: str | None = None,
+        kind: ChangeKind | None = None,
+        room: str | None = None,
+        predicate: Callable[[Change], bool] | None = None,
+        timeout: float | None = None,  # noqa: ASYNC109 - a one-shot wait is where a deadline belongs
+    ) -> Change:
+        """Wait for the first change matching every supplied condition.
+
+        The one-shot counterpart to :meth:`watch`, for the "do this, then wait
+        until it lands" shape that otherwise means writing a loop with a break
+        and remembering to close the iterator.
+
+        The subscriber is registered before this returns control to the event
+        loop, so a change caused by a write issued *after* the call but before
+        the first await is still seen.
+
+        Args:
+            name: Display name of the resource, matched case-insensitively.
+            model: Concrete resource model.
+            resource_id: Exact resource id.
+            kind: Only ``UPDATE``, ``ADD`` or ``DELETE``.
+            room: Containing room's display name, matched case-insensitively.
+            predicate: Extra condition the change must satisfy, for tests the
+                filters cannot express, e.g. ``lambda c: "on" in c.delta``.
+            timeout: Seconds to wait, or None to wait indefinitely.
+
+        Returns:
+            The first matching :class:`Change`.
+
+        Raises:
+            TimeoutError: If ``timeout`` expires first.
+            RuntimeError: If observation is not running, or stops before a
+                matching change arrives.
+
+        """
+        stream = self.watch(
+            name=name, model=model, resource_id=resource_id, kind=kind, room=room
+        )
+        async with aclosing(stream):
+            async with asyncio.timeout(timeout):
+                async for change in stream:
+                    if predicate is None or predicate(change):
+                        return change
+            msg = "HueState stopped before a matching change arrived"
+            raise RuntimeError(msg)
 
     def _name_for(self, change: Change) -> str:
         """Resolve the display name a change refers to, deletes included.
@@ -714,7 +768,7 @@ class HueState:
                     item.gap_ended,
                 )
                 continue
-            if change_filter.matches(item, self._name_for):
+            if change_filter.matches(item, self._name_for, self._room_for):
                 yield item
 
     def _discard[HandlerT](
@@ -791,7 +845,9 @@ class HueState:
                     await self._invoke(registration.handler, item)
             else:
                 for registration in tuple(self._change_handlers):
-                    if registration.filter.matches(item, self._name_for):
+                    if registration.filter.matches(
+                        item, self._name_for, self._room_for
+                    ):
                         await self._invoke(registration.handler, item)
             if not (self._change_handlers or self._resync_handlers):
                 # The last subscription went away, from inside a handler.

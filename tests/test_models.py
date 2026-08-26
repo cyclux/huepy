@@ -146,9 +146,27 @@ class TestLight:
         )
         assert light.kelvin == color.mirek_to_kelvin(300)
         assert light.rgb == color.xy_to_rgb((0.4, 0.4), 50)
+        assert light.hex_color == color.rgb_to_hex(color.xy_to_rgb((0.4, 0.4), 50))
         dumped = light.model_dump()
         assert dumped["kelvin"] == light.kelvin
         assert dumped["rgb"] == light.rgb
+        assert dumped["hex_color"] == light.hex_color
+
+    def test_hex_color_round_trips_the_hex_color_setter(self):
+        """The read side must name and spell colour the way `set()` takes it."""
+        wanted = "#3366ff"
+        payload = build_light_payload(hex_color=wanted, brightness=100)
+        light = models.Light.model_validate(
+            {"id": "light-1", **payload, "dimming": {"brightness": 100}}
+        )
+        assert light.hex_color == wanted
+
+    def test_a_white_only_light_has_no_hex_color(self):
+        light = models.Light.model_validate(
+            {"id": "light-1", "dimming": {"brightness": 50}}
+        )
+        assert light.rgb is None
+        assert light.hex_color is None
 
     def test_invalid_colour_temperature_has_no_kelvin(self):
         light = models.Light.model_validate(
@@ -186,6 +204,40 @@ class TestGroup:
         )
         assert room.contains_device("dev-1") is True
         assert room.contains_device("svc-1") is False
+
+    def test_contains_light_resolves_a_room_through_the_owning_device(self):
+        """A room's children are devices, so the light matches by its owner."""
+        room = models.Room.model_validate(
+            {"id": "room-1", "children": [{"rid": "dev-1", "rtype": "device"}]},
+        )
+        mine = models.Light.model_validate(
+            {"id": "light-1", "owner": {"rid": "dev-1", "rtype": "device"}},
+        )
+        theirs = models.Light.model_validate(
+            {"id": "light-2", "owner": {"rid": "dev-9", "rtype": "device"}},
+        )
+        assert room.contains_light(mine) is True
+        assert room.contains_light(theirs) is False
+
+    def test_contains_light_resolves_a_zone_through_the_service_itself(self):
+        """A zone's children are the light services, not their devices."""
+        zone = models.Zone.model_validate(
+            {"id": "zone-1", "children": [{"rid": "light-1", "rtype": "light"}]},
+        )
+        mine = models.Light.model_validate(
+            {"id": "light-1", "owner": {"rid": "dev-9", "rtype": "device"}},
+        )
+        theirs = models.Light.model_validate(
+            {"id": "light-2", "owner": {"rid": "dev-1", "rtype": "device"}},
+        )
+        assert zone.contains_light(mine) is True
+        assert zone.contains_light(theirs) is False
+
+    def test_contains_light_tolerates_a_light_with_no_owner(self):
+        room = models.Room.model_validate(
+            {"id": "room-1", "children": [{"rid": "dev-1", "rtype": "device"}]},
+        )
+        assert room.contains_light(models.Light.model_validate({"id": "l"})) is False
 
 
 class TestSensors:

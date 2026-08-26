@@ -25,7 +25,7 @@ from pydantic import (
     field_validator,
 )
 
-from huepy.color import Gamut, gamut_for, mirek_to_kelvin, xy_to_rgb
+from huepy.color import Gamut, gamut_for, mirek_to_kelvin, rgb_to_hex, xy_to_rgb
 from huepy.models.common import (
     Color,
     ColorGamut,
@@ -495,6 +495,17 @@ class Light(LightCommands, NamedResource):
             (self.color.xy.x, self.color.xy.y),
             brightness=self.brightness,
         )
+
+    @computed_field
+    @property
+    def hex_color(self) -> str | None:
+        """Current colour as a hex string, mirroring the ``hex_color=`` setter.
+
+        Named for the argument :meth:`set` takes rather than for the notation,
+        so reading a colour and writing it back use the same word.
+        """
+        rgb = self.rgb
+        return None if rgb is None else rgb_to_hex(rgb)
 
     def capture(self) -> LightState:
         """Capture the valid active state needed to restore this light."""

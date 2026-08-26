@@ -366,12 +366,38 @@ Rooms and zones also carry:
 | --- | --- | --- |
 | `room.service_id(rtype)` | `str \| None` | The rid of a service of that type, e.g. `models.ResourceType.GROUPED_LIGHT`. |
 | `room.contains_device(device_id)` | `bool` | Whether the device is a direct child. |
+| `room.contains_light(light)` | `bool` | Whether this group's children resolve to that light. |
+| `await room.lights()` | `list[models.Light]` | The group's own lights, bound. One GET. |
+| `await room.capture()` | `models.GroupState` | Snapshot every light in the group. |
+| `await room.restore(state, transition=...)` | `list[CommandResult]` | Put a snapshot back, one request per light. |
 | `room.children` | `list[ResourceIdentifier]` | Devices in the room; light services in a zone. |
 | `room.services` | `list[ResourceIdentifier]` | Services the group exposes. |
 
-`service_id` and `contains_device` read what the model already carries; they
-issue no request. A light command on a group with no `grouped_light` service
-raises `ValueError`.
+`service_id`, `contains_device` and `contains_light` read what the model
+already carries; they issue no request. A light command on a group with no
+`grouped_light` service raises `ValueError`.
+
+A group's `children` are references rather than lights — devices for a room,
+light services for a zone — so `lights()` lists lights once and joins them with
+`contains_light`, which is the one rule both this and `hue.state.lights_in()`
+use.
+
+```python
+kitchen = await hue.rooms.get("Kitchen")
+before = await kitchen.capture()
+await kitchen.set(brightness=30, kelvin=2200, transition=2.0)
+await kitchen.restore(before, transition=2.0)
+```
+
+`capture()` returns a `models.GroupState` holding `group_id` and a tuple of
+`models.LightState`. `restore()` refuses a snapshot from a different group,
+raising `ValueError`, and skips a light that has since left the group rather
+than resurrecting it.
+
+Restoring deliberately sends one request per light instead of one to the
+group: a `grouped_light` reports no aggregate colour temperature, so a group
+restore silently drops it and leaves the room the wrong colour. The requests
+are issued concurrently.
 
 `update()` and `delete()` still address the group itself, not its light
 service: `await kitchen.update({"metadata": {"name": "Kitchen"}})` renames the
@@ -476,6 +502,7 @@ available in `model_extra`.
 | `Light` | `mirek` | `int \| None` |
 | `Light` | `kelvin` | `int \| None`; only when the reported mirek value is valid |
 | `Light` | `rgb` | `tuple[int, int, int] \| None`; only when xy colour and brightness are available |
+| `Light` | `hex_color` | `str \| None`; the same colour as `#rrggbb`, mirroring the `hex_color=` argument to `set()` |
 | `Light` | `effect` | `str \| None` |
 | `Light` | `is_gradient` | `bool` |
 | `Motion` | `motion_detected` | `bool` |
@@ -551,9 +578,13 @@ a client — useful for `update()` calls you assemble yourself.
 
 ```python
 async for event in hue.get_event_stream():
-    if event.is_update:
-        print(event.resource_ids)
+    for resource in event.data:
+        print(hue.get_name(resource.id), resource.summary)
 ```
+
+`summary` is the readable form of an event: `"on, 62%, 2700 K"`, `"motion"`,
+`"22.4 °C"`. Without it, describing an event means checking every optional
+section by hand, since each is optional and each nests differently.
 
 | Member | Type | Description |
 | --- | --- | --- |
@@ -566,12 +597,13 @@ async for event in hue.get_event_stream():
 | `event.resource_ids` | `list[str]` | Ids of every resource in the event. |
 | `event.is_update` | `bool` | Whether this reports changed state. |
 | `event.is_delete` | `bool` | Whether this reports resources that no longer exist. |
+| `resource.summary` | `str` | Human-readable description of whichever sections that `EventResource` carries. |
 
 An `EventResource` carries `id`, `type`, `id_v1`, `owner`, and whichever typed
 sections changed: light state (`on`, `dimming`, `color`, `color_temperature`),
 sensor state (`motion`, `temperature`, `light`, `contact_report`,
 `power_state`), or input state (`button`, `relative_rotary`). Future sections
-remain on `model_extra`. Grouped and ungrouped sensor reports share the same
+remain on `model_extra`, and `summary` renders those too. Grouped and ungrouped sensor reports share the same
 reading models. Events are payloads, not resources: they are *not* bound and
 cannot issue commands. Fetch the resource by id to act on it.
 
@@ -587,6 +619,26 @@ async for payload in hue.api.raw.subscribe_events():
 ```
 
 `models.parse_events(payload)` turns such a payload into `list[HueEvent]`.
+
+### Summaries
+
+`resource.summary` and `change.summary` are both thin wrappers over one public
+function:
+
+```
+def summarize(state: Mapping[str, Any]) -> str
+```
+
+`huepy.summarize` takes a resource's state in the shape the bridge nests it and
+returns a comma-separated description — `"on, 62%, 2700 K"` — skipping every
+key it does not recognise and returning `""` when none of them are. It renders
+power, brightness, colour temperature in Kelvin, colour as hex, effects, motion,
+temperature, ambient light level, button events, contact state, battery level,
+rotary movement, scene status and renames.
+
+Reach for it directly when you hold a payload rather than a model: a raw event
+read through `hue.api.raw.subscribe_events()`, or a section of `model_extra`
+this library has no model for yet.
 
 `hue.api.raw.subscribe_event_frames()` yields complete `SSEFrame` objects. Each
 has `event_id`, an aware `received_at`, and decoded `events`; multi-line SSE
@@ -669,16 +721,34 @@ subscription.cancel()
 
 | Member | Type | Description |
 | --- | --- | --- |
-| `hue.state.on_change(handler, *, name, model, resource_id, kind)` | `Subscription` | Call `handler` for each matching `Change`. Markers never arrive here. |
+| `hue.state.on_change(handler, *, name, model, resource_id, kind, room)` | `Subscription` | Call `handler` for each matching `Change`. Markers never arrive here. |
 | `hue.state.on_resync(handler)` | `Subscription` | Call `handler` for each `Resync` continuity marker. |
-| `hue.state.watch(*, name, model, resource_id, kind, maxsize=4096)` | `AsyncGenerator[Change]` | Matching changes only, for callers who want the loop. |
+| `hue.state.watch(*, name, model, resource_id, kind, room, maxsize=4096)` | `AsyncGenerator[Change]` | Matching changes only, for callers who want the loop. |
+| `await hue.state.wait_for(*, name, model, resource_id, kind, room, predicate, timeout)` | `Change` | The first matching change, then stop. Raises `TimeoutError`. |
 | `hue.state.describe(change)` | `ChangeContext` | Resolve `name` and `room` for one change. |
 
 Every supplied filter must match. `name=` matches case-insensitively and
 ignores surrounding whitespace, so no resource id need appear in caller code.
 `model=` is matched against the resource after the change, falling back to the
-one before it so a delete still matches. `Subscription` has `cancel()` and
-`active`, and cancels on exit when used as a `with` block.
+one before it so a delete still matches. `room=` matches the containing room's
+display name, resolved through the resource's owning device — and, for a delete,
+through what the record carried, since the resource has already left the graph.
+`Subscription` has `cancel()` and `active`, and cancels on exit when used as a
+`with` block.
+
+`wait_for()` is the one-shot counterpart to `watch()`, for "do this, then wait
+until it lands". It registers its subscriber before returning control to the
+event loop, so a change caused by a write issued after the call is still seen,
+and it closes its iterator on every exit including a timeout.
+
+```python
+await hue.lights.turn_on("Desk lamp")
+change = await hue.state.wait_for(name="Desk lamp", timeout=5.0)
+print(change.summary)
+```
+
+`predicate=` takes a `Callable[[Change], bool]` for conditions the filters
+cannot express, e.g. `lambda change: "on" in change.delta`.
 
 All handlers share one reader, so a slow handler delays the other handlers —
 never the fold loop, which writes into bounded newest-wins buffers that never
@@ -728,7 +798,7 @@ The state package exports `HueState`, `StateView`, `Change`, `ChangeContext`,
 
 | Record | Important fields |
 | --- | --- |
-| `Change` | `kind`, `at`, `observed_at`, `event_at`, `received_at`, `event_id`, `resource_id`, `resource_type`, `before`, `after`, `delta`, `resynced`, `origin`, `command_id`, `command_confirmed`, `observation`, `transition_ends_at` |
+| `Change` | `kind`, `at`, `summary`, `observed_at`, `event_at`, `received_at`, `event_id`, `resource_id`, `resource_type`, `before`, `after`, `delta`, `resynced`, `origin`, `command_id`, `command_confirmed`, `observation`, `transition_ends_at` |
 | `Resync` | `reason`, `gap_started`, `gap_ended`, `dropped`, `detail` |
 | `ActiveFade` | `command_id`, `resource_id`, `target`, `sent_at`, `ends_at`, `unreliable_until`, `confirmed` |
 | `ChangeContext` | `change`, `name`, `room` |
@@ -737,7 +807,13 @@ The state package exports `HueState`, `StateView`, `Change`, `ChangeContext`,
 `ChangeKind` contains `UPDATE`, `ADD`, and `DELETE`. `ResyncReason` contains
 `RECONNECT`, `LAGGED`, and `INCONSISTENT`. `Change.at` chooses the best
 available feature timestamp in the order `observed_at`, `event_at`, then
-`received_at`.
+`received_at`. `Change.summary` renders `delta` — what moved, not the whole
+resource — through [`summarize`](#summaries).
+
+`ChangeFilter` carries `name`, `model`, `resource_id`, `kind` and `room`, and
+its `matches(change, name_for, room_for=None)` applies them all. The two
+resolvers are consulted only when the filter that needs them is set, so an
+id-only filter costs no topology lookup.
 
 ### Migrating from 0.4
 

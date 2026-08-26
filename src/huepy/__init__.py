@@ -35,6 +35,7 @@ from huepy.exceptions import (
     StateNotStartedError,
 )
 from huepy.models.common import CommandResult
+from huepy.summary import summarize
 
 # A library must not configure logging for its host application; this only
 # suppresses "no handler found" warnings when the host configures nothing.
@@ -59,4 +60,5 @@ __all__ = [
     "StateNotStartedError",
     "color",
     "models",
+    "summarize",
 ]
