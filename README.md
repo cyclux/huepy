@@ -6,6 +6,8 @@
 A modern async Python wrapper for the **Philips Hue v2 CLIP API**.
 
 - Async-only, built on `aiohttp`
+- Finds the bridge for you: `await huepy.discover()` over mDNS or Hue's cloud endpoint
+- Verifies the bridge's TLS certificate against Signify's bundled roots by default, and pins the bridge id
 - Ask for what you named: `await hue.rooms.get("Kitchen")`, not an opaque id
 - Issue a one-shot command without fetching first: `await hue.rooms.set("Kitchen", brightness=40)`
 - Whatever you fetch acts on itself -- `await light.turn_on()`, `await scene.activate()`
@@ -13,7 +15,11 @@ A modern async Python wrapper for the **Philips Hue v2 CLIP API**.
   and transition into a single PUT
 - Colour in human units -- `rgb=`, `hex_color=`, `kelvin=` -- clamped to the
   gamut the bulb itself reports
+- The full light surface -- effects (tinted, paced), timed sunrise/sunset,
+  gradients, signalling, powerup -- plus smart scenes and recall by name
 - Transitions in seconds on every light command
+- Paces writes to the bridge's documented throughput budget so a burst can't clog it
+- 35 typed resource types, including pairing a new device via `zigbee_device_discovery`
 - Every response is a validated **pydantic** model, not a bare dict
 - `Hue(state=True)` tracks the whole resource graph in the background
 - `Hue(record=SQLiteSink(...))` persists every change to a queryable file

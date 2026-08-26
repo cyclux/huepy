@@ -281,8 +281,11 @@ whose shared pool would move a `sqlite3` connection between threads and trip
 - Event `error` payloads remain tolerated but lack an observed live fixture.
 - `relative_rotary` is modelled from the known payload shape but was absent on
   the bridge used for fixture capture.
-- Several of the 27 observed resource types intentionally remain generic until
-  a consumer needs their fields.
+- Most resource types are now modelled concretely (35 in `RESOURCE_MODELS`); the
+  tolerant generic `HueResource` fallback covers only a few niche types -- the
+  motion-area services, `speaker`, `clip`, `bell_button`,
+  `switch_input_configuration` -- and any genuinely new firmware type, until a
+  consumer needs their fields.
 
 ## Optional future work
 
