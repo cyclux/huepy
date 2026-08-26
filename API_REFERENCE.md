@@ -593,8 +593,8 @@ available in `model_extra`.
 | `models.Zone` | `metadata`, `children`, `services` | light commands, `service_id`, `contains_device` |
 | `models.Scene` | `metadata`, `group`, `speed`, `auto_dynamic`, `actions`, `status` | `activate` |
 | `models.SmartScene` | `metadata`, `group`, `week_timeslots`, `transition_duration`, `active_timeslot`, `state` | `activate`, `deactivate` |
-| `models.Device` | `metadata`, `product_data`, `services` | `service_id` |
-| `models.Bridge` | `bridge_id`, `time_zone` | — |
+| `models.Device` | `metadata`, `product_data`, `services` | `service_id`, `identify`, `usertest` |
+| `models.Bridge` | `bridge_id`, `time_zone` | `set_timezone` |
 | `models.BridgeHome` | `children`, `services` | — |
 | `models.ServiceGroup` | `metadata`, `children`, `services` | — |
 | `models.DevicePower` | `power_state` | — |
@@ -607,9 +607,31 @@ available in `model_extra`.
 | `models.Contact` | `enabled`, `contact_report` | — |
 | `models.RelativeRotary` | `relative_rotary` | — |
 | `models.ZigbeeConnectivity` | `status`, `mac_address`, `channel`, `extended_pan_id` | — |
+| `models.ZgpConnectivity` | `status`, `source_id` | — |
+| `models.WifiConnectivity` | `status` | — |
+| `models.Entertainment` | `renderer`, `renderer_reference`, `proxy`, `equalizer`, `max_streams` | — |
+| `models.EntertainmentConfiguration` | `metadata`, `configuration_type`, `status`, `active_streamer`, `stream_proxy`, `channels`, `light_services` | — |
+| `models.BehaviorScript` | `metadata`, `description`, `configuration_schema`, `trigger_schema`, `state_schema`, `version`, `supported_features`, `max_number_instances` | — |
+| `models.BehaviorInstance` | `metadata`, `script_id`, `enabled`, `state`, `configuration`, `dependees`, `status`, `last_error` | — |
+| `models.Geolocation` | `is_configured`, `sun_today` | — |
+| `models.GeofenceClient` | `name`, `is_at_home` | — |
+| `models.ZigbeeDeviceDiscovery` | `status`, `action_values` | — |
+| `models.DeviceSoftwareUpdate` | `state`, `auto_install`, `problems` | — |
+| `models.Homekit` | `status`, `status_values` | — |
+| `models.Matter` | `max_fabrics`, `has_qr_code` | — |
+| `models.MatterFabric` | `status`, `creation_time`, `fabric_data` | — |
+| `models.Tamper` | `tamper_reports` | — |
+| `models.CameraMotion` | as `Motion` | — |
 
 "Light commands" is `set`, `turn_on`, `turn_off`, `set_brightness`,
 `set_color`, `set_rgb`, `set_color_temperature`, `set_kelvin`.
+
+`Device.identify(*, duration=None)` blinks the device to identify it
+physically -- the same idea as `Light.identify()`, but on the owning device
+rather than one of its services. `Device.usertest(*, enabled)` turns
+user-test mode on or off, in which the device signals its own state, e.g. a
+motion sensor flashing on each detection. `Bridge.set_timezone(time_zone)`
+sets the bridge's IANA time zone, e.g. `"Europe/Berlin"`.
 
 ### Convenience properties
 
@@ -636,6 +658,11 @@ available in `model_extra`.
 | `LightLevel` | `lux` | `float \| None`; only when the reported reading is valid |
 | `RelativeRotaryReading` | `value` | `RelativeRotaryReport \| RelativeRotaryEvent \| None`; prefers the timestamped report |
 | `ZigbeeConnectivity` | `is_connected` | `bool` |
+| `ZgpConnectivity` | `is_connected` | `bool` |
+| `WifiConnectivity` | `is_connected` | `bool` |
+| `EntertainmentConfiguration` | `is_streaming` | `bool` |
+| `ZigbeeDeviceDiscovery` | `is_searching` | `bool` |
+| `Tamper` | `is_tampered` | `bool` |
 
 ### Payload models
 
@@ -649,7 +676,11 @@ building payloads by hand.
 | Light services | `Effect`, `TimedEffect`, `Signal`, `Effects`, `TimedEffects`, `Gradient`, `GradientPoint`, `Powerup`, `Alert`, `Signaling`, `LightCommands` |
 | Sensors and input | `MotionReading`, `MotionReport`, `Sensitivity`, `TemperatureReading`, `TemperatureReport`, `ButtonReading`, `ButtonReport`, `ContactReport`, `LightLevelReading`, `LightLevelReport`, `RelativeRotaryReading`, `RelativeRotaryReport`, `RelativeRotaryEvent`, `RelativeRotaryRotation` |
 | Devices | `ProductData`, `PowerState`, `TimeZone` |
-| Connectivity | `ZigbeeConnectivity`, `ZigbeeChannel` |
+| Connectivity | `ZigbeeConnectivity`, `ZigbeeChannel`, `ZgpConnectivity`, `WifiConnectivity` |
+| Entertainment | `EntertainmentChannel`, `StreamProxy` |
+| Automation and presence | `SunToday` |
+| Device management | `AutoInstall` |
+| Security | `FabricData`, `TamperReport` |
 | Groups | `ResourceGroup`, `RecallAction`, `SceneAction`, `SceneStatus`, `WeekDay`, `SmartSceneWeekTimeslot`, `SmartSceneTimeslot`, `SmartSceneStartTime`, `SmartSceneTime`, `SmartSceneActiveTimeslot` |
 | Events | `HueEvent`, `EventResource`, `EventType`, `parse_events` |
 | Envelope | `HueResponse`, `HueErrorDetail`, `unwrap`, `unwrap_one` |
@@ -1118,15 +1149,37 @@ instead return `CommandResult`.
 | `hue.api.buttons` | `Button` | `models.Button` | — |
 | `hue.api.relative_rotaries` | `RelativeRotary` | `models.RelativeRotary` | — |
 | `hue.api.zigbee_connectivities` | `ZigbeeConnectivity` | `models.ZigbeeConnectivity` | — |
+| `hue.api.zgp_connectivities` | `ZgpConnectivity` | `models.ZgpConnectivity` | — |
+| `hue.api.wifi_connectivities` | `WifiConnectivity` | `models.WifiConnectivity` | — |
 | `hue.api.devices` | `Device` | `models.Device` | — |
 | `hue.api.device_powers` | `DevicePower` | `models.DevicePower` | — |
 | `hue.api.light_levels` | `LightLevel` | `models.LightLevel` | — |
 | `hue.api.grouped_light_levels` | `GroupedLightLevel` | `models.GroupedLightLevel` | — |
 | `hue.api.bridges` | `Bridge` | `models.Bridge` | — |
 | `hue.api.bridge_homes` | `BridgeHome` | `models.BridgeHome` | — |
+| `hue.api.entertainments` | `Entertainment` | `models.Entertainment` | — |
+| `hue.api.entertainment_configurations` | `EntertainmentConfiguration` | `models.EntertainmentConfiguration` | `create`, `start`, `stop` |
+| `hue.api.behavior_scripts` | `BehaviorScript` | `models.BehaviorScript` | — |
+| `hue.api.behavior_instances` | `BehaviorInstance` | `models.BehaviorInstance` | `create`, `enable`, `disable`, `configure` |
+| `hue.api.geolocations` | `Geolocation` | `models.Geolocation` | `set_location` |
+| `hue.api.geofence_clients` | `GeofenceClient` | `models.GeofenceClient` | `create` |
+| `hue.api.zigbee_device_discoveries` | `ZigbeeDeviceDiscovery` | `models.ZigbeeDeviceDiscovery` | `search`, `search_with_default_link_key` |
+| `hue.api.device_software_updates` | `DeviceSoftwareUpdate` | `models.DeviceSoftwareUpdate` | `install`, `set_auto_install` |
+| `hue.api.homekits` | `Homekit` | `models.Homekit` | `reset` |
+| `hue.api.matters` | `Matter` | `models.Matter` | `reset` |
+| `hue.api.matter_fabrics` | `MatterFabric` | `models.MatterFabric` | — |
+| `hue.api.tampers` | `Tamper` | `models.Tamper` | — |
+| `hue.api.camera_motions` | `CameraMotion` | `models.CameraMotion` | `turn_on`, `turn_off` |
 
 `hue.api.raw` exposes the open decoded-JSON `Transport` for an advanced CLIP
 operation without a typed handler.
+
+The connectivity, entertainment, automation, management and security handlers
+above follow the same shape as the resource handlers documented elsewhere in
+this section: id-addressed, returning bridge `list[models.ResourceIdentifier]`
+from every write. `entertainments`, `behavior_scripts`, `matter_fabrics` and
+`tampers` are read-only -- there is no bridge write for them beyond the
+generic `update`/`delete` every handler already has.
 
 ### Light commands
 
@@ -1192,6 +1245,88 @@ async get_last_motion(resource_id) -> str   # ISO timestamp, or ""
 
 `set_sensitivity` raises `TypeError` for a non-integer and `ValueError` if the
 value is negative or above the sensor's reported maximum.
+
+### `EntertainmentConfiguration`
+
+```
+async create(config: dict[str, Any]) -> list[ResourceIdentifier]
+async start(resource_id) -> list[ResourceIdentifier]
+async stop(resource_id) -> list[ResourceIdentifier]
+```
+
+`create` takes the configuration body directly, in the bridge's shape --
+channels, member light services and a stream proxy. `start` and `stop` toggle
+streaming to the area. huepy does not implement the low-latency DTLS streaming
+protocol itself, only this REST control surface; `hue.api.entertainments` is
+the read-only per-light service such an area streams to.
+
+### `BehaviorInstance`
+
+```
+async create(
+    script_id: str,
+    configuration: dict[str, Any],
+    *,
+    enabled: bool = True,
+    name: str | None = None,
+) -> list[ResourceIdentifier]
+async enable(resource_id) -> list[ResourceIdentifier]
+async disable(resource_id) -> list[ResourceIdentifier]
+async configure(resource_id, configuration: dict[str, Any]) -> list[ResourceIdentifier]
+```
+
+`hue.api.behavior_scripts` is read-only: the bridge ships these as templates,
+and a script's `configuration_schema` describes what `create`'s
+`configuration` must supply. `configure` replaces a running instance's
+configuration; `enable`/`disable` toggle it without deleting it.
+
+### `Geolocation`, `GeofenceClient`
+
+```
+async Geolocation.set_location(resource_id, latitude: float, longitude: float) -> list[ResourceIdentifier]
+async GeofenceClient.create(name: str, *, is_at_home: bool = False) -> list[ResourceIdentifier]
+```
+
+`set_location` raises `ValueError` for a latitude outside ±90° or a longitude
+outside ±180°. Setting a location is what enables sun-based automations, e.g.
+a behaviour script that triggers at sunset.
+
+### `ZigbeeDeviceDiscovery`
+
+```
+async search(resource_id, *, install_codes: list[str] | None = None, channels: list[int] | None = None) -> list[ResourceIdentifier]
+async search_with_default_link_key(resource_id, *, install_codes=None, channels=None) -> list[ResourceIdentifier]
+```
+
+This is how new lights and other Zigbee devices are paired -- pairing has no
+other route through the v2 API. `search_with_default_link_key` additionally
+accepts devices that only join using the well-known default link key, at a
+small security cost; both accept `install_codes` and `channels` to narrow the
+search.
+
+### `DeviceSoftwareUpdate`
+
+```
+async install(resource_id) -> list[ResourceIdentifier]
+async set_auto_install(resource_id, *, on: bool, update_time: str | None = None) -> list[ResourceIdentifier]
+```
+
+`install` applies an update already downloaded and ready (`state ==
+"ready_to_install"`); `set_auto_install` configures whether a device installs
+updates on its own and, optionally, the local time of day it does so.
+
+### `Homekit`, `Matter`, `MatterFabric`
+
+```
+async Homekit.reset(resource_id) -> list[ResourceIdentifier]
+async Matter.reset(resource_id) -> list[ResourceIdentifier]
+```
+
+Each resets that integration's pairing on the bridge -- `Matter.reset()`
+clears every commissioned fabric at once. `hue.api.matter_fabrics` is the
+finer-grained alternative: it lists the individual fabrics, each removable on
+its own with `delete()` without disturbing the others; a fabric cannot be
+edited, only listed and removed.
 
 ## Configuration
 

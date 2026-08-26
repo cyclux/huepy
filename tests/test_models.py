@@ -521,6 +521,164 @@ class TestSmartScene:
         assert scene.active_timeslot.weekday == "monday"
 
 
+class TestNewResourceParsing:
+    """Each new resource type parses into its concrete model and reader property."""
+
+    def test_zgp_connectivity_reports_connected(self):
+        connectivity = models.parse_resource(
+            {
+                "id": "zgp-1",
+                "type": "zgp_connectivity",
+                "owner": {"rid": "device-1", "rtype": "device"},
+                "status": "connected",
+                "source_id": "0x0102",
+            }
+        )
+        assert isinstance(connectivity, models.ZgpConnectivity)
+        assert connectivity.is_connected is True
+
+    def test_wifi_connectivity_reports_connected(self):
+        connectivity = models.parse_resource(
+            {
+                "id": "wifi-1",
+                "type": "wifi_connectivity",
+                "owner": {"rid": "device-1", "rtype": "device"},
+                "status": "connected",
+            }
+        )
+        assert isinstance(connectivity, models.WifiConnectivity)
+        assert connectivity.is_connected is True
+
+    def test_tamper_with_a_tampered_report_is_tampered(self):
+        tamper = models.parse_resource(
+            {
+                "id": "tamper-1",
+                "type": "tamper",
+                "owner": {"rid": "device-1", "rtype": "device"},
+                "tamper_reports": [
+                    {
+                        "changed": "2026-08-24T14:16:45.503Z",
+                        "source": "battery_door",
+                        "state": "tampered",
+                    }
+                ],
+            }
+        )
+        assert isinstance(tamper, models.Tamper)
+        assert tamper.is_tampered is True
+
+    def test_tamper_with_no_reports_is_not_tampered(self):
+        tamper = models.parse_resource(
+            {
+                "id": "tamper-1",
+                "type": "tamper",
+                "owner": {"rid": "device-1", "rtype": "device"},
+                "tamper_reports": [],
+            }
+        )
+        assert isinstance(tamper, models.Tamper)
+        assert tamper.is_tampered is False
+
+    def test_camera_motion_parses_as_a_motion_subclass(self):
+        camera_motion = models.parse_resource(
+            {
+                "id": "cam-motion-1",
+                "type": "camera_motion",
+                "owner": {"rid": "camera-1", "rtype": "device"},
+                "enabled": True,
+                "motion": {
+                    "motion": True,
+                    "motion_valid": True,
+                    "motion_report": {
+                        "changed": "2026-08-24T14:16:45.503Z",
+                        "motion": True,
+                    },
+                },
+            }
+        )
+        assert isinstance(camera_motion, models.CameraMotion)
+        assert isinstance(camera_motion, models.Motion)
+        assert camera_motion.motion_detected is True
+
+    def test_entertainment_configuration_reports_streaming(self):
+        config = models.parse_resource(
+            {
+                "id": "ent-1",
+                "type": "entertainment_configuration",
+                "metadata": {"name": "TV"},
+                "configuration_type": "screen",
+                "status": "active",
+            }
+        )
+        assert isinstance(config, models.EntertainmentConfiguration)
+        assert config.is_streaming is True
+
+    def test_behavior_instance_populates_its_configuration(self):
+        instance = models.parse_resource(
+            {
+                "id": "behave-1",
+                "type": "behavior_instance",
+                "script_id": "script-1",
+                "enabled": True,
+                "configuration": {"where": [], "when": {"time": "07:30:00"}},
+            }
+        )
+        assert isinstance(instance, models.BehaviorInstance)
+        assert instance.script_id == "script-1"
+        assert instance.enabled is True
+        assert instance.configuration == {"where": [], "when": {"time": "07:30:00"}}
+
+    def test_zigbee_device_discovery_reports_searching(self):
+        discovery = models.parse_resource(
+            {
+                "id": "disc-1",
+                "type": "zigbee_device_discovery",
+                "owner": {"rid": "bridge-1", "rtype": "device"},
+                "status": "active",
+                "action_values": ["search"],
+            }
+        )
+        assert isinstance(discovery, models.ZigbeeDeviceDiscovery)
+        assert discovery.is_searching is True
+
+    def test_device_software_update_parses_its_state(self):
+        update = models.parse_resource(
+            {
+                "id": "swu-1",
+                "type": "device_software_update",
+                "owner": {"rid": "device-1", "rtype": "device"},
+                "state": "no_update",
+            }
+        )
+        assert isinstance(update, models.DeviceSoftwareUpdate)
+        assert update.state == "no_update"
+
+    def test_geolocation_parses_its_configured_flag(self):
+        geolocation = models.parse_resource(
+            {
+                "id": "geo-1",
+                "type": "geolocation",
+                "is_configured": True,
+            }
+        )
+        assert isinstance(geolocation, models.Geolocation)
+        assert geolocation.is_configured is True
+
+    def test_matter_fabric_parses(self):
+        fabric = models.parse_resource(
+            {
+                "id": "fabric-1",
+                "type": "matter_fabric",
+                "status": "paired",
+                "creation_time": "2026-08-24T14:16:45.503Z",
+                "fabric_data": {"label": "Apple Home", "vendor_id": 4937},
+            }
+        )
+        assert isinstance(fabric, models.MatterFabric)
+        assert fabric.fabric_data is not None
+        assert fabric.fabric_data.label == "Apple Home"
+
+
 class TestBinding:
     """Models parsed by hand are inert; only a handler can bind them."""
 

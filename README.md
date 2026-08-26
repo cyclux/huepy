@@ -293,8 +293,18 @@ descriptions side by side and flags any disagreement.
 `hue.api.lights`, `grouped_lights`, `light_levels`, `grouped_light_levels`,
 `rooms`, `zones`, `scenes`, `smart_scenes`, `devices`, `device_powers`,
 `bridges`, `bridge_homes`, `service_groups`, `motions`, `grouped_motions`,
-`temperatures`, `buttons`, `contacts`, `relative_rotaries`, and
-`zigbee_connectivities` expose the complete typed CLIP v2 resource API.
+`temperatures`, `buttons`, `contacts`, `relative_rotaries`,
+`zigbee_connectivities`, `zgp_connectivities`, `wifi_connectivities`,
+`entertainments`, `entertainment_configurations`, `behavior_scripts`,
+`behavior_instances`, `geolocations`, `geofence_clients`,
+`zigbee_device_discoveries`, `device_software_updates`, `homekits`,
+`matters`, `matter_fabrics`, `tampers`, and `camera_motions` expose the
+complete typed CLIP v2 resource API.
+
+New Zigbee devices -- lights, sensors, switches -- are paired through this
+layer: `await hue.api.zigbee_device_discoveries.search(discovery_id)` starts a
+search, and anything that joins shows up in `hue.lights.list()` or
+`hue.devices.list()` like any other resource.
 
 ### Events
 

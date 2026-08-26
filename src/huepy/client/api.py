@@ -5,25 +5,40 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, final
 
 from huepy.resources import (
+    BehaviorInstance,
+    BehaviorScript,
     Bridge,
     BridgeHome,
     Button,
+    CameraMotion,
     Contact,
     Device,
     DevicePower,
+    DeviceSoftwareUpdate,
+    Entertainment,
+    EntertainmentConfiguration,
+    GeofenceClient,
+    Geolocation,
     GroupedLight,
     GroupedLightLevel,
     GroupedMotion,
+    Homekit,
     Light,
     LightLevel,
+    Matter,
+    MatterFabric,
     Motion,
     RelativeRotary,
     Room,
     Scene,
     ServiceGroup,
     SmartScene,
+    Tamper,
     Temperature,
+    WifiConnectivity,
+    ZgpConnectivity,
     ZigbeeConnectivity,
+    ZigbeeDeviceDiscovery,
     Zone,
 )
 
@@ -58,6 +73,21 @@ class HueAPI:
         self.contacts = Contact(hue)
         self.relative_rotaries = RelativeRotary(hue)
         self.zigbee_connectivities = ZigbeeConnectivity(hue)
+        self.zgp_connectivities = ZgpConnectivity(hue)
+        self.wifi_connectivities = WifiConnectivity(hue)
+        self.entertainments = Entertainment(hue)
+        self.entertainment_configurations = EntertainmentConfiguration(hue)
+        self.behavior_scripts = BehaviorScript(hue)
+        self.behavior_instances = BehaviorInstance(hue)
+        self.geolocations = Geolocation(hue)
+        self.geofence_clients = GeofenceClient(hue)
+        self.zigbee_device_discoveries = ZigbeeDeviceDiscovery(hue)
+        self.device_software_updates = DeviceSoftwareUpdate(hue)
+        self.homekits = Homekit(hue)
+        self.matters = Matter(hue)
+        self.matter_fabrics = MatterFabric(hue)
+        self.tampers = Tamper(hue)
+        self.camera_motions = CameraMotion(hue)
 
     @property
     def raw(self) -> Transport:

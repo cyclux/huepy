@@ -22,3 +22,26 @@ class ZigbeeConnectivity(HueResource):
     def is_connected(self) -> bool:
         """Whether the bridge currently reports this service as connected."""
         return self.status == "connected"
+
+
+class ZgpConnectivity(HueResource):
+    """Reachability of one Zigbee Green Power device (a friends-of-Hue switch)."""
+
+    status: str = ""
+    source_id: str | None = None
+
+    @property
+    def is_connected(self) -> bool:
+        """Whether the bridge currently reports this service as connected."""
+        return self.status == "connected"
+
+
+class WifiConnectivity(HueResource):
+    """Reachability of one Wi-Fi-connected device."""
+
+    status: str = ""
+
+    @property
+    def is_connected(self) -> bool:
+        """Whether the bridge currently reports this service as connected."""
+        return self.status == "connected"
