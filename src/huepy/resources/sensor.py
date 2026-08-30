@@ -10,10 +10,15 @@ from huepy.resources.base import BaseResource
 
 
 class ToggleableSensorMixin[ModelT: common_models.HueModel](BaseResource[ModelT]):
-    """Sensors that can be enabled and disabled on the bridge."""
+    """Sensors that can be enabled and disabled on the bridge.
 
-    async def turn_on(self, resource_id: str) -> list[ResourceIdentifier]:
-        """Enable the sensor.
+    The verbs are ``enable``/``disable`` rather than ``turn_on``/``turn_off``:
+    a sensor is switched on as a detector, not powered like a light, and reusing
+    the light power verb here misled callers about what it does.
+    """
+
+    async def enable(self, resource_id: str) -> list[ResourceIdentifier]:
+        """Enable the sensor so it reports again.
 
         Args:
             resource_id: The sensor service id.
@@ -24,8 +29,8 @@ class ToggleableSensorMixin[ModelT: common_models.HueModel](BaseResource[ModelT]
         """
         return await self.update(resource_id, {"enabled": True})
 
-    async def turn_off(self, resource_id: str) -> list[ResourceIdentifier]:
-        """Disable the sensor.
+    async def disable(self, resource_id: str) -> list[ResourceIdentifier]:
+        """Disable the sensor, so it stops reporting until re-enabled.
 
         Args:
             resource_id: The sensor service id.

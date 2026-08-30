@@ -9,6 +9,7 @@ configure, and start or stop an entertainment area.
 from pydantic import Field
 
 from huepy.models.common import (
+    CommandResult,
     HueModel,
     HueResource,
     NamedResource,
@@ -55,3 +56,29 @@ class EntertainmentConfiguration(NamedResource):
     def is_streaming(self) -> bool:
         """Whether this area is currently streaming."""
         return self.status == "active"
+
+    async def start(self) -> CommandResult:
+        """Start streaming to this entertainment area.
+
+        Returns:
+            A CommandResult containing the bridge references affected.
+
+        Raises:
+            DetachedResourceError: If this configuration is not bound to a client.
+            HueResponseError: If the bridge rejects the request.
+
+        """
+        return await self.update({"action": "start"})
+
+    async def stop(self) -> CommandResult:
+        """Stop streaming to this entertainment area.
+
+        Returns:
+            A CommandResult containing the bridge references affected.
+
+        Raises:
+            DetachedResourceError: If this configuration is not bound to a client.
+            HueResponseError: If the bridge rejects the request.
+
+        """
+        return await self.update({"action": "stop"})

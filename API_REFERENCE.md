@@ -30,10 +30,13 @@ when you already hold an id or need an unnamed resource type.
 - [Models](#models)
 - [Events](#events)
 - [Last-reported state](#last-reported-state)
+  - [Migrating from 0.4](#migrating-from-04)
+- [Recording history](#recording-history)
 - [huepy.color](#huepycolor)
 - [Resource handlers](#resource-handlers)
 - [Configuration](#configuration)
 - [Exceptions](#exceptions)
+  - [Partial failures](#partial-failures)
 - [Complete example](#complete-example)
 
 ## Client
@@ -470,8 +473,8 @@ run an effect across a room, iterate its lights.
 | --- | --- | --- |
 | `await light.set_effect(effect, *, xy=None, rgb=None, hex_color=None, mirek=None, kelvin=None, speed=None)` | `{"effects_v2": {"action": {"effect": ..., "parameters": {...}}}}` | An `models.Effect` member or a raw name. `Effect.NO_EFFECT` stops the running one and takes no parameters. The tint and speed follow the same colour and 0.0–1.0 rules as `set()`. Sends the current `effects_v2` shape, not the deprecated `effects` key. |
 | `await light.set_timed_effect(effect, *, duration=None)` | `{"timed_effects": {"effect": ..., "duration": ...}}` | A `models.TimedEffect` member or a raw name, e.g. a sunrise or sunset fade. `duration` is seconds, sent in milliseconds; required for a real effect, at most six hours. |
-| `await light.set_gradient(colors, *, mode=None)` | `{"gradient": {...}}` | `colors` is a list of CIE `(x, y)` stops, at most `gradient.points_capable` of them. |
-| `await light.set_powerup(preset="custom", *, on=None, on_mode=None, brightness=None, xy=None, rgb=None, hex_color=None, mirek=None, kelvin=None)` | `{"powerup": {"preset": ...}}` | `preset` is one of `"safety"`, `"powerfail"`, `"last_on_state"`, `"custom"`. Passing any `on`/brightness/colour field configures a custom powerup and forces `preset="custom"`. |
+| `await light.set_gradient(colors, *, mode=None)` | `{"gradient": {...}}` | `colors` is a list of CIE `(x, y)` stops, at most `gradient.points_capable` of them. `mode` is a `models.GradientMode` member or a raw name -- `interpolated_palette`, `interpolated_palette_mirrored`, or `random_pixelated` -- left to the light when omitted. |
+| `await light.set_powerup(preset="custom", *, on=None, on_mode=None, brightness=None, xy=None, rgb=None, hex_color=None, mirek=None, kelvin=None)` | `{"powerup": {"preset": ...}}` | `preset` is a `models.PowerupPreset` member or a raw name: `safety`, `powerfail`, `last_on_state`, `custom`. Passing any `on`/brightness/colour field configures a custom powerup and forces `preset="custom"`. `on_mode` is a `models.PowerupOnMode` member or a raw name -- `on`, `toggle`, or `previous`. |
 | `await light.signal(signal, *, duration=None, colors=None)` | `{"signaling": {"signal": ..., "duration": ..., "colors": [{"xy": {...}}]}}` | A `models.Signal` member or a raw name. `duration` is seconds, sent in milliseconds. `colors` takes at most two CIE `(x, y)` points, clamped to the light's gamut, and only for `ON_OFF_COLOR` and `ALTERNATING`. |
 | `await light.identify()` | `{"identify": {"action": "identify"}}` | A short breathe cycle to identify the light, distinct from `alert()`'s wire shape below. |
 | `await light.adjust_brightness(delta)` | `{"dimming_delta": {"action": "up"\|"down"\|"stop", "brightness_delta": ...}}` | Nudges brightness by a relative percentage-point `delta` without reading the current value; `0` sends `"stop"`, halting an in-progress change. |
@@ -607,20 +610,20 @@ available in `model_extra`.
 | `models.Scene` | `metadata`, `group`, `speed`, `auto_dynamic`, `actions`, `status` | `activate` |
 | `models.SmartScene` | `metadata`, `group`, `week_timeslots`, `transition_duration`, `active_timeslot`, `state` | `activate`, `deactivate` |
 | `models.Entertainment` | `renderer`, `renderer_reference`, `proxy`, `equalizer`, `max_streams` | — |
-| `models.EntertainmentConfiguration` | `metadata`, `configuration_type`, `status`, `active_streamer`, `stream_proxy`, `channels`, `light_services` | — |
+| `models.EntertainmentConfiguration` | `metadata`, `configuration_type`, `status`, `active_streamer`, `stream_proxy`, `channels`, `light_services` | `start`, `stop` |
 | `models.Device` | `metadata`, `product_data`, `services` | `service_id`, `identify`, `usertest` |
 | `models.Bridge` | `bridge_id`, `time_zone` | `set_timezone` |
 | `models.BridgeHome` | `children`, `services` | — |
 | `models.ServiceGroup` | `metadata`, `children`, `services` | — |
 | `models.DevicePower` | `power_state` | — |
-| `models.Motion` | `enabled`, `motion`, `sensitivity` | — |
-| `models.GroupedMotion` | as `Motion` | — |
-| `models.CameraMotion` | as `Motion` | — |
-| `models.Temperature` | `enabled`, `temperature` | — |
+| `models.Motion` | `enabled`, `motion`, `sensitivity` | `enable`, `disable` |
+| `models.GroupedMotion` | as `Motion` | `enable`, `disable` |
+| `models.CameraMotion` | as `Motion` | `enable`, `disable` |
+| `models.Temperature` | `enabled`, `temperature` | `enable`, `disable` |
 | `models.LightLevel` | `enabled`, `light` | — |
 | `models.GroupedLightLevel` | `enabled`, `light` | — |
 | `models.Button` | `metadata`, `button` | — |
-| `models.Contact` | `enabled`, `contact_report` | — |
+| `models.Contact` | `enabled`, `contact_report` | `enable`, `disable` |
 | `models.RelativeRotary` | `relative_rotary` | — |
 | `models.ZigbeeConnectivity` | `status`, `mac_address`, `channel`, `extended_pan_id` | — |
 | `models.ZgpConnectivity` | `status`, `source_id` | — |
@@ -628,9 +631,9 @@ available in `model_extra`.
 | `models.ZigbeeDeviceDiscovery` | `status`, `action_values` | `search`, `search_with_default_link_key` |
 | `models.DeviceSoftwareUpdate` | `state`, `auto_install`, `problems` | `install`, `set_auto_install` |
 | `models.Geolocation` | `is_configured`, `sun_today` | `set_location` |
-| `models.GeofenceClient` | `name`, `is_at_home` | `create` |
+| `models.GeofenceClient` | `name`, `is_at_home` | — |
 | `models.BehaviorScript` | `metadata`, `description`, `configuration_schema`, `trigger_schema`, `state_schema`, `version`, `supported_features`, `max_number_instances` | — |
-| `models.BehaviorInstance` | `metadata`, `script_id`, `enabled`, `state`, `configuration`, `dependees`, `status`, `last_error` | `create`, `enable`, `disable`, `configure` |
+| `models.BehaviorInstance` | `metadata`, `script_id`, `enabled`, `state`, `configuration`, `dependees`, `status`, `last_error` | `enable`, `disable`, `configure` |
 | `models.Homekit` | `status`, `status_values` | `reset` |
 | `models.Matter` | `max_fabrics`, `has_qr_code` | `reset` |
 | `models.MatterFabric` | `status`, `creation_time`, `fabric_data` | — |
@@ -638,6 +641,13 @@ available in `model_extra`.
 
 "Light commands" is `set`, `turn_on`, `turn_off`, `set_brightness`,
 `set_color`, `set_rgb`, `set_color_temperature`, `set_kelvin`.
+
+Every command in the table above is a bound-model method: `area.start()`,
+`discovery.search()`, `software_update.install()`, `instance.enable()`,
+`geolocation.set_location(...)` and `homekit.reset()` each resolve to one PUT
+on that resource, exactly like `scene.activate()`. `create(...)` is the one
+exception -- it never appears on a bound model, only on the id-based handler
+or a named collection, because a resource cannot create itself.
 
 `Device.identify(*, duration=None)` and `Device.usertest(*, enabled)`, and
 `Bridge.set_timezone(time_zone)`, are bound-model commands only; there is no
@@ -683,7 +693,7 @@ building payloads by hand.
 | --- | --- |
 | Shared | `HueModel`, `HueResource`, `NamedResource`, `Metadata`, `ResourceIdentifier`, `ResourceType` |
 | Light state | `On`, `Dimming`, `Color`, `GroupedColor`, `ColorXY`, `ColorGamut`, `ColorTemperature`, `MirekSchema` |
-| Light services | `Effect`, `Effects`, `TimedEffect`, `TimedEffects`, `Signal`, `Gradient`, `GradientPoint`, `Powerup`, `Alert`, `Signaling`, `LightCommands` |
+| Light services | `Effect`, `Effects`, `TimedEffect`, `TimedEffects`, `Signal`, `Gradient`, `GradientPoint`, `GradientMode`, `Powerup`, `PowerupPreset`, `PowerupOnMode`, `Alert`, `Signaling`, `LightCommands` |
 | Sensors and input | `MotionReading`, `MotionReport`, `Sensitivity`, `TemperatureReading`, `TemperatureReport`, `ButtonReading`, `ButtonReport`, `ContactReport`, `LightLevelReading`, `LightLevelReport`, `RelativeRotaryReading`, `RelativeRotaryReport`, `RelativeRotaryEvent`, `RelativeRotaryRotation` |
 | Devices | `ProductData`, `PowerState`, `TimeZone` |
 | Connectivity | `ZigbeeConnectivity`, `ZigbeeChannel`, `ZgpConnectivity`, `WifiConnectivity` |
@@ -1154,11 +1164,11 @@ instead return `CommandResult`.
 | `hue.api.service_groups` | `ServiceGroup` | `models.ServiceGroup` | `create` |
 | `hue.api.entertainments` | `Entertainment` | `models.Entertainment` | — |
 | `hue.api.entertainment_configurations` | `EntertainmentConfiguration` | `models.EntertainmentConfiguration` | `create`, `start`, `stop` |
-| `hue.api.motions` | `Motion` | `models.Motion` | `turn_on`, `turn_off`, `set_sensitivity`, `get_motion_state`, `get_last_motion` |
-| `hue.api.grouped_motions` | `GroupedMotion` | `models.GroupedMotion` | `turn_on`, `turn_off` |
-| `hue.api.temperatures` | `Temperature` | `models.Temperature` | `turn_on`, `turn_off` |
-| `hue.api.contacts` | `Contact` | `models.Contact` | `turn_on`, `turn_off` |
-| `hue.api.camera_motions` | `CameraMotion` | `models.CameraMotion` | `turn_on`, `turn_off` |
+| `hue.api.motions` | `Motion` | `models.Motion` | `enable`, `disable`, `set_sensitivity`, `get_motion_state`, `get_last_motion` |
+| `hue.api.grouped_motions` | `GroupedMotion` | `models.GroupedMotion` | `enable`, `disable` |
+| `hue.api.temperatures` | `Temperature` | `models.Temperature` | `enable`, `disable` |
+| `hue.api.contacts` | `Contact` | `models.Contact` | `enable`, `disable` |
+| `hue.api.camera_motions` | `CameraMotion` | `models.CameraMotion` | `enable`, `disable` |
 | `hue.api.tampers` | `Tamper` | `models.Tamper` | — |
 | `hue.api.buttons` | `Button` | `models.Button` | — |
 | `hue.api.relative_rotaries` | `RelativeRotary` | `models.RelativeRotary` | — |

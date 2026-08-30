@@ -10,7 +10,10 @@ from typing import Any
 
 from pydantic import Field
 
-from huepy.models.common import HueModel, HueResource, NamedResource
+from huepy.models.common import CommandResult, HueModel, HueResource, NamedResource
+
+LATITUDE_MAX = 90.0
+LONGITUDE_MAX = 180.0
 
 
 class BehaviorScript(NamedResource):
@@ -44,6 +47,49 @@ class BehaviorInstance(NamedResource):
     status: str | None = None
     last_error: str | None = None
 
+    async def enable(self) -> CommandResult:
+        """Enable this automation.
+
+        Returns:
+            A CommandResult containing the bridge references affected.
+
+        Raises:
+            DetachedResourceError: If this instance is not bound to a client.
+            HueResponseError: If the bridge rejects the change.
+
+        """
+        return await self.update({"enabled": True})
+
+    async def disable(self) -> CommandResult:
+        """Disable this automation without deleting it.
+
+        Returns:
+            A CommandResult containing the bridge references affected.
+
+        Raises:
+            DetachedResourceError: If this instance is not bound to a client.
+            HueResponseError: If the bridge rejects the change.
+
+        """
+        return await self.update({"enabled": False})
+
+    async def configure(self, configuration: dict[str, Any]) -> CommandResult:
+        """Replace this automation's configuration.
+
+        Args:
+            configuration: The new configuration, validated by the instance's
+                script ``configuration_schema``.
+
+        Returns:
+            A CommandResult containing the bridge references affected.
+
+        Raises:
+            DetachedResourceError: If this instance is not bound to a client.
+            HueResponseError: If the bridge rejects the configuration.
+
+        """
+        return await self.update({"configuration": configuration})
+
 
 class SunToday(HueModel):
     """The sunrise and sunset the bridge computed for today."""
@@ -57,6 +103,30 @@ class Geolocation(HueResource):
 
     is_configured: bool = False
     sun_today: SunToday | None = None
+
+    async def set_location(self, latitude: float, longitude: float) -> CommandResult:
+        """Set the bridge's location, enabling sun-based automations.
+
+        Args:
+            latitude: Degrees north, -90 to 90.
+            longitude: Degrees east, -180 to 180.
+
+        Returns:
+            A CommandResult containing the bridge references affected.
+
+        Raises:
+            DetachedResourceError: If this service is not bound to a client.
+            ValueError: If a coordinate is out of range.
+            HueResponseError: If the bridge rejects the change.
+
+        """
+        if not -LATITUDE_MAX <= latitude <= LATITUDE_MAX:
+            msg = f"latitude must be between -90 and 90, got {latitude}"
+            raise ValueError(msg)
+        if not -LONGITUDE_MAX <= longitude <= LONGITUDE_MAX:
+            msg = f"longitude must be between -180 and 180, got {longitude}"
+            raise ValueError(msg)
+        return await self.update({"latitude": latitude, "longitude": longitude})
 
 
 class GeofenceClient(HueResource):

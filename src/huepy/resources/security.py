@@ -67,8 +67,8 @@ class Tamper(BaseResource[security_models.Tamper]):
 class CameraMotion(ToggleableSensorMixin[security_models.CameraMotion]):
     """Handler for a camera's motion-detection service.
 
-    Enable or disable it with :meth:`turn_on` and :meth:`turn_off`, like a
-    motion sensor.
+    Enable or disable it with :meth:`enable` and :meth:`disable`, like a motion
+    sensor.
     """
 
     resource_type: ClassVar[ResourceType] = ResourceType.CAMERA_MOTION

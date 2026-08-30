@@ -153,6 +153,48 @@ class Signal(StrEnum):
     ALTERNATING = "alternating"
 
 
+class PowerupPreset(StrEnum):
+    """What a light does when mains power returns.
+
+    ``SAFETY`` comes on warm and bright; ``POWERFAIL`` restores the state it
+    was in before power was cut; ``LAST_ON_STATE`` returns to the last state it
+    held while on; ``CUSTOM`` applies a configuration supplied per light. Kept a
+    ``StrEnum`` for the same reason as :class:`Effect`: a firmware that adds a
+    preset stays parseable.
+    """
+
+    SAFETY = "safety"
+    POWERFAIL = "powerfail"
+    LAST_ON_STATE = "last_on_state"
+    CUSTOM = "custom"
+
+
+class PowerupOnMode(StrEnum):
+    """How a custom powerup restores a light's on/off state.
+
+    ``ON`` forces the supplied state; ``TOGGLE`` flips whatever it was; and
+    ``PREVIOUS`` returns to the state before power was cut. ``TOGGLE`` and
+    ``PREVIOUS`` carry no nested on-state.
+    """
+
+    ON = "on"
+    TOGGLE = "toggle"
+    PREVIOUS = "previous"
+
+
+class GradientMode(StrEnum):
+    """How a gradient's colour stops are laid out across a light's pixels.
+
+    ``INTERPOLATED_PALETTE`` spreads the stops evenly; the ``_MIRRORED`` variant
+    mirrors them end to end; ``RANDOM_PIXELATED`` scatters them. Kept a
+    ``StrEnum`` so a firmware that adds a mode stays parseable.
+    """
+
+    INTERPOLATED_PALETTE = "interpolated_palette"
+    INTERPOLATED_PALETTE_MIRRORED = "interpolated_palette_mirrored"
+    RANDOM_PIXELATED = "random_pixelated"
+
+
 class Effects(HueModel):
     """The effect a light is running, and the effects it could run.
 
@@ -718,7 +760,7 @@ class Light(LightCommands, NamedResource):
         self,
         colors: list[tuple[float, float]],
         *,
-        mode: str | None = None,
+        mode: GradientMode | str | None = None,
     ) -> CommandResult:
         """Paint a gradient across the light's colour points.
 
@@ -726,8 +768,9 @@ class Light(LightCommands, NamedResource):
             colors: The stops, in order, each a CIE ``(x, y)`` pair. The light
                 interpolates between them; it accepts at most
                 ``gradient.points_capable`` of them.
-            mode: How the stops are laid out over the pixels, for example
-                ``"interpolated_palette"``. Left to the light when omitted.
+            mode: How the stops are laid out over the pixels, a
+                :class:`GradientMode` (or its string). Left to the light when
+                omitted.
 
         Returns:
             A CommandResult containing the bridge references affected.
@@ -742,15 +785,15 @@ class Light(LightCommands, NamedResource):
             "points": [{"color": {"xy": {"x": x, "y": y}}} for x, y in colors],
         }
         if mode is not None:
-            gradient["mode"] = mode
+            gradient["mode"] = str(mode)
         return await self._put(self._command_path(), {"gradient": gradient})
 
     async def set_powerup(  # noqa: PLR0913 - one PUT carries the whole config
         self,
-        preset: str = "custom",
+        preset: PowerupPreset | str = PowerupPreset.CUSTOM,
         *,
         on: bool | None = None,
-        on_mode: str | None = None,
+        on_mode: PowerupOnMode | str | None = None,
         brightness: float | None = None,
         xy: tuple[float, float] | None = None,
         rgb: tuple[int, int, int] | None = None,
@@ -765,12 +808,11 @@ class Light(LightCommands, NamedResource):
         presets apply as-is.
 
         Args:
-            preset: The behaviour when no custom field is given, one of
-                ``"safety"``, ``"powerfail"``, ``"last_on_state"`` or
-                ``"custom"``.
+            preset: The behaviour when no custom field is given, a
+                :class:`PowerupPreset` (or its string).
             on: The power state to restore. ``on_mode`` selects how.
-            on_mode: How to restore power: ``"on"``, ``"toggle"`` or
-                ``"previous"``. Defaults to ``"on"`` when ``on`` is given.
+            on_mode: How to restore power, a :class:`PowerupOnMode` (or its
+                string). Defaults to ``PowerupOnMode.ON`` when ``on`` is given.
             brightness: The brightness percentage to restore, clamped to 0-100.
             xy: A colour to restore, as a CIE ``(x, y)`` pair.
             rgb: A colour to restore, as 8-bit ``(red, green, blue)`` channels.

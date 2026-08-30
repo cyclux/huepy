@@ -424,11 +424,12 @@ def build_powerup_payload(  # noqa: PLR0913 - one PUT carries the whole powerup 
         or resolved_xy is not None
         or resolved_mirek is not None
     )
-    payload: dict[str, Any] = {"preset": "custom" if has_custom else preset}
+    payload: dict[str, Any] = {"preset": "custom" if has_custom else str(preset)}
     if on is not None or on_mode is not None:
         # The nested on-state only applies to mode "on"; "toggle" and "previous"
         # carry no state, so requesting one of them without `on` still works.
-        on_config: dict[str, Any] = {"mode": on_mode or "on"}
+        mode = str(on_mode) if on_mode is not None else "on"
+        on_config: dict[str, Any] = {"mode": mode}
         if on is not None:
             on_config["on"] = {"on": on}
         payload["on"] = on_config

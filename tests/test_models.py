@@ -1412,6 +1412,37 @@ class TestLightServiceCommands:
             }
         }
 
+    async def test_set_powerup_takes_a_preset_enum_member(self, hue, http):
+        light = bound_light(hue, {"id": "l1", "type": "light"})
+        await light.set_powerup(preset=models.PowerupPreset.SAFETY)
+        assert http.last[2] == {"powerup": {"preset": "safety"}}
+
+    async def test_set_powerup_takes_the_preset_as_a_plain_string_too(self, hue, http):
+        """The `PowerupPreset | str` union must accept a bare string."""
+        light = bound_light(hue, {"id": "l1", "type": "light"})
+        await light.set_powerup(preset="safety")
+        assert http.last[2] == {"powerup": {"preset": "safety"}}
+
+    async def test_set_powerup_takes_an_on_mode_enum_member(self, hue, http):
+        light = bound_light(hue, {"id": "l1", "type": "light"})
+        await light.set_powerup(on=True, on_mode=models.PowerupOnMode.TOGGLE)
+        powerup = http.last[2]["powerup"]
+        assert powerup["preset"] == "custom"
+        assert powerup["on"]["mode"] == "toggle"
+
+    async def test_set_gradient_takes_a_mode_enum_member(self, hue, http):
+        light = bound_light(hue, {"id": "l1", "type": "light"})
+        await light.set_gradient(
+            [(0.5, 0.4)], mode=models.GradientMode.INTERPOLATED_PALETTE
+        )
+        assert http.last[2]["gradient"]["mode"] == "interpolated_palette"
+
+    async def test_set_gradient_takes_the_mode_as_a_plain_string_too(self, hue, http):
+        """The `GradientMode | str` union must accept a bare string."""
+        light = bound_light(hue, {"id": "l1", "type": "light"})
+        await light.set_gradient([(0.5, 0.4)], mode="interpolated_palette")
+        assert http.last[2]["gradient"]["mode"] == "interpolated_palette"
+
     async def test_set_speed_sends_only_the_dynamics_block(self, hue, http):
         light = bound_light(hue, {"id": "l1", "type": "light"})
         await light.set(speed=0.5)

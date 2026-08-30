@@ -285,12 +285,12 @@ class TestScene:
 
 
 class TestMotion:
-    async def test_turn_on_sets_enabled(self, hue, http):
-        await hue.api.motions.turn_on("m-1")
+    async def test_enable_sets_enabled(self, hue, http):
+        await hue.api.motions.enable("m-1")
         assert http.last[2] == {"enabled": True}
 
-    async def test_turn_off_sets_enabled_false(self, hue, http):
-        await hue.api.motions.turn_off("m-1")
+    async def test_disable_sets_enabled_false(self, hue, http):
+        await hue.api.motions.disable("m-1")
         assert http.last[2] == {"enabled": False}
 
     async def test_set_sensitivity_within_max(self, hue, http):

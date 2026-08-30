@@ -6,7 +6,7 @@ can be reset. ``Tamper`` and ``CameraMotion`` are Hue Secure sensor services.
 
 from pydantic import AwareDatetime, Field
 
-from huepy.models.common import HueModel, HueResource
+from huepy.models.common import CommandResult, HueModel, HueResource
 from huepy.models.sensor import Motion
 
 
@@ -16,12 +16,38 @@ class Homekit(HueResource):
     status: str | None = None
     status_values: list[str] = Field(default_factory=list)
 
+    async def reset(self) -> CommandResult:
+        """Reset the bridge's HomeKit pairing.
+
+        Returns:
+            A CommandResult containing the bridge references affected.
+
+        Raises:
+            DetachedResourceError: If this service is not bound to a client.
+            HueResponseError: If the bridge rejects the reset.
+
+        """
+        return await self.update({"action": "homekit_reset"})
+
 
 class Matter(HueResource):
     """The bridge's Matter service, which can be reset."""
 
     max_fabrics: int | None = None
     has_qr_code: bool | None = None
+
+    async def reset(self) -> CommandResult:
+        """Reset the bridge's Matter commissioning.
+
+        Returns:
+            A CommandResult containing the bridge references affected.
+
+        Raises:
+            DetachedResourceError: If this service is not bound to a client.
+            HueResponseError: If the bridge rejects the reset.
+
+        """
+        return await self.update({"action": "matter_reset"})
 
 
 class FabricData(HueModel):

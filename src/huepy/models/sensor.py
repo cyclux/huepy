@@ -2,7 +2,44 @@
 
 from pydantic import AwareDatetime, Field
 
-from huepy.models.common import HueModel, HueResource, Metadata
+from huepy.models.common import CommandResult, HueModel, HueResource, Metadata
+
+
+class ToggleableSensor(HueResource):
+    """A sensor service the bridge can switch on or off as a detector.
+
+    The verbs are ``enable``/``disable``, not ``turn_on``/``turn_off``: a sensor
+    is switched on as a detector, not powered like a light. ``enabled`` lives
+    here so every toggleable sensor reports and controls it the same way.
+    """
+
+    enabled: bool = True
+
+    async def enable(self) -> CommandResult:
+        """Enable this sensor so it reports again.
+
+        Returns:
+            A CommandResult containing the bridge references affected.
+
+        Raises:
+            DetachedResourceError: If this sensor is not bound to a client.
+            HueResponseError: If the bridge rejects the change.
+
+        """
+        return await self.update({"enabled": True})
+
+    async def disable(self) -> CommandResult:
+        """Disable this sensor, so it stops reporting until re-enabled.
+
+        Returns:
+            A CommandResult containing the bridge references affected.
+
+        Raises:
+            DetachedResourceError: If this sensor is not bound to a client.
+            HueResponseError: If the bridge rejects the change.
+
+        """
+        return await self.update({"enabled": False})
 
 
 class MotionReport(HueModel):
@@ -28,10 +65,9 @@ class Sensitivity(HueModel):
     sensitivity_max: int = 4
 
 
-class Motion(HueResource):
+class Motion(ToggleableSensor):
     """A motion sensor service."""
 
-    enabled: bool = True
     motion: MotionReading | None = None
     sensitivity: Sensitivity = Sensitivity()
 
@@ -47,6 +83,12 @@ class Motion(HueResource):
             return ""
         changed = self.motion.motion_report.changed
         return changed.isoformat().replace("+00:00", "Z") if changed is not None else ""
+
+    # Setting sensitivity stays on the ``hue.api.motions`` handler, not here: it
+    # writes a field only a single motion sensor has, and ``GroupedMotion`` (an
+    # aggregate) and ``CameraMotion`` subclass ``Motion`` for its shape -- a
+    # self-acting method would leak onto them and PUT sensitivity to a service
+    # that rejects it.
 
 
 class GroupedMotion(Motion):
@@ -68,10 +110,9 @@ class TemperatureReading(HueModel):
     temperature_report: TemperatureReport | None = None
 
 
-class Temperature(HueResource):
+class Temperature(ToggleableSensor):
     """A temperature sensor service."""
 
-    enabled: bool = True
     temperature: TemperatureReading | None = None
 
     @property
@@ -120,10 +161,9 @@ class ContactReport(HueModel):
     state: str | None = None
 
 
-class Contact(HueResource):
+class Contact(ToggleableSensor):
     """A contact sensor, e.g. on a door or window."""
 
-    enabled: bool = True
     contact_report: ContactReport | None = None
 
     @property
