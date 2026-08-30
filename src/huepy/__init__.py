@@ -37,6 +37,8 @@ from huepy.exceptions import (
     StateNotStartedError,
 )
 from huepy.models.common import CommandResult
+from huepy.recording import SQLiteSink
+from huepy.state import Change, Resync
 from huepy.summary import summarize
 
 # A library must not configure logging for its host application; this only
@@ -49,6 +51,7 @@ __all__ = [
     "AmbiguousResourceError",
     "AuthenticationError",
     "BridgeConnectionError",
+    "Change",
     "CommandResult",
     "DetachedResourceError",
     "DiscoveredBridge",
@@ -61,6 +64,8 @@ __all__ = [
     "InsecureConfigWarning",
     "InsecureTlsWarning",
     "ResourceNotFoundError",
+    "Resync",
+    "SQLiteSink",
     "StateNotStartedError",
     "TlsMode",
     "UnverifiedBridgeIdentityWarning",

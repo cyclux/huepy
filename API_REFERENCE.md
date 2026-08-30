@@ -1016,8 +1016,7 @@ Persisting the change stream is one constructor argument. `record=` accepts one
 sink or several, and implies `state=True`.
 
 ```python
-from huepy import Hue
-from huepy.recording import SQLiteSink
+from huepy import Hue, SQLiteSink
 
 async with Hue(record=SQLiteSink("hue-history.sqlite3")) as hue:
     print(hue.recorder is not None)

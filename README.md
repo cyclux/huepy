@@ -41,9 +41,23 @@ Requires Python 3.13+.
 ## Set up once
 
 Don't know the bridge's address yet? `await huepy.discover()` finds it on the
-local network via mDNS, falling back to Hue's cloud discovery endpoint.
+local network via mDNS, falling back to Hue's cloud discovery endpoint:
 
-The bridge issues an application key when its link button is pressed:
+```python
+import huepy
+
+for bridge in await huepy.discover():
+    print(bridge.bridge_id, bridge.ip)
+```
+
+Runnable as [`examples/discover_bridge.py`](examples/discover_bridge.py); see
+[`examples/from_discovery.py`](examples/from_discovery.py) to discover and
+connect in one call with `Hue.from_discovery()`.
+
+An **application key** is a credential the bridge issues to your application,
+not a Hue account password. What authorizes it is physical: pressing the
+bridge's **link button** proves whoever is pairing has local access to it, so
+`authenticate()` polls the bridge for up to 60 seconds waiting for that press.
 
 ```console
 python examples/authenticate.py 192.168.1.100
@@ -342,10 +356,11 @@ sections remain available through `model_extra`, and `summary` renders those too
 
 ### Last-reported state
 
-For a continuously maintained local view, pass `state=True`. Startup takes an
-aggregate snapshot while buffering the event stream, so the graph has no
-snapshot/event gap. It reports what the bridge last sent, not a guarantee of a
-light's physical state.
+By default every lookup is a fresh bridge read; pass `state=True` and huepy
+instead maintains a local graph from one snapshot plus the event stream, so
+reads become local and reflect what the bridge last reported, not a guarantee
+of a light's physical state. Startup takes an aggregate snapshot while
+buffering the event stream, so the graph has no snapshot/event gap.
 
 ```python
 async with Hue(state=True) as hue:
@@ -406,8 +421,7 @@ apply writes optimistically. Changes from this client may be correlated as
 Persisting the stream is one argument. `record=` implies `state=True`.
 
 ```python
-from huepy import Hue
-from huepy.recording import SQLiteSink
+from huepy import Hue, SQLiteSink
 
 async with Hue(record=SQLiteSink("hue-history.sqlite3")):
     await asyncio.Event().wait()
@@ -434,6 +448,13 @@ All errors derive from `HueError`:
 | `ResourceNotFoundError` | No resource carries the requested name (carries `name` and `known`) |
 | `AmbiguousResourceError` | More than one resource carries a requested name (carries `name` and `resource_ids`) |
 | `DetachedResourceError` | A command was issued on a model that was never fetched |
+
+A write can come back HTTP 207 (Multi-Status) with an `errors[]` array in the
+body even though the request itself succeeded. huepy treats two advisory
+codes, `communication_error` and `attribute_may_have_no_effect`, as warnings --
+they are logged and the call returns normally -- and raises `HueResponseError`
+for every other, blocking error. See
+[Partial failures](API_REFERENCE.md#partial-failures) for the full breakdown.
 
 The transport limits itself to three concurrent connections per bridge. It
 retries GET responses with status 429 or 503 up to three times; mutating PUT,
@@ -472,9 +493,18 @@ The runnable examples are grouped by the API level they are meant to teach:
   one file -- once against the raw or id-addressed API, once against the named
   one -- over the same input, so the two can be compared line for line.
 - High level: [`basic.py`](examples/basic.py) lists bound models through the
-  name-oriented collections; [`control_room.py`](examples/control_room.py)
-  resolves and controls a room by name in one composed command; and
-  [`color_light.py`](examples/color_light.py) uses human colour units.
+  name-oriented collections; [`control_room.py`](examples/control_room.py) and
+  [`control_zone.py`](examples/control_zone.py) resolve and control a room or
+  zone by name in one composed command; [`color_light.py`](examples/color_light.py)
+  uses human colour units; and [`scenes.py`](examples/scenes.py) recalls a scene
+  or runs a smart scene's schedule.
+- Light features: [`effects.py`](examples/effects.py) runs the bridge's own
+  candle, sunrise and gradient animations; [`attention.py`](examples/attention.py)
+  covers identify, signal, alert and relative brightness/colour nudges; and
+  [`powerup.py`](examples/powerup.py) sets what a light does when its mains
+  power returns.
+- Devices: [`pair_device.py`](examples/pair_device.py) pairs a new bulb through
+  the `zigbee_device_discovery` search -- the only way to add one in the v2 API.
 - Lower level: [`low_level.py`](examples/low_level.py) shows typed, ID-addressed
   handlers and the raw decoded transport side by side, without changing state.
 - Live state and events: [`listen_events.py`](examples/listen_events.py) prints
@@ -482,12 +512,15 @@ The runnable examples are grouped by the API level they are meant to teach:
   follows `HueState`; and [`record_history.py`](examples/record_history.py)
   persists changes and uncertainty markers.
 - Setup: [`authenticate.py`](examples/authenticate.py) performs the one-time
-  bridge registration used by every other example.
+  bridge registration used by every other example;
+  [`discover_bridge.py`](examples/discover_bridge.py) finds bridges on the
+  network; and [`from_discovery.py`](examples/from_discovery.py) discovers and
+  connects in one call.
 
 See [`API_REFERENCE.md`](API_REFERENCE.md) for the full surface and
-[`examples/`](examples/) for runnable scripts. The reconnect, state-folding,
-and write-correlation design is recorded in
-[`STATE_LAYER.md`](STATE_LAYER.md).
+[`examples/README.md`](examples/README.md) for the complete, categorised script
+index. The reconnect, state-folding, and write-correlation design is recorded
+in [`STATE_LAYER.md`](STATE_LAYER.md).
 
 ## License
 
