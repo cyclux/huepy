@@ -11,8 +11,7 @@ own handlers, the resource is named the way you named it on the bridge, and
 import asyncio
 import sys
 
-from huepy import Hue
-from huepy.state import Change, Resync
+from huepy import Change, Hue, Resync
 
 WAIT_SECONDS = 30.0
 

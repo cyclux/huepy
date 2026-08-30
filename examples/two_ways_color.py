@@ -32,7 +32,6 @@ DEFAULT_HEX = "#ff8800"
 FADE_SECONDS = 1.0
 HOLD_SECONDS = 3.0
 MILLISECONDS = 1000
-EXPECTED_ARGS = 2
 
 
 async def the_long_way(hue: Hue, light: models.Light, wanted: str) -> None:
@@ -102,14 +101,16 @@ async def the_short_way(light: models.Light, wanted: str) -> None:
 
 
 async def main() -> None:
-    if len(sys.argv) < EXPECTED_ARGS:
+    args = sys.argv[1:]
+    if not args:
         print(__doc__)
         raise SystemExit(1)
-    wanted = sys.argv[2] if len(sys.argv) > EXPECTED_ARGS else DEFAULT_HEX
+    extra = args[1:]
+    wanted = extra[0] if extra else DEFAULT_HEX
 
     async with Hue() as hue:
         try:
-            light = await hue.lights.get(sys.argv[1])
+            light = await hue.lights.get(args[0])
         except ResourceNotFoundError as exc:
             print(f"No light named {exc.name!r}.")
             print(f"Known lights: {', '.join(exc.known) or 'none'}")

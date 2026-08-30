@@ -20,14 +20,14 @@ from huepy import (
     Hue,
     HueConfig,
 )
-from huepy.config import ENV_BRIDGE_IP
 
 
 def resolve_bridge_ip() -> str | None:
-    """Take the address from argv, else the environment, else the config file."""
-    if len(sys.argv) > 1:
-        return sys.argv[1]
-    return os.getenv(ENV_BRIDGE_IP) or None
+    """Take the address from argv, else the HUE_BRIDGE_IP environment variable."""
+    args = sys.argv[1:]
+    if args:
+        return args[0]
+    return os.getenv("HUE_BRIDGE_IP") or None
 
 
 async def request_key(config: HueConfig) -> str | None:

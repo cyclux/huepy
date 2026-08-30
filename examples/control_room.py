@@ -16,17 +16,17 @@ DIM_BRIGHTNESS = 30.0
 WARM_KELVIN = 2200
 FADE_SECONDS = 2.0
 HOLD_SECONDS = 5.0
-EXPECTED_ARGS = 2
 
 
 async def main() -> None:
-    if len(sys.argv) < EXPECTED_ARGS:
+    args = sys.argv[1:]
+    if not args:
         print(__doc__)
         raise SystemExit(1)
 
     async with Hue() as hue:
         try:
-            room = await hue.rooms.get(sys.argv[1])
+            room = await hue.rooms.get(args[0])
         except ResourceNotFoundError as exc:
             # The library did the matching, and knows what it could have
             # matched against -- so the typo corrects itself.

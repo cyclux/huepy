@@ -18,18 +18,19 @@ from huepy.color import clamp_to_gamut, gamut_for, hex_to_rgb, rgb_to_xy
 DEFAULT_HEX = "#ff8800"
 FADE_SECONDS = 1.0
 HOLD_SECONDS = 5.0
-EXPECTED_ARGS = 2
 
 
 async def main() -> None:
-    if len(sys.argv) < EXPECTED_ARGS:
+    args = sys.argv[1:]
+    if not args:
         print(__doc__)
         raise SystemExit(1)
-    wanted = sys.argv[2] if len(sys.argv) > EXPECTED_ARGS else DEFAULT_HEX
+    extra = args[1:]
+    wanted = extra[0] if extra else DEFAULT_HEX
 
     async with Hue() as hue:
         try:
-            light = await hue.lights.get(sys.argv[1])
+            light = await hue.lights.get(args[0])
         except ResourceNotFoundError as exc:
             print(f"No light named {exc.name!r}.")
             print(f"Known lights: {', '.join(exc.known) or 'none'}")

@@ -11,8 +11,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from huepy import Hue
-from huepy.recording import SQLiteSink
+from huepy import Hue, SQLiteSink
 
 DATABASE = Path("hue-history.sqlite3")
 

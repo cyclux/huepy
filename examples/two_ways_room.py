@@ -24,7 +24,6 @@ WARM_KELVIN = 2200
 FADE_SECONDS = 2.0
 HOLD_SECONDS = 4.0
 MILLISECONDS = 1000
-EXPECTED_ARGS = 2
 
 
 async def the_long_way(hue: Hue, wanted: str) -> None:
@@ -93,20 +92,22 @@ async def the_short_way(hue: Hue, wanted: str) -> None:
 
 
 async def main() -> None:
-    if len(sys.argv) < EXPECTED_ARGS:
+    args = sys.argv[1:]
+    if not args:
         print(__doc__)
         raise SystemExit(1)
+    room_name = args[0]
 
     async with Hue() as hue:
         print("the long way (hue.api, ids, hand-built payloads):")
-        await the_long_way(hue, sys.argv[1].strip().casefold())
+        await the_long_way(hue, room_name.strip().casefold())
 
         # Let the restore fade land before re-reading. Without this the second
         # half captures the room mid-fade and "restores" it to a dimmed state.
         await asyncio.sleep(FADE_SECONDS)
 
         print("\nthe short way (names, human units):")
-        await the_short_way(hue, sys.argv[1])
+        await the_short_way(hue, room_name)
         print("\nSame lights, same two fades.")
 
 
