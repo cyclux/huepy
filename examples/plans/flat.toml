@@ -1,0 +1,113 @@
+# A whole flat's lighting, declared. Load it with:
+#
+#     huepy plan explain examples/plans/flat.toml
+#     huepy plan run examples/plans/flat.toml
+#
+# Sun anchors are computed here rather than on the bridge: the v2 API's
+# geolocation resource reports a sunset but never a sunrise, and smart scene
+# timeslots accept no offsets at all.
+
+version = 1
+
+[location]
+latitude = 48.137
+longitude = 11.575
+timezone = "Europe/Berlin"
+
+[defaults]
+ramp = "30m"
+on_manual_change = "yield"
+
+# The base day curve. Nothing else claims the living room, so this drives it
+# from waking up to going to bed.
+[[scenario]]
+name = "living-room-day"
+scope = ["room:Living Room"]
+priority = 0
+
+[[scenario.step]]
+at = "sunrise-15m"
+ramp = "45m"
+set = { on = true, brightness = 40, kelvin = 2200 }
+
+[[scenario.step]]
+at = "09:00"
+ramp = "1h"
+set = { brightness = 100, kelvin = 5000 }
+
+# Two hours is longer than the bridge will run from one PUT, so the executor
+# chains this into two requests with a waypoint between them.
+[[scenario.step]]
+at = "sunset+30m"
+ramp = "2h"
+set = { brightness = 60, kelvin = 2700 }
+
+[[scenario.step]]
+at = "23:30"
+ramp = "10m"
+set = { on = false }
+
+# Weekends start later. Note this is a *complete* alternative day curve, not
+# just a different morning: a higher-priority scenario owns its scope for as
+# long as it makes a claim, so a lone 10:30 step here would mask the base
+# curve's sunset and bedtime steps for the rest of Saturday.
+[[scenario]]
+name = "living-room-weekend"
+scope = ["room:Living Room"]
+priority = 5
+days = ["saturday", "sunday"]
+
+[[scenario.step]]
+at = "10:30"
+ramp = "1h"
+set = { on = true, brightness = 100, kelvin = 5000 }
+
+[[scenario.step]]
+at = "sunset+30m"
+ramp = "2h"
+set = { brightness = 60, kelvin = 2700 }
+
+[[scenario.step]]
+at = "00:30"
+ramp = "10m"
+set = { on = false }
+
+# A mode: dormant until the application fires the signal, and it outranks the
+# day curve while it holds.
+[[scenario]]
+name = "movie"
+scope = ["room:Living Room"]
+priority = 20
+activate_on = "signal:movie_started"
+release_on = "signal:movie_ended"
+ramp = "20s"
+set = { brightness = 8, kelvin = 2000 }
+
+# A sensor rule. `motion:Hall sensor` is the motion service of the *device*
+# called "Hall sensor" -- sensors carry no name of their own. When it fires at
+# night, the hallway comes up dim for ninety seconds; repeated motion extends
+# the hold rather than re-sending anything. When the hold lapses the scope goes
+# back to whatever is underneath, which is why the hallway also gets a base
+# state below: a scope nobody claims is left alone, and without that base the
+# night light would simply stay on.
+[[scenario]]
+name = "hall-night-light"
+scope = ["room:Hallway"]
+priority = 10
+
+[[scenario.rule]]
+when = "motion:Hall sensor"
+between = ["sunset", "sunrise"]
+ramp = "2s"
+hold = "90s"
+set = { on = true, brightness = 15, kelvin = 2000 }
+
+# The hallway's resting state: off, reached gently. A flat `set` with no
+# trigger is always in force at its priority, so it is what the motion rule
+# hands back to.
+[[scenario]]
+name = "hall-off"
+scope = ["room:Hallway"]
+priority = 0
+ramp = "10s"
+set = { on = false }

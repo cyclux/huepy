@@ -435,6 +435,74 @@ indexed query. When a sink cannot keep up or fails, the loss is written into the
 history as a `Resync` row rather than silently dropped. Write your own sink by
 satisfying the `HistorySink` protocol.
 
+### Declarative plans
+
+Describe the day in a TOML file and let the library run it.
+
+```toml
+version = 1
+
+[location]
+latitude = 48.137
+longitude = 11.575
+timezone = "Europe/Berlin"
+
+[[scenario]]
+name = "living-room-day"
+scope = ["room:Living Room"]
+
+[[scenario.step]]
+at = "sunrise-15m"
+ramp = "45m"
+set = { on = true, brightness = 40, kelvin = 2200 }
+
+[[scenario.step]]
+at = "sunset+30m"
+ramp = "2h"
+set = { brightness = 60, kelvin = 2700 }
+```
+
+```python
+from huepy import Hue, PlanRunner, load_plans
+
+async with Hue(state=True) as hue:
+    async with PlanRunner(hue, load_plans("./plans"), changes=hue.state) as runner:
+        await runner.run()
+```
+
+Or from the shell: `huepy plan explain ./plans` prints the day with every solar
+anchor resolved and never touches the bridge; `huepy plan run ./plans` executes
+it.
+
+Sunrise is computed in-process, because the bridge cannot help — its
+`geolocation` resource reports a sunset but no sunrise, and smart scene
+timeslots accept no offsets. Fades are handed to the bridge whole rather than
+stepped: it runs a transition of up to 6,000 seconds from one PUT, so a
+ninety-minute sunset is a single request. Longer ramps are chained, a room is
+written through its `grouped_light`, and a scope someone changes by hand is left
+alone until its next scheduled step or trigger.
+
+Rules react to the bridge's sensors and to signals from your own code:
+
+```toml
+[[scenario]]
+name = "hall-night-light"
+scope = ["room:Hallway"]
+priority = 10
+
+[[scenario.rule]]
+when = "motion:Hall sensor"
+between = ["sunset", "sunrise"]
+hold = "90s"
+set = { on = true, brightness = 15 }
+```
+
+The hall comes up dim when the sensor fires at night, stays while the sensor
+keeps reporting motion and for ninety seconds after it stops, then hands back
+to whatever lower-priority scenario is underneath, over that scenario's ramp.
+`button:` fires on a press, `contact:` when a door opens, and `signal:name`
+when your code calls `runner.fire("name")`.
+
 ### Errors
 
 All errors derive from `HueError`:

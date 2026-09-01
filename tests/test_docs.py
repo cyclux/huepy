@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 import huepy
-from huepy import Hue, color, models
+from huepy import Hue, PlanRunner, color, models
 from huepy.resources.base import NamedResourceHandler
 
 REFERENCE = Path(__file__).resolve().parent.parent / "API_REFERENCE.md"
@@ -22,7 +22,9 @@ REFERENCE = Path(__file__).resolve().parent.parent / "API_REFERENCE.md"
 # The names samples in the reference give to bound models, and the model each
 # one stands for. A sample that introduces a new receiver has to be registered
 # here, which is what keeps `test_documented_calls_exist` honest.
-SAMPLE_RECEIVERS: dict[str, type[models.HueModel]] = {
+# Not all sample receivers are models: the plan runner is a plain object,
+# and `await runner.run()` is still a promise the reference makes.
+SAMPLE_RECEIVERS: dict[str, type] = {
     "desk": models.Light,
     "detached": models.Light,
     "downstairs": models.Zone,
@@ -30,6 +32,7 @@ SAMPLE_RECEIVERS: dict[str, type[models.HueModel]] = {
     "light": models.Light,
     "resource": models.HueResource,
     "room": models.Room,
+    "runner": PlanRunner,
     "scene": models.Scene,
     "strip": models.Light,
 }

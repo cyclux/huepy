@@ -115,3 +115,40 @@ applyTo: '**'
 - Keep `recording/` depending only on `state/records.py` and the models; sinks receive enriched
   records, never the state graph, and own their own blocking work
 - One logical light command is one PUT composed by `build_light_payload()`
+
+## Declarative plans
+
+`huepy/plans/` reads TOML plan files and runs them. `PLANS.md` records the
+format and the reasoning; read it before touching the format, the scheduling
+maths, or the executor.
+
+- **TOML only.** YAML 1.1 coerces `on`/`off`/`yes`/`no` to booleans, and `on` is
+  the format's central key. TOML also rejects duplicate keys, so a copy-pasted
+  `at` cannot silently drop a step. `tomllib` is stdlib; adding a YAML
+  dependency needs a better reason than taste.
+- **Plan models set `extra="forbid"`**, inverting `HueModel`. An unknown key in
+  a bridge payload is new firmware; an unknown key in a hand-written config is a
+  typo, and ignoring it is the failure the format exists to prevent.
+- **`fields`, `schema`, `sun`, `timeline` and `arbiter` are pure** -- no clock,
+  no client, no I/O; `now` is always a parameter. That is what lets a simulated
+  day run in microseconds and what makes crash recovery work. Keep them that way.
+- **A fade is one PUT, not a tick loop.** The bridge runs a transition up to
+  6000 s (`MAX_TRANSITION_MILLISECONDS`, measured, not documented). Longer ramps
+  chain segments in `executor.py`; nothing re-asserts on a timer.
+- **Interpolation is for catching up only.** Normal ticks send the step's final
+  target with the remaining ramp and let the bridge do the fade; `target_at()`
+  answers the restart question, `current_step()` the scheduling one.
+- **Override detection cannot use the state layer's time window.** A 100-minute
+  fade would mask a human for the whole ramp, so `arbiter.Fade.explains()`
+  compares a report against the fade's own interpolated expectation instead.
+- **Every trigger is one path.** Sensors and signals alike reach
+  `Arbiter.fire(key, now)` as the selector string they were written as; do not
+  add a second dispatch. What a kind *means* lives in `runner._edge()`.
+- **Handing a scope back never snaps.** The return to a day curve is floored at
+  `catchup_ramp`; a mode keeps its author's ramp. `Claim.source` vs
+  `ScopeState.owner` is what tells a hand-over from a claim still in force.
+- `plans/` depends on the `PlanClient` Protocol in `plans/protocol.py`, never on
+  `client/base.py`.
+- Sun times are computed in-process: `geolocation` reports a sunset but never a
+  sunrise, its coordinates are write-only, and `smart_scene` timeslots accept
+  neither sunrise nor offsets. Plans are not compiled to the bridge.

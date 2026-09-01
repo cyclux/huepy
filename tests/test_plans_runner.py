@@ -1,0 +1,1179 @@
+"""Running a plan, with the clock under the test's control.
+
+The runner's whole job is deciding *when* to write and *whether* a write is
+still needed, so every test here drives a fake clock and asserts on the exact
+requests that came out. A simulated day costs microseconds.
+"""
+
+import asyncio
+import copy
+import datetime
+import zoneinfo
+from typing import Any, Literal
+
+import pytest
+
+from huepy.exceptions import HueAPIError, PlanError
+from huepy.models import parse_resource
+from huepy.plans.arbiter import BRIGHTNESS_TOLERANCE, Fade
+from huepy.plans.runner import PlanRunner
+from huepy.plans.schema import Action, Plan
+from huepy.state.records import Change, ChangeKind, Resync, ResyncReason
+
+from .conftest import envelope
+
+BERLIN = zoneinfo.ZoneInfo("Europe/Berlin")
+GROUPED_LIGHT = "gl-living"
+GROUP_PATH = f"/clip/v2/resource/grouped_light/{GROUPED_LIGHT}"
+LIGHT = "light-1"
+DEVICE = "dev-lamp"
+
+
+def bridge_resources():
+    return [
+        {
+            "id": "room-living",
+            "type": "room",
+            "metadata": {"name": "Living Room"},
+            "children": [{"rid": DEVICE, "rtype": "device"}],
+            "services": [{"rid": GROUPED_LIGHT, "rtype": "grouped_light"}],
+        },
+        {
+            "id": LIGHT,
+            "type": "light",
+            "metadata": {"name": "Corner Lamp"},
+            "owner": {"rid": DEVICE, "rtype": "device"},
+        },
+    ]
+
+
+class FakeClock:
+    """A clock the test moves by hand."""
+
+    def __init__(self, start):
+        self.now = start
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, **kwargs):
+        self.now += datetime.timedelta(**kwargs)
+
+
+async def noop_sleep(_seconds):
+    return None
+
+
+DAY_PLAN = {
+    "version": 1,
+    "location": {
+        "latitude": 48.137,
+        "longitude": 11.575,
+        "timezone": "Europe/Berlin",
+    },
+    "defaults": {"catchup_ramp": "5s"},
+    "scenario": [
+        {
+            "name": "day",
+            "scope": ["room:Living Room"],
+            "step": [
+                {
+                    "at": "09:00",
+                    "ramp": "1h",
+                    "set": {"brightness": 100, "kelvin": 5000},
+                },
+                {
+                    "at": "22:00",
+                    "ramp": "30m",
+                    "set": {"brightness": 20, "kelvin": 2200},
+                },
+            ],
+        }
+    ],
+}
+
+
+@pytest.fixture
+def clock():
+    return FakeClock(datetime.datetime(2026, 9, 1, 8, 0, tzinfo=BERLIN))
+
+
+@pytest.fixture
+def bridge(hue, http):
+    http.queue("/clip/v2/resource", envelope(*bridge_resources()))
+    return hue
+
+
+async def watched_runner(bridge, clock, changes, plan=None):
+    runner = PlanRunner(
+        bridge,
+        Plan.model_validate(plan or DAY_PLAN),
+        changes=changes,
+        clock=clock,
+        sleep=noop_sleep,
+    )
+    await runner.start()
+    return runner
+
+
+async def make_runner(bridge, clock, plan=None):
+    runner = PlanRunner(
+        bridge,
+        Plan.model_validate(plan or DAY_PLAN),
+        clock=clock,
+        sleep=noop_sleep,
+    )
+    await runner.start()
+    return runner
+
+
+class TestCatchUp:
+    async def test_a_cold_start_lands_on_the_current_target(self, bridge, http, clock):
+        # 08:00 is after last night's 22:00 step, so the room belongs there.
+        runner = await make_runner(bridge, clock)
+        assert await runner.catch_up() == 1
+        assert http.writes[0][1] == GROUP_PATH
+        assert http.writes[0][2]["dimming"]["brightness"] == 20
+
+    async def test_a_restart_mid_fade_lands_part_way(self, bridge, http, clock):
+        # Half an hour into the 09:00 one-hour ramp from 20 to 100.
+        clock.now = datetime.datetime(2026, 9, 1, 9, 30, tzinfo=BERLIN)
+        runner = await make_runner(bridge, clock)
+        await runner.catch_up()
+        assert http.writes[0][2]["dimming"]["brightness"] == pytest.approx(60.0)
+
+    async def test_catch_up_uses_the_short_catchup_ramp(self, bridge, http, clock):
+        runner = await make_runner(bridge, clock)
+        await runner.catch_up()
+        assert http.writes[0][2]["dynamics"]["duration"] == 5000
+
+
+class TestTick:
+    async def test_a_step_boundary_produces_one_write(self, bridge, http, clock):
+        runner = await make_runner(bridge, clock)
+        await runner.catch_up()
+        http.calls.clear()
+
+        clock.now = datetime.datetime(2026, 9, 1, 9, 0, tzinfo=BERLIN)
+        assert await runner.tick() == 1
+        assert http.writes[0][2]["dynamics"]["duration"] == 3_600_000
+
+    async def test_a_tick_with_nothing_due_writes_nothing(self, bridge, http, clock):
+        # The loop stirs every fifteen minutes; a stir must be free.
+        runner = await make_runner(bridge, clock)
+        await runner.catch_up()
+        http.calls.clear()
+
+        clock.advance(minutes=10)
+        assert await runner.tick() == 0
+        assert http.writes == []
+
+    async def test_a_whole_simulated_day_writes_once_per_step(
+        self, bridge, http, clock
+    ):
+        runner = await make_runner(bridge, clock)
+        await runner.catch_up()
+        http.calls.clear()
+
+        # Step through the day in ten-minute stirs.
+        for _ in range(6 * 16):
+            clock.advance(minutes=10)
+            await runner.tick()
+        # Two steps in the plan, so exactly two writes -- not 96.
+        assert len(http.writes) == 2
+
+
+class TestOverride:
+    async def test_a_foreign_change_yields_the_scope(self, bridge, http, clock):
+        runner = await make_runner(bridge, clock)
+        await runner.catch_up()
+
+        # Someone hits the wall switch: a brightness nowhere near the fade.
+        handed_over = runner.arbiter.note_foreign_change(
+            GROUP_PATH, brightness=95.0, at=clock.now
+        )
+        assert handed_over
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+
+    async def test_a_yielded_scope_is_left_alone(self, bridge, http, clock):
+        runner = await make_runner(bridge, clock)
+        await runner.catch_up()
+        runner.arbiter.note_foreign_change(GROUP_PATH, 95.0, clock.now)
+        http.calls.clear()
+
+        clock.advance(minutes=10)
+        assert await runner.tick() == 0
+        assert http.writes == []
+
+    async def test_it_rejoins_at_the_next_scheduled_step(self, bridge, http, clock):
+        # The human wins now; the plan wins later.
+        runner = await make_runner(bridge, clock)
+        await runner.catch_up()
+        runner.arbiter.note_foreign_change(GROUP_PATH, 95.0, clock.now)
+        http.calls.clear()
+
+        clock.now = datetime.datetime(2026, 9, 1, 9, 0, tzinfo=BERLIN)
+        assert await runner.tick() == 1
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+
+
+class TestFadeAttribution:
+    def make_fade(self, at):
+        return Fade(
+            scope=GROUP_PATH,
+            start=Action(brightness=100),
+            target=Action(brightness=20),
+            started_at=at,
+            ramp=6000.0,
+        )
+
+    def test_a_long_fade_still_recognises_a_human(self, clock):
+        # The state layer's own window would mask this for the whole 100
+        # minutes, so the fade is checked against its own arithmetic instead.
+        fade = self.make_fade(clock.now)
+        halfway = clock.now + datetime.timedelta(seconds=3000)
+        assert not fade.explains(brightness=95.0, at=halfway)
+
+    def test_progress_consistent_with_the_ramp_is_ours(self, clock):
+        fade = self.make_fade(clock.now)
+        halfway = clock.now + datetime.timedelta(seconds=3000)
+        assert fade.explains(brightness=60.0, at=halfway)
+
+    def test_the_tolerance_is_honoured(self, clock):
+        fade = self.make_fade(clock.now)
+        halfway = clock.now + datetime.timedelta(seconds=3000)
+        assert fade.explains(60.0 + BRIGHTNESS_TOLERANCE - 0.1, at=halfway)
+        assert not fade.explains(60.0 + BRIGHTNESS_TOLERANCE + 1.0, at=halfway)
+
+    def test_a_report_without_brightness_says_nothing_either_way(self, clock):
+        fade = self.make_fade(clock.now)
+        assert fade.explains(brightness=None, at=clock.now)
+
+
+PRIORITY_PLAN = {
+    "version": 1,
+    "scenario": [
+        {
+            "name": "base",
+            "scope": ["room:Living Room"],
+            "priority": 0,
+            "step": [{"at": "08:00", "set": {"brightness": 80}}],
+        },
+        {
+            "name": "movie",
+            "scope": ["room:Living Room"],
+            "priority": 20,
+            "activate_on": "signal:movie_started",
+            "release_on": "signal:movie_ended",
+            "set": {"brightness": 8},
+        },
+    ],
+}
+
+
+class TestPriority:
+    async def test_a_dormant_mode_does_not_claim_its_scope(self, bridge, http, clock):
+        runner = await make_runner(bridge, clock, PRIORITY_PLAN)
+        clock.advance(hours=1)
+        await runner.catch_up()
+        assert http.writes[0][2]["dimming"]["brightness"] == 80
+
+    async def test_a_signal_activates_the_higher_priority_mode(
+        self, bridge, http, clock
+    ):
+        runner = await make_runner(bridge, clock, PRIORITY_PLAN)
+        clock.advance(hours=1)
+        await runner.catch_up()
+        http.calls.clear()
+
+        runner.fire("movie_started")
+        assert await runner.tick() == 1
+        assert http.writes[0][2]["dimming"]["brightness"] == 8
+
+    async def test_releasing_hands_the_scope_back(self, bridge, http, clock):
+        runner = await make_runner(bridge, clock, PRIORITY_PLAN)
+        clock.advance(hours=1)
+        await runner.catch_up()
+        runner.fire("movie_started")
+        await runner.tick()
+        http.calls.clear()
+
+        runner.fire("movie_ended")
+        assert await runner.tick() == 1
+        assert http.writes[0][2]["dimming"]["brightness"] == 80
+
+
+class TestLifecycle:
+    async def test_reading_the_arbiter_before_starting_is_an_error(self, bridge):
+        runner = PlanRunner(bridge, Plan.model_validate(DAY_PLAN))
+        with pytest.raises(RuntimeError, match="not been started"):
+            _ = runner.arbiter
+
+    async def test_a_bad_name_fails_before_anything_is_written(self, hue, http):
+        http.queue("/clip/v2/resource", envelope())
+        runner = PlanRunner(hue, Plan.model_validate(DAY_PLAN))
+        with pytest.raises(PlanError):
+            await runner.start()
+        assert http.writes == []
+
+    async def test_close_cancels_a_chained_fade(self, bridge, clock):
+        runner = await make_runner(bridge, clock)
+        await runner.catch_up()
+        await runner.close()
+        assert runner._fades == {}
+
+
+class Registration:
+    """One cancellable subscription."""
+
+    def __init__(self):
+        self.cancelled = False
+
+    def cancel(self):
+        self.cancelled = True
+
+
+class FakeChanges:
+    """The narrowest thing that satisfies ChangeSource."""
+
+    def __init__(self):
+        self.handler = None
+        self.resync_handler = None
+        self.changes = Registration()
+        self.resyncs = Registration()
+
+    def on_change(self, handler, /):
+        self.handler = handler
+        return self.changes
+
+    def on_resync(self, handler, /):
+        self.resync_handler = handler
+        return self.resyncs
+
+    def report(self, *args, **kwargs):
+        """Deliver a light change, failing loudly if nothing subscribed."""
+        self.deliver(change(*args, **kwargs))
+
+    def deliver(self, delivered):
+        """Deliver an already-built change, failing loudly if nothing subscribed."""
+        assert self.handler is not None, "nothing subscribed to changes"
+        self.handler(delivered)
+
+
+def change(
+    resource_id,
+    brightness,
+    at,
+    *,
+    origin: Literal["self", "unattributed"] = "unattributed",
+):
+    return Change(
+        kind=ChangeKind.UPDATE,
+        received_at=at,
+        observed_at=at,
+        resource_id=resource_id,
+        resource_type="light",
+        before=None,
+        after=None,
+        delta={"dimming": {"brightness": brightness}},
+        origin=origin,
+    )
+
+
+class TestObservation:
+    async def test_a_hand_change_yields_the_scope(self, bridge, clock):
+        changes = FakeChanges()
+        runner = await watched_runner(bridge, clock, changes, DAY_PLAN)
+        await runner.catch_up()
+
+        # Reported on the member light, though the write went to the group.
+        changes.report(LIGHT, 95.0, clock.now)
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+
+    async def test_our_own_writes_are_ignored(self, bridge, clock):
+        changes = FakeChanges()
+        runner = await watched_runner(bridge, clock, changes, DAY_PLAN)
+        await runner.catch_up()
+
+        changes.report(LIGHT, 95.0, clock.now, origin="self")
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+
+    async def test_a_report_matching_our_fade_is_ignored(self, bridge, clock):
+        changes = FakeChanges()
+        runner = await watched_runner(bridge, clock, changes, DAY_PLAN)
+        await runner.catch_up()
+
+        # The catch-up fade targets brightness 20; a report there is ours even
+        # though the bridge attributes it to nobody.
+        changes.report(LIGHT, 20.0, clock.now)
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+
+    async def test_a_change_to_an_unrelated_light_is_ignored(self, bridge, clock):
+        changes = FakeChanges()
+        runner = await watched_runner(bridge, clock, changes, DAY_PLAN)
+        await runner.catch_up()
+
+        changes.report("some-other-light", 95.0, clock.now)
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+
+    async def test_reassert_never_subscribes(self, bridge, clock):
+        changes = FakeChanges()
+        plan = DAY_PLAN | {
+            "defaults": {"catchup_ramp": "5s", "on_manual_change": "reassert"}
+        }
+        _ = await watched_runner(bridge, clock, changes, plan)
+        assert changes.handler is None
+
+    async def test_close_unsubscribes_from_both_streams(self, bridge, clock):
+        changes = FakeChanges()
+        runner = await watched_runner(bridge, clock, changes, DAY_PLAN)
+        await runner.close()
+        assert changes.changes.cancelled
+        assert changes.resyncs.cancelled
+
+    async def test_reassert_still_watches_for_resyncs(self, bridge, clock):
+        # Not yielding to a human is a separate question from knowing the
+        # stream dropped: a reassert plan still has to recompute after a gap.
+        changes = FakeChanges()
+        plan = DAY_PLAN | {
+            "defaults": {"catchup_ramp": "5s", "on_manual_change": "reassert"}
+        }
+        _ = await watched_runner(bridge, clock, changes, plan)
+        assert changes.handler is None
+        assert changes.resync_handler is not None
+
+    async def test_a_resync_forces_a_fresh_catch_up(self, bridge, http, clock):
+        changes = FakeChanges()
+        runner = await watched_runner(bridge, clock, changes, DAY_PLAN)
+        await runner.catch_up()
+        http.calls.clear()
+
+        # Nothing changed on the clock, so a plain tick would write nothing.
+        assert await runner.tick() == 0
+        assert changes.resync_handler is not None
+        changes.resync_handler(
+            Resync(
+                reason=ResyncReason.RECONNECT,
+                gap_started=clock.now,
+                gap_ended=clock.now,
+            )
+        )
+        # After a gap the runner's beliefs are worthless; it re-derives them.
+        assert runner._needs_catchup
+        assert await runner.catch_up() == 1
+
+
+class FailingHttp:
+    """Wraps the fake transport and fails chosen writes."""
+
+    def __init__(self, http, fails):
+        self._http = http
+        self._fails = fails
+        self.attempts = 0
+
+    def __getattr__(self, name):
+        return getattr(self._http, name)
+
+    async def put(self, path, data):
+        self.attempts += 1
+        if self.attempts in self._fails:
+            raise HueAPIError(503, "bridge is busy")
+        return await self._http.put(path, data)
+
+
+class BrokenClient:
+    """A client whose writes fail, sharing the fake's snapshot."""
+
+    def __init__(self, hue, http, fails):
+        self._hue = hue
+        self._http = FailingHttp(http, fails)
+
+    @property
+    def http(self) -> Any:
+        return self._http
+
+    async def snapshot(self):
+        return await self._hue.snapshot()
+
+
+class TestFailureIsolation:
+    async def test_a_rejected_write_does_not_stop_the_runner(self, bridge, http, clock):
+        # A plan runs for weeks; one unreachable bulb must not end it.
+        client = BrokenClient(bridge, http, fails={1})
+        runner = PlanRunner(
+            client,
+            Plan.model_validate(DAY_PLAN),
+            clock=clock,
+            sleep=noop_sleep,
+        )
+        await runner.start()
+        assert await runner.catch_up() == 0
+
+    async def test_a_failed_scope_is_re_driven_next_tick(self, bridge, http, clock):
+        # Forgetting the fade is what makes the retry happen; believing the
+        # scope arrived would strand it until its next scheduled step.
+        client = BrokenClient(bridge, http, fails={1})
+        runner = PlanRunner(
+            client,
+            Plan.model_validate(DAY_PLAN),
+            clock=clock,
+            sleep=noop_sleep,
+        )
+        await runner.start()
+        await runner.catch_up()
+        assert runner.arbiter.state_of(GROUP_PATH).fade is None
+        assert await runner.tick() == 1
+
+    async def test_a_failing_chain_tail_clears_the_fade(self, bridge, http, clock):
+        # The tail runs in a background task nothing awaits, so without its own
+        # handler the exception would vanish and the scope would look arrived.
+        client = BrokenClient(bridge, http, fails={2})
+        # A three-hour ramp, so the fade chains and it is the tail that fails.
+        chained = {
+            "version": 1,
+            "scenario": [
+                {
+                    "name": "long",
+                    "scope": ["room:Living Room"],
+                    "step": [
+                        {"at": "07:00", "set": {"brightness": 100}},
+                        {"at": "22:00", "ramp": "3h", "set": {"brightness": 20}},
+                    ],
+                }
+            ],
+        }
+        runner = PlanRunner(
+            client,
+            Plan.model_validate(chained),
+            clock=clock,
+            sleep=noop_sleep,
+        )
+        await runner.start()
+        await runner.catch_up()
+        clock.now = datetime.datetime(2026, 9, 1, 22, 0, tzinfo=BERLIN)
+        await runner.tick()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert runner._fades == {}
+
+
+class TestSharedLights:
+    async def test_a_light_in_two_scopes_yields_both(self, hue, http, clock):
+        http.queue("/clip/v2/resource", envelope(*bridge_resources()))
+        plan = {
+            "version": 1,
+            "scenario": [
+                {
+                    "name": "room",
+                    "scope": ["room:Living Room", "light:Corner Lamp"],
+                    "step": [{"at": "08:00", "set": {"brightness": 50}}],
+                }
+            ],
+        }
+        changes = FakeChanges()
+        runner = await watched_runner(hue, clock, changes, plan)
+        await runner.catch_up()
+
+        changes.report(LIGHT, 95.0, clock.now)
+        light_path = f"/clip/v2/resource/light/{LIGHT}"
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+        assert runner.arbiter.is_yielded(light_path)
+
+
+class TestClose:
+    async def test_close_stops_a_running_loop(self, bridge, clock):
+        runner = await make_runner(bridge, clock)
+        task = asyncio.create_task(runner.run())
+        await asyncio.sleep(0)
+        await runner.close()
+        await asyncio.wait_for(task, timeout=1.0)
+        assert task.done()
+
+
+SENSOR_DEVICE = "dev-hall"
+MOTION = "motion-1"
+BUTTON = "button-1"
+CONTACT = "contact-1"
+
+
+def sensor_resources():
+    return [
+        *bridge_resources(),
+        {
+            "id": SENSOR_DEVICE,
+            "type": "device",
+            "metadata": {"name": "Hall sensor"},
+            "services": [
+                {"rid": MOTION, "rtype": "motion"},
+                {"rid": BUTTON, "rtype": "button"},
+                {"rid": CONTACT, "rtype": "contact"},
+            ],
+        },
+    ]
+
+
+def sensor_change(resource_id, resource_type, at, **section):
+    """Build a change on a sensor service, folded the way the state layer folds it."""
+    delta = {"id": resource_id, "type": resource_type, **section}
+    return Change(
+        kind=ChangeKind.UPDATE,
+        received_at=at,
+        resource_id=resource_id,
+        resource_type=resource_type,
+        before=None,
+        after=parse_resource(delta),
+        delta=delta,
+    )
+
+
+def motion(at, *, detected=True):
+    return sensor_change(
+        MOTION,
+        "motion",
+        at,
+        motion={"motion": detected, "motion_report": {"motion": detected}},
+    )
+
+
+def button(at, event):
+    return sensor_change(
+        BUTTON, "button", at, button={"button_report": {"event": event}}
+    )
+
+
+def contact(at, state):
+    return sensor_change(CONTACT, "contact", at, contact_report={"state": state})
+
+
+RULE_PLAN: dict[str, Any] = {
+    "version": 1,
+    "defaults": {"catchup_ramp": "5s"},
+    "scenario": [
+        {
+            "name": "base",
+            "scope": ["room:Living Room"],
+            "priority": 0,
+            "step": [
+                {"at": "08:00", "set": {"brightness": 80}},
+                {"at": "12:00", "ramp": "1h", "set": {"brightness": 100}},
+            ],
+        },
+        {
+            "name": "hall-motion",
+            "scope": ["room:Living Room"],
+            "priority": 10,
+            "rule": [
+                {
+                    "when": "motion:Hall sensor",
+                    "ramp": "2s",
+                    "hold": "90s",
+                    "set": {"brightness": 15},
+                }
+            ],
+        },
+    ],
+}
+
+
+def rule_plan(**rule: Any) -> dict[str, Any]:
+    """Copy the rule plan with the motion rule's keys overridden."""
+    plan = copy.deepcopy(RULE_PLAN)
+    plan["scenario"][1]["rule"][0].update(rule)
+    return plan
+
+
+@pytest.fixture
+def sensor_bridge(hue, http):
+    http.queue("/clip/v2/resource", envelope(*sensor_resources()))
+    return hue
+
+
+async def rule_runner(sensor_bridge, clock, changes, plan=None):
+    clock.now = datetime.datetime(2026, 9, 1, 9, 0, tzinfo=BERLIN)
+    runner = await watched_runner(sensor_bridge, clock, changes, plan or RULE_PLAN)
+    await runner.catch_up()
+    return runner
+
+
+class TestRules:
+    async def test_motion_drives_the_rule_target_with_its_own_ramp(
+        self, sensor_bridge, http, clock
+    ):
+        changes = FakeChanges()
+        runner = await rule_runner(sensor_bridge, clock, changes)
+        http.calls.clear()
+
+        changes.deliver(motion(clock.now))
+        assert await runner.tick() == 1
+        assert http.writes[0][1] == GROUP_PATH
+        assert http.writes[0][2]["dimming"]["brightness"] == 15
+        assert http.writes[0][2]["dynamics"]["duration"] == 2000
+
+    async def test_motion_ending_does_not_fire(self, sensor_bridge, http, clock):
+        changes = FakeChanges()
+        runner = await rule_runner(sensor_bridge, clock, changes)
+        http.calls.clear()
+
+        changes.deliver(motion(clock.now, detected=False))
+        assert await runner.tick() == 0
+
+    async def test_a_closed_window_ignores_the_trigger(
+        self, sensor_bridge, http, clock
+    ):
+        changes = FakeChanges()
+        plan = rule_plan(between=["22:00", "06:00"])
+        runner = await rule_runner(sensor_bridge, clock, changes, plan)
+        http.calls.clear()
+
+        # 09:00 is outside 22:00-06:00.
+        changes.deliver(motion(clock.now))
+        assert await runner.tick() == 0
+
+    async def test_an_open_window_wraps_midnight(self, sensor_bridge, http, clock):
+        changes = FakeChanges()
+        plan = rule_plan(between=["22:00", "06:00"])
+        runner = await rule_runner(sensor_bridge, clock, changes, plan)
+        clock.now = datetime.datetime(2026, 9, 1, 23, 30, tzinfo=BERLIN)
+        await runner.tick()
+        http.calls.clear()
+
+        changes.deliver(motion(clock.now))
+        assert await runner.tick() == 1
+        assert http.writes[0][2]["dimming"]["brightness"] == 15
+
+    async def test_the_hold_expires_back_to_the_curve(self, sensor_bridge, http, clock):
+        changes = FakeChanges()
+        runner = await rule_runner(sensor_bridge, clock, changes)
+        changes.deliver(motion(clock.now))
+        await runner.tick()
+        changes.deliver(motion(clock.now, detected=False))
+        http.calls.clear()
+
+        clock.advance(seconds=91)
+        assert await runner.tick() == 1
+        assert http.writes[0][2]["dimming"]["brightness"] == 80
+
+    async def test_handing_back_never_snaps(self, sensor_bridge, http, clock):
+        # The base step's own ramp finished hours ago, so "the remaining ramp"
+        # is zero. Dropping from 15 to 80 in one frame when someone leaves the
+        # room is exactly the kind of thing that makes people rip out an
+        # automation, so the way back is floored at the catch-up ramp.
+        changes = FakeChanges()
+        runner = await rule_runner(sensor_bridge, clock, changes)
+        changes.deliver(motion(clock.now))
+        await runner.tick()
+        changes.deliver(motion(clock.now, detected=False))
+        http.calls.clear()
+
+        clock.advance(seconds=91)
+        await runner.tick()
+        assert http.writes[0][2]["dynamics"]["duration"] == 5000
+
+    async def test_handing_back_mid_fade_keeps_the_curve_ramp(
+        self, sensor_bridge, http, clock
+    ):
+        changes = FakeChanges()
+        runner = await rule_runner(sensor_bridge, clock, changes)
+        clock.now = datetime.datetime(2026, 9, 1, 12, 0, tzinfo=BERLIN)
+        await runner.tick()
+        changes.deliver(motion(clock.now))
+        await runner.tick()
+        changes.deliver(motion(clock.now, detected=False))
+        http.calls.clear()
+
+        # Twenty minutes into the hour-long 12:00 ramp: forty minutes remain,
+        # which is longer than the floor, so the fade rejoins over those.
+        clock.advance(minutes=20)
+        await runner.tick()
+        assert http.writes[0][2]["dimming"]["brightness"] == 100
+        assert http.writes[0][2]["dynamics"]["duration"] == 40 * 60 * 1000
+
+    async def test_repeated_motion_extends_the_hold_without_a_write(
+        self, sensor_bridge, http, clock
+    ):
+        changes = FakeChanges()
+        runner = await rule_runner(sensor_bridge, clock, changes)
+        changes.deliver(motion(clock.now))
+        await runner.tick()
+        changes.deliver(motion(clock.now, detected=False))
+        http.calls.clear()
+
+        # Someone comes back a minute later: the countdown is abandoned and
+        # the light simply stays, at no cost in requests.
+        clock.advance(seconds=60)
+        changes.deliver(motion(clock.now))
+        assert await runner.tick() == 0
+        clock.advance(seconds=60)
+        assert await runner.tick() == 0
+        changes.deliver(motion(clock.now, detected=False))
+        clock.advance(seconds=89)
+        assert await runner.tick() == 0
+        clock.advance(seconds=2)
+        assert await runner.tick() == 1
+
+    async def test_a_rule_without_hold_lasts_until_the_next_step(
+        self, sensor_bridge, http, clock
+    ):
+        changes = FakeChanges()
+        runner = await rule_runner(sensor_bridge, clock, changes, rule_plan(hold=None))
+        changes.deliver(motion(clock.now))
+        await runner.tick()
+        http.calls.clear()
+
+        clock.advance(hours=2)
+        assert await runner.tick() == 0
+        clock.now = datetime.datetime(2026, 9, 1, 12, 0, tzinfo=BERLIN)
+        assert await runner.tick() == 1
+        assert http.writes[0][2]["dimming"]["brightness"] == 100
+
+    async def test_the_loop_wakes_for_the_hold_expiry(self, sensor_bridge, http, clock):
+        changes = FakeChanges()
+        runner = await rule_runner(sensor_bridge, clock, changes)
+        changes.deliver(motion(clock.now))
+        await runner.tick()
+        changes.deliver(motion(clock.now, detected=False))
+        assert runner._seconds_until_next(clock.now) == pytest.approx(90.0)
+
+    async def test_a_button_fires_on_the_initial_press_only(
+        self, sensor_bridge, http, clock
+    ):
+        changes = FakeChanges()
+        plan = rule_plan(when="button:Hall sensor")
+        runner = await rule_runner(sensor_bridge, clock, changes, plan)
+        http.calls.clear()
+
+        changes.deliver(button(clock.now, "short_release"))
+        assert await runner.tick() == 0
+        changes.deliver(button(clock.now, "initial_press"))
+        assert await runner.tick() == 1
+
+    async def test_a_contact_fires_when_it_opens(self, sensor_bridge, http, clock):
+        changes = FakeChanges()
+        plan = rule_plan(when="contact:Hall sensor")
+        runner = await rule_runner(sensor_bridge, clock, changes, plan)
+        http.calls.clear()
+
+        changes.deliver(contact(clock.now, "contact"))
+        assert await runner.tick() == 0
+        changes.deliver(contact(clock.now, "no_contact"))
+        assert await runner.tick() == 1
+
+    async def test_a_signal_can_fire_a_rule(self, sensor_bridge, http, clock):
+        changes = FakeChanges()
+        plan = rule_plan(when="signal:doorbell")
+        runner = await rule_runner(sensor_bridge, clock, changes, plan)
+        http.calls.clear()
+
+        runner.fire("doorbell")
+        assert await runner.tick() == 1
+        assert http.writes[0][2]["dimming"]["brightness"] == 15
+
+    async def test_a_sensor_can_activate_a_mode(self, sensor_bridge, http, clock):
+        changes = FakeChanges()
+        plan = {
+            **RULE_PLAN,
+            "scenario": [
+                RULE_PLAN["scenario"][0],
+                {
+                    "name": "welcome",
+                    "scope": ["room:Living Room"],
+                    "priority": 10,
+                    "activate_on": "contact:Hall sensor",
+                    "release_on": "signal:settled",
+                    "set": {"brightness": 100},
+                },
+            ],
+        }
+        runner = await rule_runner(sensor_bridge, clock, changes, plan)
+        http.calls.clear()
+
+        changes.deliver(contact(clock.now, "no_contact"))
+        assert await runner.tick() == 1
+        assert http.writes[0][2]["dimming"]["brightness"] == 100
+
+    async def test_a_trigger_takes_back_a_yielded_scope(
+        self, sensor_bridge, http, clock
+    ):
+        # "Yield until the next trigger": the human wins until the plan has a
+        # new reason to act, and a sensor firing is one.
+        changes = FakeChanges()
+        runner = await rule_runner(sensor_bridge, clock, changes)
+        changes.report(LIGHT, 95.0, clock.now)
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+        http.calls.clear()
+
+        changes.deliver(motion(clock.now))
+        assert await runner.tick() == 1
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+
+    async def test_a_hand_change_during_a_hold_drops_the_hold(
+        self, sensor_bridge, http, clock
+    ):
+        # Otherwise the plan would rejoin at the next step by re-asserting a
+        # stale motion hold rather than the schedule.
+        changes = FakeChanges()
+        runner = await rule_runner(sensor_bridge, clock, changes, rule_plan(hold="6h"))
+        changes.deliver(motion(clock.now))
+        await runner.tick()
+
+        changes.report(LIGHT, 95.0, clock.now)
+        assert runner.arbiter.state_of(GROUP_PATH).hold is None
+        http.calls.clear()
+
+        clock.now = datetime.datetime(2026, 9, 1, 12, 0, tzinfo=BERLIN)
+        await runner.tick()
+        assert http.writes[0][2]["dimming"]["brightness"] == 100
+
+    async def test_a_reassert_plan_with_a_rule_still_listens(
+        self, sensor_bridge, clock
+    ):
+        changes = FakeChanges()
+        plan = {**RULE_PLAN, "defaults": {"on_manual_change": "reassert"}}
+        _ = await rule_runner(sensor_bridge, clock, changes, plan)
+        assert changes.handler is not None
+
+    async def test_a_reassert_plan_still_ignores_hand_changes(
+        self, sensor_bridge, clock
+    ):
+        changes = FakeChanges()
+        plan = {**RULE_PLAN, "defaults": {"on_manual_change": "reassert"}}
+        runner = await rule_runner(sensor_bridge, clock, changes, plan)
+        changes.report(LIGHT, 95.0, clock.now)
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+
+    async def test_a_dormant_modes_rules_stay_asleep(self, sensor_bridge, http, clock):
+        # The button only means "pause" while the movie is on. Off-mode, it is
+        # just a button, and the day curve keeps the room.
+        changes = FakeChanges()
+        plan = copy.deepcopy(RULE_PLAN)
+        plan["scenario"][1]["activate_on"] = "signal:movie_started"
+        runner = await rule_runner(sensor_bridge, clock, changes, plan)
+        http.calls.clear()
+
+        changes.deliver(motion(clock.now))
+        assert await runner.tick() == 0
+        runner.fire("movie_started")
+        changes.deliver(motion(clock.now))
+        assert await runner.tick() == 1
+        assert http.writes[0][2]["dimming"]["brightness"] == 15
+
+    async def test_a_disabled_scenario_never_fires(self, sensor_bridge, http, clock):
+        changes = FakeChanges()
+        plan = copy.deepcopy(RULE_PLAN)
+        plan["scenario"][1]["enabled"] = False
+        runner = await rule_runner(sensor_bridge, clock, changes, plan)
+        http.calls.clear()
+
+        changes.deliver(motion(clock.now))
+        assert await runner.tick() == 0
+
+
+class TestModeHandback:
+    async def test_releasing_a_mode_rejoins_without_a_snap(self, bridge, http, clock):
+        runner = await make_runner(bridge, clock, PRIORITY_PLAN)
+        clock.advance(hours=1)
+        await runner.catch_up()
+        runner.fire("movie_started")
+        await runner.tick()
+        http.calls.clear()
+
+        runner.fire("movie_ended")
+        await runner.tick()
+        assert http.writes[0][2]["dynamics"]["duration"] == 5000
+
+    async def test_activating_a_mode_uses_its_own_ramp(self, bridge, http, clock):
+        # The floor is for rejoining a curve. A mode's ramp is what its author
+        # wrote, including zero.
+        runner = await make_runner(bridge, clock, PRIORITY_PLAN)
+        clock.advance(hours=1)
+        await runner.catch_up()
+        http.calls.clear()
+
+        runner.fire("movie_started")
+        await runner.tick()
+        assert http.writes[0][2]["dynamics"]["duration"] == 0
+
+
+class TriggeringClient:
+    """A client whose first write delivers a sensor change while in flight.
+
+    Stands in for the real race: the state layer's dispatch task delivering a
+    motion event while ``tick()`` is awaiting a rate-paced PUT.
+    """
+
+    def __init__(self, hue, http, changes, delivered):
+        self._hue = hue
+        self._http = http
+        self._changes = changes
+        self._delivered = delivered
+        self.sent = 0
+
+    @property
+    def http(self) -> Any:
+        return self
+
+    def __getattr__(self, name):
+        return getattr(self._http, name)
+
+    async def put(self, path, data):
+        self.sent += 1
+        if self.sent == 1:
+            self._changes.deliver(self._delivered)
+        return await self._http.put(path, data)
+
+    async def snapshot(self):
+        return await self._hue.snapshot()
+
+
+class TestRuleRaces:
+    async def test_a_trigger_during_a_write_is_not_lost(self, hue, http, clock):
+        # The loop must not clear its wake-up on the way back in: a motion
+        # event that lands while catch-up's first PUT is in flight sets it
+        # mid-tick, and discarding it would leave the hold to expire during
+        # the next long sleep without ever being driven.
+        http.queue("/clip/v2/resource", envelope(*sensor_resources()))
+        changes = FakeChanges()
+        clock.now = datetime.datetime(2026, 9, 1, 9, 0, tzinfo=BERLIN)
+        client = TriggeringClient(hue, http, changes, motion(clock.now))
+        runner = PlanRunner(
+            client,
+            Plan.model_validate(RULE_PLAN),
+            changes=changes,
+            clock=clock,
+            sleep=noop_sleep,
+        )
+        await runner.start()
+
+        task = asyncio.create_task(runner.run())
+        for _ in range(10):
+            await asyncio.sleep(0)
+        await runner.close()
+        await task
+        assert [w[2]["dimming"]["brightness"] for w in http.writes] == [80.0, 15.0]
+
+    async def test_motion_holds_while_occupied_then_times_out(
+        self, sensor_bridge, http, clock
+    ):
+        # The Hue sensor reports `true` once and then says nothing while
+        # movement continues, so a hold timed from the start would drop the
+        # light on someone standing in the hall for three minutes.
+        changes = FakeChanges()
+        runner = await rule_runner(sensor_bridge, clock, changes)
+        changes.deliver(motion(clock.now))
+        await runner.tick()
+        http.calls.clear()
+
+        clock.advance(minutes=3)
+        assert await runner.tick() == 0
+        assert runner._seconds_until_next(clock.now) > 90.0
+
+        changes.deliver(motion(clock.now, detected=False))
+        assert runner._seconds_until_next(clock.now) == pytest.approx(90.0)
+        clock.advance(seconds=89)
+        assert await runner.tick() == 0
+        clock.advance(seconds=2)
+        assert await runner.tick() == 1
+        assert http.writes[0][2]["dimming"]["brightness"] == 80
+
+    async def test_motion_ending_without_a_hold_changes_nothing(
+        self, sensor_bridge, http, clock
+    ):
+        changes = FakeChanges()
+        runner = await rule_runner(sensor_bridge, clock, changes, rule_plan(hold=None))
+        changes.deliver(motion(clock.now))
+        await runner.tick()
+        http.calls.clear()
+
+        changes.deliver(motion(clock.now, detected=False))
+        clock.advance(hours=1)
+        assert await runner.tick() == 0
+
+    async def test_motion_ending_with_nothing_held_is_ignored(
+        self, sensor_bridge, http, clock
+    ):
+        changes = FakeChanges()
+        runner = await rule_runner(sensor_bridge, clock, changes)
+        http.calls.clear()
+
+        changes.deliver(motion(clock.now, detected=False))
+        assert await runner.tick() == 0
+        assert runner.arbiter.state_of(GROUP_PATH).hold is None
+
+    async def test_a_delta_that_only_touches_validity_does_not_fire(
+        self, sensor_bridge, http, clock
+    ):
+        # Only the delta is read. The folded state may well still say
+        # "motion" from an hour ago; a report about the reading's validity
+        # is not a person walking in.
+        changes = FakeChanges()
+        runner = await rule_runner(sensor_bridge, clock, changes)
+        http.calls.clear()
+
+        changes.deliver(
+            sensor_change(MOTION, "motion", clock.now, motion={"motion_valid": False})
+        )
+        assert await runner.tick() == 0
+
+    async def test_releasing_a_mode_drops_its_holds(self, sensor_bridge, http, clock):
+        # A hold-less rule on a scope nothing schedules has no expiry. Left
+        # in place across a release, the mode would honour it the moment it
+        # woke again -- days later, with no motion at all.
+        changes = FakeChanges()
+        plan = copy.deepcopy(RULE_PLAN)
+        plan["scenario"][0] = {
+            "name": "base",
+            "scope": ["room:Living Room"],
+            "set": {"brightness": 80},
+        }
+        plan["scenario"][1]["activate_on"] = "signal:movie_started"
+        plan["scenario"][1]["release_on"] = "signal:movie_ended"
+        plan["scenario"][1]["rule"][0].pop("hold")
+        runner = await rule_runner(sensor_bridge, clock, changes, plan)
+        runner.fire("movie_started")
+        changes.deliver(motion(clock.now))
+        await runner.tick()
+        runner.fire("movie_ended")
+        await runner.tick()
+        http.calls.clear()
+
+        clock.advance(days=3)
+        runner.fire("movie_started")
+        assert await runner.tick() == 0
+
+    async def test_a_dormant_modes_steps_are_not_a_resume_point(
+        self, sensor_bridge, clock
+    ):
+        changes = FakeChanges()
+        plan = copy.deepcopy(RULE_PLAN)
+        plan["scenario"][0]["activate_on"] = "signal:never"
+        runner = await rule_runner(sensor_bridge, clock, changes)
+        del runner
+        runner = await watched_runner(sensor_bridge, clock, changes, plan)
+        assert runner.arbiter.next_step_for(GROUP_PATH, clock.now) is None
+
+    async def test_a_failed_hand_back_keeps_the_floor_on_retry(self, hue, http, clock):
+        # Ownership moves only once the write is on the wire. Recording it
+        # first would make the retry look like the same scenario re-asserting
+        # itself, and the no-snap floor would be skipped.
+        http.queue("/clip/v2/resource", envelope(*sensor_resources()))
+        changes = FakeChanges()
+        clock.now = datetime.datetime(2026, 9, 1, 9, 0, tzinfo=BERLIN)
+        client = BrokenClient(hue, http, fails={3})
+        runner = PlanRunner(
+            client,
+            Plan.model_validate(RULE_PLAN),
+            changes=changes,
+            clock=clock,
+            sleep=noop_sleep,
+        )
+        await runner.start()
+        await runner.catch_up()
+        changes.deliver(motion(clock.now))
+        await runner.tick()
+        changes.deliver(motion(clock.now, detected=False))
+        clock.advance(seconds=91)
+        assert await runner.tick() == 0  # the hand-back write is refused
+        http.calls.clear()
+
+        assert await runner.tick() == 1
+        assert http.writes[0][2]["dynamics"]["duration"] == 5000

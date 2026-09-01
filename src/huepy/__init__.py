@@ -33,10 +33,12 @@ from huepy.exceptions import (
     HueAPIError,
     HueError,
     HueResponseError,
+    PlanError,
     ResourceNotFoundError,
     StateNotStartedError,
 )
 from huepy.models.common import CommandResult
+from huepy.plans import PlanRunner, load_plans
 from huepy.recording import SQLiteSink
 from huepy.state import Change, Resync
 from huepy.summary import summarize
@@ -63,6 +65,8 @@ __all__ = [
     "HueResponseError",
     "InsecureConfigWarning",
     "InsecureTlsWarning",
+    "PlanError",
+    "PlanRunner",
     "ResourceNotFoundError",
     "Resync",
     "SQLiteSink",
@@ -72,6 +76,7 @@ __all__ = [
     "color",
     "discover",
     "discover_bridge_id",
+    "load_plans",
     "models",
     "summarize",
 ]

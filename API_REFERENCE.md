@@ -1110,6 +1110,168 @@ DELETE FROM change WHERE at < strftime('%Y-%m-%dT%H:%M:%f', 'now', '-90 days');
 VACUUM;
 ```
 
+## Declarative plans
+
+A plan is a TOML file describing what a scope — a light, a room, a zone, a whole
+flat — should look like over the day, and how it reacts to what happens.
+`load_plans()` reads one file or a directory of them, and `PlanRunner` executes
+the result.
+
+```python
+from huepy import Hue, PlanRunner, load_plans
+
+plan = load_plans("./plans")
+async with Hue(state=True) as hue:
+    async with PlanRunner(hue, plan, changes=hue.state) as runner:
+        await runner.run()
+```
+
+`changes=` is what lets the plan notice a light someone adjusted by hand. Pass
+`hue.state` from a client started with `state=True`; without it the plan never
+yields.
+
+TOML, and only TOML. The format's central key is `on`, and YAML 1.1 — what
+PyYAML implements — reads the bare word `on` as a boolean, so `set = { on =
+false }` would silently parse as `{True: False}`. TOML also rejects a duplicate
+key outright where YAML keeps the last one, so a copy-pasted `at` cannot quietly
+drop a step. `tomllib` is in the standard library, so this costs no dependency.
+
+```toml
+version = 1
+
+[location]
+latitude = 48.137
+longitude = 11.575
+timezone = "Europe/Berlin"
+
+[[scenario]]
+name = "living-room-day"
+scope = ["room:Living Room"]
+
+[[scenario.step]]
+at = "sunrise-15m"
+ramp = "45m"
+set = { on = true, brightness = 40, kelvin = 2200 }
+
+[[scenario.step]]
+at = "sunset+30m"
+ramp = "2h"
+set = { brightness = 60, kelvin = 2700 }
+```
+
+| Key | Where | Means |
+| --- | --- | --- |
+| `at` | `[[scenario.step]]` | `"07:30"`, `"sunrise"`, `"sunset+30m"`, `"sunrise-1h15m"`, `"dawn"`, `"dusk"`. |
+| `ramp` | step, rule, scenario | How long the fade takes: `"90s"`, `"45m"`, `"2h"`, `"1h15m"`. |
+| `set` | step, rule, scenario | Target state. The keys are exactly `build_light_payload()`'s: `on`, `brightness`, `xy`, `mirek`, `rgb`, `hex_color`, `kelvin`. |
+| `scope` | `[[scenario]]` | What it drives: `light:Name`, `room:Name`, `zone:Name`. |
+| `priority` | `[[scenario]]` | Higher wins when several scenarios cover one scope. |
+| `days` | `[[scenario]]` | Restrict a day curve to certain weekdays. |
+| `activate_on` / `release_on` | `[[scenario]]` | Make it a mode, dormant until a trigger fires. |
+| `when` / `between` / `hold` | `[[scenario.rule]]` | A trigger, an optional window, and how long to stay. |
+
+Triggers and scopes share one `kind:name` grammar. Scopes take `light:`, `room:`
+and `zone:`; triggers take `motion:`, `button:`, `contact:` and `signal:`. A
+sensor carries no name of its own, so `motion:Hall sensor` means the motion
+service belonging to the *device* called `Hall sensor`.
+
+| Trigger | Fires when |
+| --- | --- |
+| `motion:Name` | The device's motion sensor reports motion starting. A `hold` on a motion rule starts counting when the sensor reports the room still again. |
+| `button:Name` | Any button on the device goes down (`initial_press`). |
+| `contact:Name` | The device's contact sensor opens (`no_contact`). |
+| `signal:name` | The application calls `runner.fire("name")`. |
+
+Every trigger goes through one path, so any of them can sit in `activate_on`,
+`release_on` or a rule's `when`: a mode can be woken by a door contact and a
+rule can be fired by a signal. There is no `light_level:` trigger — a level
+only means something against a threshold, and the format has no key for one.
+
+### A fade is one request, not a tick loop
+
+The bridge runs a transition of up to 6,000 seconds from a single PUT, so a
+ninety-minute sunset fade is one request followed by silence. A ramp longer than
+that is chained into segments with interpolated waypoints — a three-hour fade is
+two requests — rather than stepped. A room is written through its
+`grouped_light`, one broadcast instead of one write per bulb, and `on` is never
+re-sent to a scope already on, because each payload attribute is a separate
+ZigBee message.
+
+### Restarts
+
+The runner keeps no durable state. On start, and after every reconnect, it asks
+where each scope *should* be at this instant — interpolating a part-finished
+fade — and moves there over `defaults.catchup_ramp`. A process killed half an
+hour into a sunset comes back and lands in the right place.
+
+### Manual changes
+
+By default a scope someone changes by hand is yielded: the runner stops
+asserting it and rejoins at that scope's next scheduled step. Because this layer
+issues fades lasting up to a hundred minutes, a running fade is checked against
+its own arithmetic rather than a time window — movement consistent with the ramp
+is ours, a jump is a human.
+
+### Rules
+
+```toml
+[[scenario]]
+name = "hall-night-light"
+scope = ["room:Hallway"]
+priority = 10
+
+[[scenario.rule]]
+when = "motion:Hall sensor"
+between = ["sunset", "sunrise"]
+ramp = "2s"
+hold = "90s"
+set = { on = true, brightness = 15, kelvin = 2000 }
+```
+
+A rule that fires *holds* each of its scenario's scopes with its `set`, at the
+scenario's priority, for `hold`. Firing again while held extends the hold
+without another request. For `motion:` the clock starts when the sensor
+reports the room still, so the light stays as long as someone is there and
+`hold` is how long it lingers after they leave. Without `hold` the scope is
+held until its next scheduled step — not forever, so a button press cannot
+switch a day curve off for good; when nothing scheduled covers the scope, the
+hold lasts until a hand change, a higher-priority claim, or the owning mode
+releasing. `between` is checked when the trigger fires, and wraps midnight.
+
+When the hold lapses the scope goes back to whatever is underneath. A scope
+nobody claims is left alone, so a motion light that should switch itself off
+needs a resting state to hand back to — a flat `set = { on = false }`
+scenario at a lower priority, as in `examples/plans/flat.toml`.
+
+Handing a scope back to a day curve never snaps: the return fade is the
+curve's remaining ramp or `defaults.catchup_ramp`, whichever is longer. A mode
+or a flat state keeps the ramp its author wrote.
+
+A scope someone changed by hand rejoins at the next trigger as well as at the
+next step, and a hand change during a hold drops the hold, so the plan rejoins
+with its schedule rather than a stale rule.
+
+### Signals
+
+`runner.fire("movie_started")` fires the trigger `signal:movie_started`:
+every mode whose `activate_on` names it wakes, every `release_on` gives its
+scope back, and every rule whose `when` names it fires. It is not a coroutine,
+so a callback can call it directly.
+
+### Command line
+
+| Command | Touches the bridge | Does |
+| --- | --- | --- |
+| `huepy plan check PATH` | no | Parses the files and reports what is malformed. |
+| `huepy plan explain PATH [--at ISO]` | no | Prints the day, every solar anchor resolved, with the request count per step. |
+| `huepy plan validate PATH` | reads | Also resolves every name, reporting all unknown ones at once. |
+| `huepy plan run PATH` | writes | Executes the plan until interrupted. |
+| `huepy plan schema` | no | Emits the format as JSON Schema, for editor completion. |
+
+A name that does not resolve raises `PlanError`, which carries the file it came
+from. Nothing is written before resolution succeeds, so a misspelled room cannot
+half-run a plan.
+
 ## `huepy.color`
 
 Pure conversion helpers: no I/O, no async, no dependency on the rest of huepy,

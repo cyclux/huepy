@@ -4,6 +4,8 @@ Every error raised by this package derives from :class:`HueError`, so callers
 can catch that one type and still narrow further when they care.
 """
 
+from pathlib import Path
+
 ADVISORY_ERROR_CODES = frozenset(
     {"communication_error", "attribute_may_have_no_effect"}
 )
@@ -129,6 +131,31 @@ class ResourceNotFoundError(HueError):
         self.known: list[str] = known
         available = ", ".join(known) if known else "none"
         super().__init__(f"No resource named {name!r}. Known names: {available}")
+
+
+class PlanError(HueError):
+    """Raised when a declarative plan cannot be loaded or resolved.
+
+    Covers both halves of getting a plan ready to run: a file that is not
+    valid TOML or not a valid plan, and a valid plan naming a room or sensor
+    the bridge does not have. Both are the author's typo rather than a bridge
+    fault, so both carry the file they came from.
+
+    Attributes:
+        path: The plan file the problem was found in, when it came from one.
+
+    """
+
+    def __init__(self, message: str, path: Path | None = None) -> None:
+        """Initialise the error.
+
+        Args:
+            message: What is wrong, and where in the file.
+            path: The plan file, when the problem came from one.
+
+        """
+        self.path: Path | None = path
+        super().__init__(f"{path}: {message}" if path is not None else message)
 
 
 class AmbiguousResourceError(HueError):

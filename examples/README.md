@@ -59,3 +59,10 @@ the convenience layer does for you.
 | `two_ways_color.py <light> [hex]` | Setting a colour by hand vs. one `light.set(hex_color=...)`. |
 | `two_ways_room.py <room>` | Dimming a room by hand vs. one `room.set(kelvin=...)`. |
 | `two_ways_events.py` | Reading an event by hand vs. `EventResource.summary`. |
+
+## Declarative plans
+
+| Script | What it shows |
+| --- | --- |
+| `run_plan.py` | Loading a TOML plan and running it: day curves, sun anchors, modes. |
+| `plans/flat.toml` | The plan format itself, commented. |
