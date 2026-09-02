@@ -306,3 +306,4 @@ integration probe establishing whether a third-party app key can POST one.
 | Body-level write rejections raise rather than stranding a scope | `TestWriteErrors` |
 | One failing scope neither stops the runner nor is forgotten | `TestFailureIsolation` |
 | `stop()` ends `run()` without cancelling it; SIGTERM reaches it; what a write logs | `TestClose`, `TestLogging`, `tests/test_plans_cli.py::TestStopSignals` |
+| What `validate` prints per binding; a disabled sensor is a warning, not an error | `tests/test_plans_cli.py::TestValidateReport`, `TestResolveTriggers` |

@@ -1,8 +1,9 @@
 """The command line interface.
 
 Three of the five verbs must never touch a bridge -- that is the whole point of
-being able to check a plan before running it -- so these tests pass no client at
-all and would fail loudly if one were needed.
+being able to check a plan before running it -- so those tests pass no client
+at all and would fail loudly if one were needed. ``validate`` is the exception,
+and gets the shared transport fake.
 """
 
 import asyncio
@@ -13,7 +14,19 @@ import sys
 
 import pytest
 
-from huepy.cli import EXIT_FAILED, EXIT_OK, _log_level, _stopping_on_signals, main
+from huepy.cli import (
+    EXIT_FAILED,
+    EXIT_OK,
+    _binding_report,
+    _log_level,
+    _stopping_on_signals,
+    main,
+)
+from huepy.models import parse_resource
+from huepy.plans.resolve import bind
+from huepy.plans.schema import Plan
+
+from .conftest import envelope
 
 PLAN = """
 version = 1
@@ -196,6 +209,142 @@ class TestHelp:
         out = capsys.readouterr().out
         for verb in ("check", "explain", "validate", "run", "schema"):
             assert verb in out
+
+
+def report_resources():
+    return [
+        {
+            "id": "room-living",
+            "type": "room",
+            "metadata": {"name": "Living Room"},
+            "children": [{"rid": "dev-lamp", "rtype": "device"}],
+            "services": [{"rid": "gl-living", "rtype": "grouped_light"}],
+        },
+        {
+            "id": "light-1",
+            "type": "light",
+            "metadata": {"name": "Corner Lamp"},
+            "owner": {"rid": "dev-lamp", "rtype": "device"},
+        },
+        {
+            "id": "dev-hall",
+            "type": "device",
+            "metadata": {"name": "Hall sensor"},
+            "services": [{"rid": "motion-1", "rtype": "motion"}],
+        },
+        {
+            "id": "dev-dimmer",
+            "type": "device",
+            "metadata": {"name": "Dimmer"},
+            "services": [
+                {"rid": "button-1", "rtype": "button"},
+                {"rid": "button-2", "rtype": "button"},
+            ],
+        },
+        {
+            "id": "motion-1",
+            "type": "motion",
+            "enabled": False,
+            "owner": {"rid": "dev-hall", "rtype": "device"},
+        },
+    ]
+
+
+REPORT_PLAN = {
+    "version": 1,
+    "scenario": [
+        {
+            "name": "lr",
+            "scope": ["room:Living Room"],
+            "step": [{"at": "09:00", "set": {"brightness": 100}}],
+            "rule": [
+                {"when": "motion:Hall sensor", "set": {"on": True}},
+                {"when": "button:Dimmer", "set": {"on": False}},
+            ],
+        },
+        {
+            "name": "movie",
+            "scope": ["light:Corner Lamp"],
+            "activate_on": "signal:movie_started",
+            "set": {"brightness": 8},
+        },
+    ],
+}
+
+
+def squeezed(lines):
+    return [" ".join(line.split()) for line in lines]
+
+
+class TestValidateReport:
+    def report(self):
+        resources = [parse_resource(r) for r in report_resources()]
+        plan = Plan.model_validate(REPORT_PLAN)
+        return squeezed(_binding_report(plan, bind(resources, plan), resources))
+
+    def test_the_summary_comes_first(self):
+        assert self.report()[0] == "OK: 2 scenarios, 2 scopes, 3 triggers all resolve"
+
+    def test_a_scope_line_names_the_path_and_the_lights_behind_it(self):
+        lines = self.report()
+        assert (
+            "lr room:Living Room -> grouped_light/gl-living (1 light: Corner Lamp)"
+            in lines
+        )
+        assert (
+            "movie light:Corner Lamp -> light/light-1 (1 light: Corner Lamp)" in lines
+        )
+
+    def test_trigger_lines_show_services_and_signals(self):
+        lines = self.report()
+        assert "motion:Hall sensor -> motion motion-1" in lines
+        assert "button:Dimmer -> 2 button services: button-1, button-2" in lines
+        assert "signal:movie_started -> application signal" in lines
+
+    def test_a_disabled_sensor_is_listed_under_warnings(self):
+        lines = self.report()
+        assert lines.index("warnings") > lines.index("triggers")
+        assert (
+            "motion:Hall sensor: the sensor is disabled on the bridge, "
+            "so this trigger will never fire"
+        ) in lines
+
+
+class Ready:
+    """A stand-in for ``Hue(...)`` that yields an already-wired client."""
+
+    def __init__(self, client):
+        self.client = client
+
+    async def __aenter__(self):
+        return self.client
+
+    async def __aexit__(self, *_):
+        return None
+
+
+class TestValidate:
+    def test_it_prints_the_report(self, hue, http, plan_file, monkeypatch, capsys):
+        http.queue("/clip/v2/resource", envelope(*report_resources()))
+        monkeypatch.setattr("huepy.cli.Hue", lambda *_args, **_kwargs: Ready(hue))
+        assert main(["plan", "validate", str(plan_file)]) == EXIT_OK
+        out = squeezed(capsys.readouterr().out.splitlines())
+        assert out[0] == "OK: 1 scenarios, 1 scopes, 0 triggers all resolve"
+        assert (
+            "lr room:Living Room -> grouped_light/gl-living (1 light: Corner Lamp)"
+            in out
+        )
+
+    def test_an_unknown_name_fails_with_what_exists(
+        self, hue, http, tmp_path, monkeypatch, capsys
+    ):
+        http.queue("/clip/v2/resource", envelope(*report_resources()))
+        monkeypatch.setattr("huepy.cli.Hue", lambda *_args, **_kwargs: Ready(hue))
+        path = tmp_path / "typo.toml"
+        path.write_text(PLAN.replace("room:Living Room", "room:Livng Room"))
+        assert main(["plan", "validate", str(path)]) == EXIT_FAILED
+        err = capsys.readouterr().err
+        assert "room:Livng Room: no such room. Known: Living Room" in err
 
 
 class TestVerbosity:

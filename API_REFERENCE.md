@@ -1274,7 +1274,7 @@ so a callback can call it directly.
 | --- | --- | --- |
 | `huepy plan check PATH` | no | Parses the files and reports what is malformed. |
 | `huepy plan explain PATH [--at ISO]` | no | Prints the day, every solar anchor resolved, with the request count per step. |
-| `huepy plan validate PATH` | reads | Also resolves every name, reporting all unknown ones at once. |
+| `huepy plan validate PATH` | reads | Also resolves every name, reporting all unknown ones at once, and prints what each bound to: the `grouped_light` and member lights behind a room, the services behind a sensor, and a warning for a sensor disabled on the bridge. `run` prints the same report before it starts. |
 | `huepy plan run PATH` | writes | Executes the plan until Ctrl-C or SIGTERM, which stop it after the write it is on. |
 | `huepy plan schema` | no | Emits the format as JSON Schema, for editor completion. |
 
@@ -1296,7 +1296,7 @@ every PUT. `-q` keeps only errors.
 | `Plan`, `Scenario`, `Step`, `Rule`, `Action`, `Defaults`, `Location` | The format, as frozen pydantic models. `Plan.model_json_schema()` is what `huepy plan schema` prints. |
 | `PlanRunner` | Runs a plan. `changes=` takes anything with `on_change` and `on_resync` — `hue.state` — and `clock=` / `sleep=` are injectable for tests. `fire(name)` returns what the signal did, one phrase per scenario it reached, and `signals` is the set of names the plan listens for. `stop()` asks `run()` to return after the write it is on, so a signal handler can end a daemon without cancelling it. |
 | `PlanClient`, `ChangeSource` | The two Protocols the runner depends on. `Hue` and `HueState` satisfy them. |
-| `resolve(client, plan)`, `ResolvedPlan`, `Binding`, `TriggerBinding` | Bind every name to a resource id in one snapshot, reporting every unknown name together. |
+| `resolve(client, plan)`, `ResolvedPlan`, `Binding`, `TriggerBinding` | Bind every name to a resource id in one snapshot, reporting every unknown name together. `ResolvedPlan.warnings` lists what bound but will not behave — a sensor disabled on the bridge never fires — and the runner logs each at WARNING. |
 | `waypoints_for_day(plan, scenario, day, zone)`, `Waypoint` | A scenario's day curve pinned to instants. Pure. |
 | `current_step(plan, scenario, now, zone)`, `target_at(...)`, `next_transition(...)` | Which step is in force, where the light should already be, and when the next fade starts. Pure; `now` is a parameter. |
 | `zone_of(location)` | The zone a plan's clock times are written in — `None` for the host's own, which is resolved per instant rather than frozen at one DST offset. |

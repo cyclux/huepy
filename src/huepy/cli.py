@@ -22,10 +22,11 @@ from pathlib import Path
 
 from huepy.client.base import Hue
 from huepy.exceptions import HueError, PlanError
+from huepy.models import AnyResource, NamedResource
 from huepy.plans.executor import plan_segments
 from huepy.plans.fields import Selector, TriggerKind, format_duration
 from huepy.plans.loader import load_plans
-from huepy.plans.resolve import Binding, resolve
+from huepy.plans.resolve import Binding, ResolvedPlan, TriggerBinding, bind
 from huepy.plans.runner import PlanRunner
 from huepy.plans.schema import Plan, Rule, Scenario
 from huepy.plans.timeline import Zone, combine, waypoints_for_day, zone_of
@@ -190,8 +191,79 @@ def _hold_of(rule: Rule, scenario: Scenario, plan: Plan) -> str:
     return "until the next step" if scheduled else "until released"
 
 
+RESOURCE_PREFIX = "/clip/v2/resource/"
+
+
+def _trigger_target(trigger: TriggerBinding) -> str:
+    """Say what a trigger was bound to.
+
+    Args:
+        trigger: The bound trigger.
+
+    Returns:
+        A short phrase.
+
+    """
+    if trigger.is_signal:
+        return "application signal"
+    ids = trigger.resource_ids
+    if len(ids) == 1:
+        return f"{trigger.selector.kind} {ids[0]}"
+    return f"{len(ids)} {trigger.selector.kind} services: {', '.join(ids)}"
+
+
+def _binding_report(
+    plan: Plan, resolved: ResolvedPlan, resources: list[AnyResource]
+) -> list[str]:
+    """Lay out what every name in a plan was bound to.
+
+    This is what an operator reads before the first run: that ``room:Study``
+    really is the four lights they meant, that the dimmer has four button
+    services, and that the sensor they named is not switched off in the app.
+
+    Args:
+        plan: The plan, for scenario order.
+        resolved: The plan with every name bound.
+        resources: The snapshot it was bound against, for display names.
+
+    Returns:
+        The lines to print, summary first.
+
+    """
+    names = {r.id: r.name for r in resources if isinstance(r, NamedResource)}
+    scopes = sum(len(bindings) for bindings in resolved.scopes.values())
+    summary = (
+        f"OK: {len(plan.scenario)} scenarios, {scopes} scopes, "
+        f"{len(resolved.triggers)} triggers all resolve"
+    )
+    lines = [summary, "scopes"]
+    width = max((len(scenario.name) for scenario in plan.scenario), default=0)
+    for scenario in plan.scenario:
+        for binding in resolved.scope_of(scenario):
+            count = len(binding.light_ids)
+            noun = "light" if count == 1 else "lights"
+            lights = ", ".join(names.get(light, light) for light in binding.light_ids)
+            target = binding.path.removeprefix(RESOURCE_PREFIX)
+            line = (
+                f"  {scenario.name:<{width}}  {binding.selector} -> {target}  "
+                f"({count} {noun}: {lights})"
+            )
+            lines.append(line)
+    if resolved.triggers:
+        lines.append("triggers")
+        width = max(len(key) for key in resolved.triggers)
+        lines.extend(
+            f"  {key:<{width}} -> {_trigger_target(trigger)}"
+            for key, trigger in resolved.triggers.items()
+        )
+    if resolved.warnings:
+        lines.append("warnings")
+        lines.extend(f"  {warning}" for warning in resolved.warnings)
+    return lines
+
+
 async def _validate(path: str) -> int:
-    """Resolve a plan's names against a real bridge.
+    """Resolve a plan's names against a real bridge, and say what they bound to.
 
     Args:
         path: The plan file or directory.
@@ -202,13 +274,10 @@ async def _validate(path: str) -> int:
     """
     plan = load_plans(path)
     async with Hue() as hue:
-        resolved = await resolve(hue, plan)
-    scopes = sum(len(bindings) for bindings in resolved.scopes.values())
-    summary = (
-        f"OK: {len(plan.scenario)} scenarios, {scopes} scopes, "
-        f"{len(resolved.triggers)} triggers all resolve"
-    )
-    print(summary)
+        resources = await hue.snapshot()
+    resolved = bind(resources, plan)
+    for line in _binding_report(plan, resolved, resources):
+        print(line)
     return EXIT_OK
 
 
@@ -263,6 +332,12 @@ async def _run(path: str) -> int:
     """
     plan = load_plans(path)
     async with Hue(state=True) as hue:
+        # The same report `validate` prints, so the log that follows can be
+        # read against what each name meant. The runner resolves once more
+        # on start; a second snapshot is cheap next to a first run.
+        resources = await hue.snapshot()
+        for line in _binding_report(plan, bind(resources, plan), resources):
+            print(line)
         runner = PlanRunner(hue, plan, changes=hue.state)
         async with runner:
             print(f"Running {len(plan.scenario)} scenarios. Ctrl-C to stop.")

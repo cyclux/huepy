@@ -24,7 +24,16 @@ from collections import defaultdict
 from dataclasses import dataclass
 
 from huepy.exceptions import PlanError
-from huepy.models import AnyResource, Device, Light, Room, Zone
+from huepy.models import (
+    AnyResource,
+    Contact,
+    Device,
+    Light,
+    LightLevel,
+    Motion,
+    Room,
+    Zone,
+)
 from huepy.models.common import ResourceType
 from huepy.plans.fields import ScopeKind, Selector, TriggerKind
 from huepy.plans.protocol import PlanClient
@@ -93,12 +102,17 @@ class ResolvedPlan:
         scopes: Bindings per scenario name, in the order the scenario listed
             them.
         triggers: Bindings per trigger selector, keyed by its written form.
+        warnings: Things that resolved but will not behave as the plan
+            expects -- a sensor disabled on the bridge, which resolves fine
+            and never fires. Not errors, because disabling a sensor in the
+            app for a week should not stop the rest of the plan running.
 
     """
 
     plan: Plan
     scopes: dict[str, tuple[Binding, ...]]
     triggers: dict[str, TriggerBinding]
+    warnings: tuple[str, ...] = ()
 
     def scope_of(self, scenario: Scenario) -> tuple[Binding, ...]:
         """Look up the bindings a scenario writes to.
@@ -126,6 +140,7 @@ class _Catalog:
         lights: Lights by name.
         devices: Devices by name.
         all_lights: Every light, for resolving group membership.
+        disabled: Ids of sensor services switched off on the bridge.
 
     """
 
@@ -134,6 +149,7 @@ class _Catalog:
     lights: dict[str, list[Light]]
     devices: dict[str, list[Device]]
     all_lights: list[Light]
+    disabled: frozenset[str]
 
 
 def _index(resources: list[AnyResource]) -> _Catalog:
@@ -151,6 +167,7 @@ def _index(resources: list[AnyResource]) -> _Catalog:
     lights: dict[str, list[Light]] = defaultdict(list)
     devices: dict[str, list[Device]] = defaultdict(list)
     all_lights: list[Light] = []
+    disabled: set[str] = set()
 
     for resource in resources:
         if isinstance(resource, Room):
@@ -162,12 +179,19 @@ def _index(resources: list[AnyResource]) -> _Catalog:
             all_lights.append(resource)
         elif isinstance(resource, Device):
             devices[resource.name].append(resource)
+        elif (
+            isinstance(resource, (Motion, Contact, LightLevel)) and not resource.enabled
+        ):
+            # Buttons have no switch; these three do, and a plan naming one
+            # that is off in the app would resolve cleanly and never fire.
+            disabled.add(resource.id)
     return _Catalog(
         rooms=rooms,
         zones=zones,
         lights=lights,
         devices=devices,
         all_lights=all_lights,
+        disabled=frozenset(disabled),
     )
 
 
@@ -266,6 +290,7 @@ def _bind_trigger(
     selector: Selector,
     catalog: _Catalog,
     problems: list[str],
+    warnings: list[str],
 ) -> TriggerBinding | None:
     """Bind one trigger selector to the services that can fire it.
 
@@ -273,6 +298,7 @@ def _bind_trigger(
         selector: The trigger as written.
         catalog: The indexed snapshot.
         problems: Accumulator for human-readable failures.
+        warnings: Accumulator for things that bind but will not fire.
 
     Returns:
         The binding, or None when the name could not be resolved.
@@ -298,6 +324,12 @@ def _bind_trigger(
         )
         problems.append(msg)
         return None
+    if all(service in catalog.disabled for service in services):
+        msg = (
+            f"{selector}: the sensor is disabled on the bridge, "
+            f"so this trigger will never fire"
+        )
+        warnings.append(msg)
     return TriggerBinding(selector=selector, resource_ids=services)
 
 
@@ -343,6 +375,7 @@ def bind(resources: list[AnyResource], plan: Plan) -> ResolvedPlan:
     catalog = _index(resources)
 
     problems: list[str] = []
+    warnings: list[str] = []
     scopes: dict[str, tuple[Binding, ...]] = {}
     triggers: dict[str, TriggerBinding] = {}
 
@@ -356,7 +389,7 @@ def bind(resources: list[AnyResource], plan: Plan) -> ResolvedPlan:
             key = str(selector)
             if key in triggers:
                 continue
-            trigger = _bind_trigger(selector, catalog, problems)
+            trigger = _bind_trigger(selector, catalog, problems, warnings)
             if trigger is not None:
                 triggers[key] = trigger
 
@@ -367,7 +400,9 @@ def bind(resources: list[AnyResource], plan: Plan) -> ResolvedPlan:
         msg = f"could not resolve {count} {noun} against this bridge:\n{body}"
         raise PlanError(msg)
 
-    return ResolvedPlan(plan=plan, scopes=scopes, triggers=triggers)
+    return ResolvedPlan(
+        plan=plan, scopes=scopes, triggers=triggers, warnings=tuple(warnings)
+    )
 
 
 async def resolve(client: PlanClient, plan: Plan) -> ResolvedPlan:

@@ -261,6 +261,8 @@ class PlanRunner:
             logger.debug(
                 "%s -> %s", key, ", ".join(trigger.resource_ids) or "application signal"
             )
+        for warning in self._resolved.warnings:
+            logger.warning(warning)
 
     def _index_scopes(self, resolved: ResolvedPlan) -> None:
         """Map every resource id a scope covers back to that scope.

@@ -151,6 +151,36 @@ class TestResolveTriggers:
         resolved = await resolve(bridge, plan)
         assert resolved.triggers["motion:Hall sensor"].resource_ids == (MOTION,)
 
+    async def test_a_disabled_sensor_is_a_warning_not_an_error(self, hue, http):
+        # Switched off in the app, the service still resolves -- the plan must
+        # keep running -- but a rule on it would wait forever, silently.
+        service = {
+            "id": MOTION,
+            "type": "motion",
+            "enabled": False,
+            "owner": {"rid": SENSOR_DEVICE, "rtype": "device"},
+        }
+        http.queue("/clip/v2/resource", envelope(*bridge_resources(), service))
+        plan = make_plan(rule=[{"when": "motion:Hall sensor", "set": {"on": True}}])
+        resolved = await resolve(hue, plan)
+        assert resolved.triggers["motion:Hall sensor"].resource_ids == (MOTION,)
+        warning = (
+            "motion:Hall sensor: the sensor is disabled on the bridge, "
+            "so this trigger will never fire"
+        )
+        assert resolved.warnings == (warning,)
+
+    async def test_an_enabled_sensor_raises_no_warning(self, hue, http):
+        service = {
+            "id": MOTION,
+            "type": "motion",
+            "enabled": True,
+            "owner": {"rid": SENSOR_DEVICE, "rtype": "device"},
+        }
+        http.queue("/clip/v2/resource", envelope(*bridge_resources(), service))
+        plan = make_plan(rule=[{"when": "motion:Hall sensor", "set": {"on": True}}])
+        assert (await resolve(hue, plan)).warnings == ()
+
     async def test_a_signal_binds_to_nothing_on_the_bridge(self, bridge):
         plan = make_plan(activate_on="signal:movie_started")
         resolved = await resolve(bridge, plan)
