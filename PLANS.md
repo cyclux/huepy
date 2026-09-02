@@ -30,6 +30,9 @@ portal mirror in `docs/hue-dev-docs/` or this repo's own bridge fixtures.
 | `geolocation` returns `sunset_time` but no `sunrise_time`; its latitude and longitude are **write-only** | `api-reference.md:35283`, `:35571` | Sun times must be computed in-process, and cannot even be seeded from the bridge |
 | `behavior_script` is GET-only; third parties cannot author automations | `migration-guide-to-the-new-hue-api.md:354` | No bridge-side automation is generated. aiohue, Home Assistant and openHAB all decline to model these too |
 | `dynamics.duration` accepts 6,000,000 ms and rejects 6,000,001 | `tests/fixtures/durability_probe.json:1457`, asserted at `tests/test_real_fixtures.py:109` | A 100-minute fade is one PUT. Longer ramps chain |
+| `grouped_light` accepts 6,000,000 ms too | `tests/integration/test_live_plans.py` (opt-in, live) | A room's chained fade is the same shape as a light's |
+| A light's `dimming.brightness` is a transition's *target* from the moment the write is accepted, and a bare switch-off leaves it there; switched back on with no other field, it reports the target again | `tests/fixtures/plan_probe.json`, asserted at `test_plan_probe_measures_a_transition_across_switch_off` | The fade after a switch-off starts from the interrupted fade's target. Only a cold start is blind to brightness |
+| For that bulb the stream carried the target once and no progress report in sixty seconds | same fixture | A missing progress report is normal; the override arithmetic must not expect one |
 
 The duration ceiling is **measured, not documented** — the API reference gives
 no bound at all. It was probed on a BSB002 at CLIP 1.78.0, and independently
@@ -229,12 +232,20 @@ ramp, and the bulb's own progress reports — which the state layer used to hide
 — were judged as jumps: one false yield per step, for ever, or under `reassert`
 one PUT per progress report. `ScopeState.reported` now keeps the state the
 human left, the next fade starts from it, and a fade whose starting brightness
-is genuinely unknown judges only the power state until it lands. That is two
-deliberate blind windows for brightness, never for `on`: the cold-start
-catch-up (`catchup_ramp` seconds, `start=None`) and the fade after a bare
-switch-off. Carrying the pre-switch-off brightness into `reported` would close
-the second, but it assumes a bulb resumes a transition from its retained
-level, which has not been measured on this bridge; measure before assuming.
+is genuinely unknown judges only the power state until it lands. That leaves
+one deliberate blind window for brightness, never for `on`: the cold-start
+catch-up (`catchup_ramp` seconds, `start=None`).
+
+The fade after a bare switch-off used to be the second. Closing it needed a
+measurement, and `tests/fixtures/plan_probe.json` is it: the bridge holds a
+transition's *target* as the light's brightness from the moment it accepts the
+write, a switch-off leaves it there, and a switch-on with no other field
+reports it again. `arbiter._remember()` therefore keeps the interrupted fade's
+target as the brightness of a switch-off, and keeps whichever of `on` and
+brightness a report did not name from what was known before -- the bridge
+keeps each attribute on its own, so the runner's belief does too. The same
+probe showed that bulb pushing no progress report at all in sixty seconds;
+the arithmetic must not depend on seeing one.
 
 `reported` is written by foreign reports only -- the plan's own echoes are
 skipped before the arbiter sees them -- so it goes stale while the plan drives
@@ -308,3 +319,5 @@ integration probe establishing whether a third-party app key can POST one.
 | `stop()` ends `run()` without cancelling it; SIGTERM reaches it; what a write logs | `TestClose`, `TestLogging`, `tests/test_plans_cli.py::TestStopSignals` |
 | What `validate` prints per binding; a disabled sensor is a warning, not an error | `tests/test_plans_cli.py::TestValidateReport`, `TestResolveTriggers` |
 | Against a real bridge, in one vetted room: one-snapshot resolution, one `grouped_light` PUT per catch-up reaching every member, the echo is not a yield, a hand switch-off and a hand jump both yield through the state layer's window, a ceiling-length first segment is accepted on a group | `tests/integration/test_live_plans.py` (opt-in) |
+| What a bare switch-off leaves as the light's brightness; a real `light_level` resource shape | `tests/test_real_fixtures.py::test_plan_probe_*` |
+| A switch-off keeps the fade's target; a jump during the fade that follows is seen; a report naming only `on` keeps the brightness | `TestSwitchOffMemory` |

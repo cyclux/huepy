@@ -1582,12 +1582,13 @@ class TestProgressAfterHandChange:
             assert await runner.tick() == 0
         assert len(http.writes) == 1
 
-    async def test_a_fade_from_a_switch_off_judges_only_the_power_state(
+    async def test_a_fade_from_a_switch_off_starts_from_the_interrupted_target(
         self, bridge, http, clock
     ):
-        # After a switch-off the runner knows the light is off and nothing
-        # else, so the fade that follows has no brightness to be judged
-        # against until it lands. A second switch-off is still seen.
+        # A switch-off leaves the bridge's brightness at the interrupted
+        # fade's target (tests/fixtures/plan_probe.json), so the fade that
+        # follows has a start to judge against: progress consistent with
+        # 80 -> 100 over an hour is ours, and a second switch-off is seen.
         changes = FakeChanges()
         clock.now = datetime.datetime(2026, 9, 1, 9, 0, tzinfo=BERLIN)
         runner = await watched_runner(bridge, clock, changes, RAMPED_ON_PLAN)
@@ -1599,7 +1600,7 @@ class TestProgressAfterHandChange:
         assert http.writes[-1][2]["on"] == {"on": True}
 
         clock.advance(minutes=15)
-        changes.report(LIGHT, 50.0, clock.now)
+        changes.report(LIGHT, 85.0, clock.now)
         assert not runner.arbiter.is_yielded(GROUP_PATH)
         changes.report(LIGHT, None, clock.now, delta={"on": {"on": False}})
         assert runner.arbiter.is_yielded(GROUP_PATH)
@@ -1900,3 +1901,66 @@ class TestCloseMidPass:
         await runner.start()
         assert await runner.catch_up() == 1
         assert len(http.writes) == 1
+
+
+class TestSwitchOffMemory:
+    """What a switch-off leaves behind, as measured in tests/fixtures/plan_probe.json.
+
+    The bridge's brightness is a transition's target from the moment it accepts
+    the write, and a bare switch-off leaves it there. So the fade after a
+    switch-off can start from a known brightness, and a hand change during it
+    is no longer invisible.
+    """
+
+    async def fading_then_switched_off(self, bridge, clock, changes):
+        clock.now = datetime.datetime(2026, 9, 1, 9, 0, tzinfo=BERLIN)
+        runner = await watched_runner(bridge, clock, changes, DAY_PLAN)
+        await runner.catch_up()
+        await runner.tick()
+        clock.advance(minutes=30)
+        changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": False}}))
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+        return runner
+
+    async def test_a_switch_off_keeps_the_interrupted_fades_target(self, bridge, clock):
+        runner = await self.fading_then_switched_off(bridge, clock, FakeChanges())
+        reported = runner.arbiter.state_of(GROUP_PATH).reported
+        assert reported == Action(on=False, brightness=100.0)
+
+    async def test_a_jump_during_the_fade_after_a_switch_off_is_seen(
+        self, bridge, http, clock
+    ):
+        changes = FakeChanges()
+        runner = await self.fading_then_switched_off(bridge, clock, changes)
+        clock.now = datetime.datetime(2026, 9, 1, 22, 0, tzinfo=BERLIN)
+        assert await runner.tick() == 1
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+
+        # Ten minutes into 100 -> 20 over thirty, the fade expects 73.
+        clock.advance(minutes=10)
+        changes.report(LIGHT, 40.0, clock.now)
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+
+    async def test_progress_during_the_fade_after_a_switch_off_is_still_ours(
+        self, bridge, clock
+    ):
+        changes = FakeChanges()
+        runner = await self.fading_then_switched_off(bridge, clock, changes)
+        clock.now = datetime.datetime(2026, 9, 1, 22, 0, tzinfo=BERLIN)
+        await runner.tick()
+        clock.advance(minutes=10)
+        changes.report(LIGHT, 73.0, clock.now)
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+
+    async def test_a_report_naming_only_on_keeps_the_remembered_brightness(
+        self, bridge, clock
+    ):
+        changes = FakeChanges()
+        runner = await watched_runner(bridge, clock, changes, DAY_PLAN)
+        await runner.catch_up()
+        clock.advance(seconds=10)
+        changes.report(LIGHT, 50.0, clock.now)
+        clock.advance(seconds=10)
+        changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": True}}))
+        reported = runner.arbiter.state_of(GROUP_PATH).reported
+        assert reported == Action(on=True, brightness=50.0)

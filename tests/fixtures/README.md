@@ -29,3 +29,21 @@ boundary, `Last-Event-ID` after 80 paced writes exceed the measured replay
 buffer, and raw SSE comments during the quiet interval. Connection cleanup and
 light restoration are both attempted even if either fails. Individual probes
 can be skipped with the command's `--skip-*` flags.
+
+The plan runner's evidence is captured by a third module, against the room the
+plan runner's live tests use (`PLAN_ROOM` in `tests/integration/conftest.py`):
+
+```console
+HUEPY_INTEGRATION=1 uv run python -m tests.integration.probe_plans
+```
+
+This writes `plan_probe.json`. It fades one tunable-white light in that room
+from 20 to 100 over sixty seconds, switches it off at ten seconds and back on
+at twenty with no other field, samples the light at 11, 21, 30 and 61 seconds
+and records every event frame about it, then restores it. The recorded outcome
+is what the runner's override logic relies on. A second, passive section keeps
+one minimised sensor resource of each kind from a snapshot and listens for the
+first event frame of each for up to `--listen-minutes` (default 5); it wants a
+sensor to see a change, so walk past one or press a dimmer while it runs.
+Either section can be skipped with `--skip-resume` / `--skip-passive`. No
+display name is written into the file.

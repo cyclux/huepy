@@ -1,0 +1,258 @@
+{
+  "passive_sensors": {
+    "frames": {},
+    "listened_seconds": 180.05654132400014,
+    "representatives": {
+      "button": {
+        "button": {
+          "button_report": {
+            "event": "long_release",
+            "updated": "2020-01-01T00:00:00.008Z"
+          },
+          "event_values": [
+            "initial_press",
+            "repeat",
+            "short_release",
+            "long_release",
+            "long_press"
+          ],
+          "last_event": "long_release",
+          "repeat_interval": 800
+        },
+        "id": "resource-007",
+        "id_v1": "/scrubbed/resource",
+        "metadata": {
+          "control_id": 2
+        },
+        "owner": {
+          "rid": "resource-008",
+          "rtype": "device"
+        },
+        "type": "button"
+      },
+      "light_level": {
+        "enabled": true,
+        "id": "resource-009",
+        "id_v1": "/scrubbed/resource",
+        "light": {
+          "light_level": 7002,
+          "light_level_report": {
+            "changed": "2020-01-01T00:00:00.009Z",
+            "light_level": 7002
+          },
+          "light_level_valid": true
+        },
+        "owner": {
+          "rid": "resource-010",
+          "rtype": "device"
+        },
+        "type": "light_level"
+      },
+      "motion": {
+        "enabled": true,
+        "id": "resource-011",
+        "id_v1": "/scrubbed/resource",
+        "motion": {
+          "motion": false,
+          "motion_report": {
+            "changed": "2020-01-01T00:00:00.010Z",
+            "motion": false
+          },
+          "motion_valid": true
+        },
+        "owner": {
+          "rid": "resource-010",
+          "rtype": "device"
+        },
+        "sensitivity": {
+          "sensitivity": 3,
+          "sensitivity_max": 4,
+          "status": "set"
+        },
+        "type": "motion"
+      }
+    }
+  },
+  "resume_after_switch_off": {
+    "expected_if_uninterrupted": {
+      "11": 34.666666666666664,
+      "21": 48.0,
+      "30": 60.0,
+      "61": 100.0
+    },
+    "fade": {
+      "from": 20.0,
+      "seconds": 60,
+      "switch_off_at": 10,
+      "switch_on_at": 20,
+      "to": 100.0
+    },
+    "frames": [
+      {
+        "at_seconds": 2.23824520099879,
+        "frame": {
+          "event_id": "1700000000:0",
+          "events": [
+            {
+              "creationtime": "2020-01-01T00:00:00.001Z",
+              "data": [
+                {
+                  "id": "resource-001",
+                  "id_v1": "/scrubbed/resource",
+                  "on": {
+                    "on": true
+                  },
+                  "owner": {
+                    "rid": "resource-002",
+                    "rtype": "device"
+                  },
+                  "service_id": 0,
+                  "type": "light"
+                },
+                {
+                  "dimming": {
+                    "brightness": 20.16
+                  },
+                  "id": "resource-001",
+                  "id_v1": "/scrubbed/resource",
+                  "owner": {
+                    "rid": "resource-002",
+                    "rtype": "device"
+                  },
+                  "service_id": 0,
+                  "type": "light"
+                }
+              ],
+              "id": "resource-003",
+              "type": "update"
+            }
+          ],
+          "received_at": "2020-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "at_seconds": 0.10527023999929952,
+        "frame": {
+          "event_id": "1700000002:0",
+          "events": [
+            {
+              "creationtime": "2020-01-01T00:00:00.003Z",
+              "data": [
+                {
+                  "dimming": {
+                    "brightness": 100.0
+                  },
+                  "id": "resource-001",
+                  "id_v1": "/scrubbed/resource",
+                  "owner": {
+                    "rid": "resource-002",
+                    "rtype": "device"
+                  },
+                  "service_id": 0,
+                  "type": "light"
+                }
+              ],
+              "id": "resource-004",
+              "type": "update"
+            }
+          ],
+          "received_at": "2020-01-01T00:00:00.002Z"
+        }
+      },
+      {
+        "at_seconds": 10.105964223999763,
+        "frame": {
+          "event_id": "1700000012:0",
+          "events": [
+            {
+              "creationtime": "2020-01-01T00:00:00.005Z",
+              "data": [
+                {
+                  "id": "resource-001",
+                  "id_v1": "/scrubbed/resource",
+                  "on": {
+                    "on": false
+                  },
+                  "owner": {
+                    "rid": "resource-002",
+                    "rtype": "device"
+                  },
+                  "service_id": 0,
+                  "type": "light"
+                }
+              ],
+              "id": "resource-005",
+              "type": "update"
+            }
+          ],
+          "received_at": "2020-01-01T00:00:00.004Z"
+        }
+      },
+      {
+        "at_seconds": 20.106968165999206,
+        "frame": {
+          "event_id": "1700000022:0",
+          "events": [
+            {
+              "creationtime": "2020-01-01T00:00:00.007Z",
+              "data": [
+                {
+                  "id": "resource-001",
+                  "id_v1": "/scrubbed/resource",
+                  "on": {
+                    "on": true
+                  },
+                  "owner": {
+                    "rid": "resource-002",
+                    "rtype": "device"
+                  },
+                  "service_id": 0,
+                  "type": "light"
+                }
+              ],
+              "id": "resource-006",
+              "type": "update"
+            }
+          ],
+          "received_at": "2020-01-01T00:00:00.006Z"
+        }
+      }
+    ],
+    "level_at_switch_off": 33.33333333333333,
+    "light": "resource-001",
+    "outcome": "target",
+    "powerup": {
+      "color": {
+        "mode": "previous"
+      },
+      "configured": true,
+      "dimming": null,
+      "on": {
+        "on": true
+      },
+      "preset": "last_on_state"
+    },
+    "samples": [
+      {
+        "at_seconds": 11.011789346999649,
+        "brightness": 100.0,
+        "on": false
+      },
+      {
+        "at_seconds": 21.01164011399851,
+        "brightness": 100.0,
+        "on": true
+      },
+      {
+        "at_seconds": 30.01391892799984,
+        "brightness": 100.0,
+        "on": true
+      },
+      {
+        "at_seconds": 61.12017673199989,
+        "brightness": 100.0,
+        "on": true
+      }
+    ]
+  }
+}

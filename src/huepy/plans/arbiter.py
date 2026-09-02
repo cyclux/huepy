@@ -61,6 +61,45 @@ people.
 """
 
 
+def _remember(
+    state: "ScopeState",
+    fade: "Fade | None",
+    *,
+    on: bool | None,
+    brightness: float | None,
+) -> Action:
+    """Fold a hand change into what the runner believes about the light.
+
+    The bridge keeps each attribute on its own. A switch-off changes ``on`` and
+    leaves ``dimming`` where it was, and ``dimming`` holds a transition's
+    *target* from the moment the write is accepted -- through a switch-off and
+    back again (measured: ``tests/fixtures/plan_probe.json``). So a report that
+    names one field keeps the other from what was known, and a switch-off that
+    interrupts a fade keeps that fade's target as the brightness. Without this
+    the fade after a switch-off started from an unknown brightness and was
+    blind to everything but the power state until it landed.
+
+    Args:
+        state: The scope's state, for what was known before.
+        fade: The fade the report interrupted, if one was running.
+        on: The power state the bridge reported, if any.
+        brightness: The brightness the bridge reported, if any.
+
+    Returns:
+        The state to remember the light in.
+
+    """
+    previous = state.reported
+    if brightness is None:
+        if fade is not None and fade.target.brightness is not None:
+            brightness = fade.target.brightness
+        elif previous is not None:
+            brightness = previous.brightness
+    if on is None and previous is not None:
+        on = previous.on
+    return Action(on=on, brightness=brightness)
+
+
 def _latest(*instants: datetime.datetime | None) -> datetime.datetime | None:
     """Pick the latest of some optional instants.
 
@@ -650,12 +689,13 @@ class Arbiter:
 
         """
         state = self.state_of(path)
-        if state.fade is not None and state.fade.explains(brightness, at, on=on):
+        fade = state.fade
+        if fade is not None and fade.explains(brightness, at, on=on):
             return False
         state.fade = None
         if on is not None or brightness is not None:
             # Where the human left it is where the next fade starts from.
-            state.reported = Action(on=on, brightness=brightness)
+            state.reported = _remember(state, fade, on=on, brightness=brightness)
         if self.resolved.plan.defaults.on_manual_change == "reassert":
             return True
         state.yielded_at = at

@@ -1215,10 +1215,11 @@ step that should wake a room `on = true`. Because this layer issues fades
 lasting up to a hundred minutes, a running fade is checked against its own
 arithmetic rather than a time window — movement consistent with the ramp is
 ours; a jump, or a power state the fade did not ask for, is a human. The fade
-that follows a hand change starts from where the human left the light. Two
-windows are blind to brightness, though never to a power change: the
-`catchup_ramp` seconds after a cold start, and the fade that follows a bare
-switch-off, when all the runner knows is that the light was off. With
+that follows a hand change starts from where the human left the light. One
+window is blind to brightness, though never to a power change: the
+`catchup_ramp` seconds after a cold start. A switch-off leaves the bridge's
+brightness at the interrupted fade's target — measured, not assumed — so the
+fade that follows one starts from a known level and is judged like any other. With
 `on_manual_change = "reassert"` the scope is never yielded, but the runner still
 notices the change and puts the light back.
 

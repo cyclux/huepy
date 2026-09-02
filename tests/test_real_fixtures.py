@@ -11,6 +11,7 @@ from huepy import models
 from huepy.models.event import HueEvent
 
 from .integration.capture_phase0 import Scrubber, _run_cleanup
+from .integration.probe_plans import classify_resume
 
 FIXTURES = Path(__file__).parent / "fixtures"
 UUID = re.compile(
@@ -133,6 +134,69 @@ def test_durability_probe_records_transition_replay_overflow_and_no_keepalive() 
             continue
         for event in cast("list[dict[str, Any]]", field["value"]):
             _ = HueEvent.model_validate(event)
+
+
+def test_plan_probe_measures_a_transition_across_switch_off() -> None:
+    evidence = cast("dict[str, Any]", _load("plan_probe.json"))
+    section = cast("dict[str, Any]", evidence["resume_after_switch_off"])
+    assert section["fade"] == {
+        "from": 20.0,
+        "to": 100.0,
+        "seconds": 60,
+        "switch_off_at": 10,
+        "switch_on_at": 20,
+    }
+
+    samples = cast("list[dict[str, Any]]", section["samples"])
+    by_second = {round(cast("float", s["at_seconds"])): s for s in samples}
+    assert by_second[11]["on"] is False
+    assert all(by_second[at]["on"] is True for at in (21, 30, 61))
+    # The bridge's brightness is the transition's *target* from the moment it
+    # accepts the write, and a bare switch-off leaves it there: read while
+    # off, and after the switch-on, it is 100, never the physical level.
+    assert all(by_second[at]["brightness"] == 100.0 for at in (11, 21, 30, 61))
+    assert classify_resume(samples) == section["outcome"] == "target"
+
+    power: list[bool] = []
+    dimming: list[float] = []
+    for record in cast("list[dict[str, Any]]", section["frames"]):
+        frame = cast("dict[str, Any]", record["frame"])
+        for event in cast("list[dict[str, Any]]", frame["events"]):
+            _ = HueEvent.model_validate(event)
+            for item in cast("list[dict[str, Any]]", event["data"]):
+                if "on" in item:
+                    power.append(cast("bool", item["on"]["on"]))
+                if "dimming" in item:
+                    dimming.append(cast("float", item["dimming"]["brightness"]))
+    assert False in power
+    assert True in power
+    # Two dimming frames in the whole minute: the echo of the baseline and the
+    # echo of the target. This bulb pushed no progress report at all.
+    assert dimming == pytest.approx([20.0, 100.0], abs=0.5)
+
+
+def test_plan_probe_records_sensor_representatives_and_frames() -> None:
+    evidence = cast("dict[str, Any]", _load("plan_probe.json"))
+    passive = cast("dict[str, Any]", evidence["passive_sensors"])
+    representatives = cast("dict[str, dict[str, Any]]", passive["representatives"])
+    for kind, representative in representatives.items():
+        assert models.parse_resource(representative).type == kind
+    level = models.parse_resource(representatives["light_level"])
+    assert isinstance(level, models.LightLevel)
+    assert level.light is not None
+    assert level.light.light_level_report is not None
+    assert level.light.light_level_report.light_level is not None
+    assert level.light.light_level_report.light_level > 0
+    assert level.lux is not None
+    assert level.lux > 0
+
+    frames = cast("dict[str, dict[str, Any]]", passive["frames"])
+    for record in frames.values():
+        frame = cast("dict[str, Any]", record["frame"])
+        for event in cast("list[dict[str, Any]]", frame["events"]):
+            _ = HueEvent.model_validate(event)
+    if "light_level" not in frames:
+        pytest.skip("the passive listen caught no light_level event; rerun the probe")
 
 
 def test_real_fixtures_contain_no_raw_uuids() -> None:
