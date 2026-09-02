@@ -375,10 +375,13 @@ class TestSignals:
         runner = await make_runner(bridge, clock, PRIORITY_PLAN)
         assert runner.signals == {"movie_started", "movie_ended"}
 
-    async def test_signals_before_starting_is_an_error(self, bridge, clock):
-        runner = PlanRunner(bridge, Plan.model_validate(PRIORITY_PLAN), clock=clock)
-        with pytest.raises(RuntimeError, match="not been started"):
-            _ = runner.signals
+    async def test_signals_skips_disabled_scenarios(self, bridge, clock):
+        # Firing a disabled scenario's signal does nothing, so advertising it
+        # would send `huepy plan signal` a name that then warns.
+        plan: dict[str, Any] = copy.deepcopy(PRIORITY_PLAN)
+        plan["scenario"][1]["enabled"] = False
+        runner = await make_runner(bridge, clock, plan)
+        assert runner.signals == frozenset()
 
     async def test_fire_reports_what_it_did(self, bridge, clock):
         runner = await make_runner(bridge, clock, PRIORITY_PLAN)
@@ -858,7 +861,7 @@ def contact(at, state):
 
 
 def light_level(at, lux, *, valid=True):
-    """Build a level report as a real event carries it: the report, not the field."""
+    """Build a level report as the portal documents it: the report, not the field."""
     return sensor_change(
         LIGHT_LEVEL,
         "light_level",
@@ -1874,11 +1877,9 @@ class TestBeliefAfterFailure:
         assert await runner.tick() == 1
         assert http.writes[0][2]["on"] == {"on": True}
 
-    async def test_a_failed_chain_tail_is_retried_as_a_chain(self, hue, http, clock):
-        # The retry knows where the light was when the tail failed, so it is
-        # chained again rather than degraded to one ceiling-length fade.
+    async def chained_after_a_refusal(self, hue, http, clock, fails):
         http.queue("/clip/v2/resource", envelope(*bridge_resources()))
-        client = BrokenClient(hue, http, fails={2})
+        client = BrokenClient(hue, http, fails=fails)
         runner = PlanRunner(
             client,
             Plan.model_validate(CHAINED_PLAN),
@@ -1891,6 +1892,31 @@ class TestBeliefAfterFailure:
         await runner.tick()
         await asyncio.sleep(0)
         await asyncio.sleep(0)
+        return runner
+
+    async def test_a_refused_first_segment_is_retried_as_a_chain(
+        self, hue, http, clock
+    ):
+        # The retry knows where the light was, so it is chained again rather
+        # than degraded to one ceiling-length fade. The catch-up fade stays
+        # in force meanwhile: it is what the bridge is still running.
+        runner = await self.chained_after_a_refusal(hue, http, clock, fails={2})
+        fade = runner.arbiter.state_of(GROUP_PATH).fade
+        assert fade is not None
+        assert fade.target.brightness == 100
+        http.calls.clear()
+
+        assert await runner.tick() == 1
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert len(http.writes) == 2
+        assert http.writes[1][2]["dimming"]["brightness"] == 20
+
+    async def test_a_failed_chain_tail_is_retried_as_a_chain(self, hue, http, clock):
+        # The first segment went out and the tail did not. The fade is
+        # forgotten, but where the first segment took the light is kept, so
+        # the retry chains from there.
+        runner = await self.chained_after_a_refusal(hue, http, clock, fails={3})
         assert runner.arbiter.state_of(GROUP_PATH).fade is None
         http.calls.clear()
 
@@ -1899,6 +1925,45 @@ class TestBeliefAfterFailure:
         await asyncio.sleep(0)
         assert len(http.writes) == 2
         assert http.writes[1][2]["dimming"]["brightness"] == 20
+
+    async def test_a_switch_off_after_a_refused_write_remembers_the_held_target(
+        self, hue, http, clock
+    ):
+        # The refused write left the previous fade running on the bridge, so
+        # a switch-off leaves its target behind -- not the level the fade had
+        # reached when the write was refused.
+        http.queue("/clip/v2/resource", envelope(*bridge_resources()))
+        plan: dict[str, Any] = copy.deepcopy(LONG_FADE_PLAN)
+        plan["scenario"].append(
+            {
+                "name": "movie",
+                "scope": ["room:Living Room"],
+                "priority": 20,
+                "activate_on": "signal:movie_started",
+                "set": {"brightness": 8},
+            }
+        )
+        changes = FakeChanges()
+        runner = PlanRunner(
+            BrokenClient(hue, http, fails={3}),
+            Plan.model_validate(plan),
+            changes=changes,
+            clock=clock,
+            sleep=noop_sleep,
+        )
+        await runner.start()
+        clock.now = datetime.datetime(2026, 9, 1, 8, 30, tzinfo=BERLIN)
+        await runner.catch_up()
+        clock.now = datetime.datetime(2026, 9, 1, 9, 0, tzinfo=BERLIN)
+        await runner.tick()
+        clock.advance(minutes=30)
+        runner.fire("movie_started")
+        assert await runner.tick() == 0
+
+        clock.advance(minutes=1)
+        changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": False}}))
+        reported = runner.arbiter.state_of(GROUP_PATH).reported
+        assert reported == Action(on=False, brightness=20.0)
 
 
 class TestCloseMidPass:
@@ -1972,6 +2037,108 @@ class TestSwitchOffMemory:
         clock.advance(minutes=10)
         changes.report(LIGHT, 73.0, clock.now)
         assert not runner.arbiter.is_yielded(GROUP_PATH)
+
+    async def chained_runner(self, bridge, clock, changes):
+        clock.now = datetime.datetime(2026, 9, 1, 21, 0, tzinfo=BERLIN)
+        runner = PlanRunner(
+            bridge,
+            Plan.model_validate(CHAINED_PLAN),
+            changes=changes,
+            clock=clock,
+            sleep=blocking_sleep,
+        )
+        await runner.start()
+        await runner.catch_up()
+        clock.now = datetime.datetime(2026, 9, 1, 22, 0, tzinfo=BERLIN)
+        assert await runner.tick() == 1
+        return runner
+
+    async def test_a_switch_off_during_a_chained_fade_keeps_the_segments_waypoint(
+        self, bridge, clock
+    ):
+        # 100 -> 20 over three hours is two segments; the bridge was only
+        # ever given the first one's waypoint, 60, and that is what it holds.
+        changes = FakeChanges()
+        runner = await self.chained_runner(bridge, clock, changes)
+        clock.advance(minutes=50)
+        changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": False}}))
+        reported = runner.arbiter.state_of(GROUP_PATH).reported
+        assert reported == Action(on=False, brightness=60.0)
+        await runner.close()
+
+    async def test_a_switch_off_during_the_last_segment_keeps_the_target(
+        self, bridge, clock
+    ):
+        changes = FakeChanges()
+        runner = await self.chained_runner(bridge, clock, changes)
+        clock.advance(minutes=110)
+        changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": False}}))
+        reported = runner.arbiter.state_of(GROUP_PATH).reported
+        assert reported == Action(on=False, brightness=20.0)
+        await runner.close()
+
+    async def test_a_hand_switch_on_after_the_plans_off_step_keeps_its_level(
+        self, bridge, clock
+    ):
+        # The last hand report is stale once the plan has driven the light
+        # since; the level the off step started from is what the bridge holds.
+        plan = {
+            "version": 1,
+            "defaults": {"catchup_ramp": "5s"},
+            "scenario": [
+                {
+                    "name": "day",
+                    "scope": ["room:Living Room"],
+                    "step": [
+                        {"at": "08:00", "set": {"on": True, "brightness": 80}},
+                        {"at": "12:00", "set": {"on": True, "brightness": 100}},
+                        {"at": "23:00", "set": {"on": False}},
+                    ],
+                }
+            ],
+        }
+        changes = FakeChanges()
+        clock.now = datetime.datetime(2026, 9, 1, 9, 0, tzinfo=BERLIN)
+        runner = await watched_runner(bridge, clock, changes, plan)
+        await runner.catch_up()
+        clock.advance(minutes=10)
+        changes.report(LIGHT, 40.0, clock.now)
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+
+        clock.now = datetime.datetime(2026, 9, 1, 12, 0, tzinfo=BERLIN)
+        assert await runner.tick() == 1
+        clock.now = datetime.datetime(2026, 9, 1, 23, 0, tzinfo=BERLIN)
+        assert await runner.tick() == 1
+        clock.advance(minutes=30)
+        changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": True}}))
+        reported = runner.arbiter.state_of(GROUP_PATH).reported
+        assert reported == Action(on=True, brightness=100.0)
+
+    async def test_a_brightness_the_fade_never_asked_for_is_a_human(
+        self, bridge, clock
+    ):
+        # A fade that only switches the light on has no brightness to explain
+        # a dimming report with; waving one through left the dial unremembered.
+        plan = {
+            "version": 1,
+            "defaults": {"catchup_ramp": "5s"},
+            "scenario": [
+                {
+                    "name": "day",
+                    "scope": ["room:Living Room"],
+                    "step": [{"at": "08:00", "set": {"on": True}}],
+                }
+            ],
+        }
+        changes = FakeChanges()
+        clock.now = datetime.datetime(2026, 9, 1, 9, 0, tzinfo=BERLIN)
+        runner = await watched_runner(bridge, clock, changes, plan)
+        await runner.catch_up()
+        clock.advance(seconds=10)
+        changes.report(LIGHT, 70.0, clock.now)
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+        reported = runner.arbiter.state_of(GROUP_PATH).reported
+        assert reported == Action(on=True, brightness=70.0)
 
     async def test_a_report_naming_only_on_keeps_the_remembered_brightness(
         self, bridge, clock

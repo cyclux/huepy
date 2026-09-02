@@ -116,8 +116,9 @@ set = { on = false }
 # crosses under it and ends once the reading is back above about five times
 # that, so a sensor that sees the lamp it switched on does not blink it. A
 # reading that stays dark never re-fires, so a lamp someone dimmed by hand
-# stays dimmed. No `between`: an overcast afternoon is exactly the case this
-# is for, and the crossing would already have happened by sunset.
+# stays dimmed. The window matters: a first reading after the process starts
+# fires if it is already dark, and without `between` a restart at three in
+# the morning would light the room.
 [[scenario]]
 name = "living-room-overcast"
 scope = ["room:Living Room"]
@@ -126,5 +127,6 @@ priority = 5
 [[scenario.rule]]
 when = "light_level:Window sensor"
 below = 30
+between = ["sunrise", "sunset"]
 ramp = "5m"
 set = { on = true, brightness = 70, kelvin = 4000 }

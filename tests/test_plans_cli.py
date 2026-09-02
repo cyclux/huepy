@@ -467,6 +467,24 @@ class TestStopSignals:
             signal.raise_signal(signal.SIGTERM)
             await asyncio.wait_for(stopped.wait(), timeout=1.0)
 
+    async def test_a_second_signal_cancels_the_task(self):
+        # `stop` only takes effect between writes; a bridge that has stopped
+        # answering holds a write for minutes, and the second signal must
+        # not wait for it.
+        asked: list[int] = []
+
+        async def body() -> None:
+            with _stopping_on_signals(lambda: asked.append(1)):
+                signal.raise_signal(signal.SIGTERM)
+                await asyncio.sleep(0.05)
+                signal.raise_signal(signal.SIGTERM)
+                await asyncio.sleep(1)
+
+        task = asyncio.create_task(body())
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert asked == [1]
+
     async def test_handlers_are_removed_afterwards(self):
         with _stopping_on_signals(lambda: None):
             assert signal.getsignal(signal.SIGTERM) is not signal.SIG_DFL

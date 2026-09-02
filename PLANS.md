@@ -271,12 +271,18 @@ The fade after a bare switch-off used to be the second. Closing it needed a
 measurement, and `tests/fixtures/plan_probe.json` is it: the bridge holds a
 transition's *target* as the light's brightness from the moment it accepts the
 write, a switch-off leaves it there, and a switch-on with no other field
-reports it again. `arbiter._remember()` therefore keeps the interrupted fade's
-target as the brightness of a switch-off, and keeps whichever of `on` and
-brightness a report did not name from what was known before -- the bridge
-keeps each attribute on its own, so the runner's belief does too. The same
-probe showed that bulb pushing no progress report at all in sixty seconds;
-the arithmetic must not depend on seeing one.
+reports it again. `arbiter._remember()` therefore keeps what the bridge holds
+as the brightness of a switch-off: the target of the *segment* the
+interrupted fade was running (`Fade.held_at()` -- a chained fade only ever
+gave the bridge its current waypoint), or, for a fade that set no brightness,
+the level it started from. Whichever of `on` and brightness a report did not
+name is filled the same way -- the bridge keeps each attribute on its own, so
+the runner's belief does too -- and the last *hand* report is consulted only
+when no fade has run since, because it goes stale while the plan drives the
+light. In the same spirit, a brightness reported during a fade that never
+asked for one is a human at the dial, not the fade's work. The same probe
+showed that bulb pushing no progress report at all in sixty seconds; the
+arithmetic must not depend on seeing one.
 
 `reported` is written by foreign reports only -- the plan's own echoes are
 skipped before the arbiter sees them -- so it goes stale while the plan drives
@@ -353,4 +359,5 @@ integration probe establishing whether a third-party app key can POST one.
 | What `validate` prints per binding; a disabled sensor is a warning, not an error | `tests/test_plans_cli.py::TestValidateReport`, `TestResolveTriggers` |
 | Against a real bridge, in one vetted room: one-snapshot resolution, one `grouped_light` PUT per catch-up reaching every member, the echo is not a yield, a hand switch-off and a hand jump both yield through the state layer's window, a ceiling-length first segment is accepted on a group | `tests/integration/test_live_plans.py` (opt-in) |
 | What a bare switch-off leaves as the light's brightness; a real `light_level` resource shape | `tests/test_real_fixtures.py::test_plan_probe_*` |
-| A switch-off keeps the fade's target; a jump during the fade that follows is seen; a report naming only `on` keeps the brightness | `TestSwitchOffMemory` |
+| A switch-off keeps the running segment's target, or the off step's starting level; a jump during the fade that follows is seen; a report naming only `on` keeps the brightness; a dimming report during an on-only fade is a human | `TestSwitchOffMemory` |
+| A refused write leaves the previous fade in force, so a switch-off after it remembers what the bridge holds; a refused first segment and a failed tail both retry as a chain | `TestBeliefAfterFailure` |

@@ -613,20 +613,25 @@ class PlanRunner:
 
         Returns:
             Every name, without the ``signal:`` prefix, that :meth:`fire`
-            would do something with.
-
-        Raises:
-            RuntimeError: If the runner has not been started.
+            would do something with. A disabled scenario's are left out,
+            because firing one of those does nothing.
 
         """
-        if self._resolved is None:
-            msg = "the runner has not been started; use `async with` or await start()"
-            raise RuntimeError(msg)
-        return frozenset(
-            trigger.selector.name
-            for trigger in self._resolved.triggers.values()
-            if trigger.is_signal
-        )
+        names: set[str] = set()
+        for scenario in self.plan.scenario:
+            if not scenario.enabled:
+                continue
+            selectors = [
+                scenario.activate_on,
+                scenario.release_on,
+                *(rule.when for rule in scenario.rule),
+            ]
+            names.update(
+                selector.name
+                for selector in selectors
+                if selector is not None and selector.kind == TriggerKind.SIGNAL
+            )
+        return frozenset(names)
 
     def fire(self, signal: str) -> tuple[str, ...]:
         """Fire an application signal.
@@ -758,16 +763,15 @@ class PlanRunner:
             return await self._drive(claim, now, ramp=ramp)
         except HueError:
             logger.exception("%s: could not be driven", claim.binding.selector)
-            # The refused write did not move the light, so where the previous
-            # fade had taken it is still the best belief. Kept as the last
-            # known state rather than as a fade, so the next tick retries
-            # instead of believing this scope arrived -- and retries from
-            # there, `on` included. Starting from the last *foreign* report
-            # instead once dropped `on` on a room the plan itself had
-            # switched off the night before.
-            if before is not None:
-                state.reported = before.expected_at(now)
-            state.fade = None
+            # The refused write did not move the light, so the fade that was
+            # running before it is still what the bridge runs -- and what a
+            # switch-off would leave behind. Put it back. The retry still
+            # happens: this claim's target is not that fade's, and a claim
+            # with the same target is one the bridge is already carrying
+            # out. Starting the retry from the last *foreign* report instead
+            # once dropped `on` on a room the plan itself had switched off
+            # the night before.
+            state.fade = before
             return False
 
     def _target_changed(self, claim: Claim) -> bool:

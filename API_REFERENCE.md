@@ -1221,8 +1221,9 @@ ours; a jump, or a power state the fade did not ask for, is a human. The fade
 that follows a hand change starts from where the human left the light. One
 window is blind to brightness, though never to a power change: the
 `catchup_ramp` seconds after a cold start. A switch-off leaves the bridge's
-brightness at the interrupted fade's target — measured, not assumed — so the
-fade that follows one starts from a known level and is judged like any other. With
+brightness at the target of the transition it was running — measured, not
+assumed — so the fade that follows one starts from a known level and is judged
+like any other. With
 `on_manual_change = "reassert"` the scope is never yielded, but the runner still
 notices the change and puts the light back.
 
@@ -1251,9 +1252,12 @@ held until its next scheduled step — not forever, so a button press cannot
 switch a day curve off for good; when nothing scheduled covers the scope, the
 hold lasts until a hand change, a higher-priority claim, or the owning mode
 releasing. `between` is checked when the trigger fires, and wraps midnight.
-A `light_level:` rule usually wants no `between`: the crossing that matters
-often happens before a window opens, and a rule whose window opened after the
-room went dark has nothing left to fire on.
+A `light_level:` rule fires on the first reading after the process starts if
+that reading is already on the firing side — so a plan started after dark
+lights the room, and so does a restart at three in the morning. Give a rule a
+`between` when that would be unwelcome; an overcast-afternoon rule wants
+`["sunrise", "sunset"]`. A `between` is checked when the crossing happens, so
+a crossing before the window opens is missed, not deferred.
 
 When the hold lapses the scope goes back to whatever is underneath. A scope
 nobody claims is left alone, so a motion light that should switch itself off

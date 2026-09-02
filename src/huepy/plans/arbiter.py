@@ -36,8 +36,10 @@ Typical usage example:
 """
 
 import datetime
+import math
 from dataclasses import dataclass, field
 
+from huepy.plans.executor import segment_count
 from huepy.plans.fields import TriggerKind
 from huepy.plans.resolve import Binding, ResolvedPlan
 from huepy.plans.schema import Action, Rule, Scenario
@@ -68,6 +70,7 @@ TIMED_FROM_END = frozenset({TriggerKind.MOTION, TriggerKind.LIGHT_LEVEL})
 def _remember(
     state: "ScopeState",
     fade: "Fade | None",
+    at: datetime.datetime,
     *,
     on: bool | None,
     brightness: float | None,
@@ -77,15 +80,19 @@ def _remember(
     The bridge keeps each attribute on its own. A switch-off changes ``on`` and
     leaves ``dimming`` where it was, and ``dimming`` holds a transition's
     *target* from the moment the write is accepted -- through a switch-off and
-    back again (measured: ``tests/fixtures/plan_probe.json``). So a report that
-    names one field keeps the other from what was known, and a switch-off that
-    interrupts a fade keeps that fade's target as the brightness. Without this
-    the fade after a switch-off started from an unknown brightness and was
-    blind to everything but the power state until it landed.
+    back again (measured: ``tests/fixtures/plan_probe.json``). So a report
+    that names one field keeps the other from what the bridge holds: the
+    segment target of the fade the report interrupted (:meth:`Fade.held_at`),
+    or, for a fade that never set that field -- a bare ``on = false`` step --
+    the level the fade started from. Only when no fade ran is the last hand
+    report consulted: it goes stale while the plan drives the light, and
+    reading it after the plan's own night-off step once put a fade's start at
+    a level the human had left hours before.
 
     Args:
         state: The scope's state, for what was known before.
         fade: The fade the report interrupted, if one was running.
+        at: When the report arrived.
         on: The power state the bridge reported, if any.
         brightness: The brightness the bridge reported, if any.
 
@@ -93,15 +100,47 @@ def _remember(
         The state to remember the light in.
 
     """
-    previous = state.reported
-    if brightness is None:
-        if fade is not None and fade.target.brightness is not None:
-            brightness = fade.target.brightness
-        elif previous is not None:
-            brightness = previous.brightness
-    if on is None and previous is not None:
-        on = previous.on
-    return Action(on=on, brightness=brightness)
+    if fade is not None:
+        held = fade.held_at(at)
+        known_on = held.on if held.on is not None else _on_of(fade.start)
+        known_brightness = (
+            held.brightness
+            if held.brightness is not None
+            else _brightness_of(fade.start)
+        )
+    else:
+        known_on = _on_of(state.reported)
+        known_brightness = _brightness_of(state.reported)
+    return Action(
+        on=on if on is not None else known_on,
+        brightness=brightness if brightness is not None else known_brightness,
+    )
+
+
+def _on_of(action: Action | None) -> bool | None:
+    """Read the power state of an action that may not exist.
+
+    Args:
+        action: The action, or None.
+
+    Returns:
+        Its ``on``, or None when there is no action.
+
+    """
+    return None if action is None else action.on
+
+
+def _brightness_of(action: Action | None) -> float | None:
+    """Read the brightness of an action that may not exist.
+
+    Args:
+        action: The action, or None.
+
+    Returns:
+        Its brightness, or None when there is no action.
+
+    """
+    return None if action is None else action.brightness
 
 
 def _latest(*instants: datetime.datetime | None) -> datetime.datetime | None:
@@ -145,6 +184,31 @@ class Fade:
 
         """
         return self.started_at + datetime.timedelta(seconds=self.ramp)
+
+    def held_at(self, at: datetime.datetime) -> Action:
+        """Work out what the bridge holds of this fade at an instant.
+
+        The bridge's ``dimming`` is a transition's *target* from the moment it
+        accepts the write (measured: ``tests/fixtures/plan_probe.json``). For
+        a fade within the ceiling that is this fade's target. A longer fade
+        is chained, and the bridge only ever holds the segment in flight --
+        the waypoint it was sent -- so a switch-off in the first half of a
+        three-hour fade leaves the light at that waypoint, not at the end.
+
+        Args:
+            at: The instant.
+
+        Returns:
+            The target of the segment the bridge was running then.
+
+        """
+        count = segment_count(self.ramp)
+        if count <= 1 or self.start is None:
+            # One PUT -- including a long ramp sent whole for want of a start.
+            return self.target
+        elapsed = (at - self.started_at).total_seconds()
+        index = min(count - 1, max(0, math.floor(elapsed / (self.ramp / count))))
+        return interpolate(self.start, self.target, (index + 1) / count)
 
     def expected_at(self, when: datetime.datetime) -> Action:
         """Where this fade should have reached by a given instant.
@@ -193,8 +257,14 @@ class Fade:
         expected = self.expected_at(at)
         if on is not None and on != (expected.on if expected.on is not None else True):
             return False
-        if brightness is None or expected.brightness is None:
+        if brightness is None:
             return True
+        if expected.brightness is None:
+            # The fade never asked for a brightness, so a reported one is not
+            # its doing: someone reached for the dial while the plan was only
+            # switching the light. Waving it through once left the dial's
+            # setting unremembered and the next fade starting from a stale one.
+            return False
         unknown_start = self.start is None or self.start.brightness is None
         if unknown_start and at < self.ends_at():
             return True
@@ -701,7 +771,7 @@ class Arbiter:
         state.fade = None
         if on is not None or brightness is not None:
             # Where the human left it is where the next fade starts from.
-            state.reported = _remember(state, fade, on=on, brightness=brightness)
+            state.reported = _remember(state, fade, at, on=on, brightness=brightness)
         if self.resolved.plan.defaults.on_manual_change == "reassert":
             return True
         state.yielded_at = at

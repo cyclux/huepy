@@ -12,7 +12,7 @@ bulb resumes an interrupted transition; this is that measurement.
 
 ``passive_sensors`` writes nothing. It keeps one minimised representative of
 each sensor type from a snapshot and then listens for the first event frame of
-each, so a ``light_level`` trigger can be built against a real delta shape.
+each, so a ``light_level`` trigger can be checked against a real delta.
 
 Every write is restored even when a step fails, and no display name is ever
 written into the evidence: the scrubber replaces ``name`` keys but cannot

@@ -335,24 +335,38 @@ def _stopping_on_signals(stop: Callable[[], None]) -> Generator[None]:
     looks graceful because asyncio turns it into a cancellation that happens
     to unwind through the context managers.
 
-    The handlers are removed on the way out, so a second Ctrl-C during the
-    shutdown itself is the ordinary ``KeyboardInterrupt`` again: the force
-    path, for when a bridge stops answering.
+    The first signal asks; a second one cancels the task running the body.
+    That is the force path for a bridge that has stopped answering: ``stop``
+    only takes effect between writes, and a write to a silent bridge waits
+    minutes for the session's timeout. The handlers are removed on the way
+    out, so a Ctrl-C during the shutdown itself raises the plain
+    ``KeyboardInterrupt`` that ``main`` reports as stopped.
 
     Args:
-        stop: What to call when either signal arrives. Runs on the loop, so
-            it may touch loop state directly.
+        stop: What to call when either signal first arrives. Runs on the
+            loop, so it may touch loop state directly.
 
     Yields:
         Nothing; the body runs with the handlers installed.
 
     """
     loop = asyncio.get_running_loop()
+    task = asyncio.current_task()
+    asked = False
+
+    def on_signal() -> None:
+        nonlocal asked
+        if asked and task is not None:
+            _ = task.cancel()
+            return
+        asked = True
+        stop()
+
     installed: list[signal.Signals] = []
     try:
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
-                loop.add_signal_handler(sig, stop)
+                loop.add_signal_handler(sig, on_signal)
             except NotImplementedError:
                 # Windows' Proactor loop has no signal handlers. Ctrl-C then
                 # still arrives as KeyboardInterrupt, which main() handles.
@@ -675,7 +689,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except HueError as error:
         print(f"error: {error}", file=sys.stderr)
         return EXIT_FAILED
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        # Ctrl-C on a platform without loop signal handlers, or the second
+        # signal cancelling a plan whose bridge stopped answering.
         print("\nStopped.")
         return EXIT_OK
 

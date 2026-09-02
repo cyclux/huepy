@@ -73,7 +73,7 @@ class Segment:
     duration: float
 
 
-def _segment_count(ramp: float) -> int:
+def segment_count(ramp: float) -> int:
     """How many PUTs a ramp of this length needs.
 
     Args:
@@ -180,7 +180,7 @@ def plan_segments(
     """
     if ramp < 0:
         ramp = 0.0
-    count = _segment_count(ramp)
+    count = segment_count(ramp)
 
     if count > 1 and start is None:
         message = (
