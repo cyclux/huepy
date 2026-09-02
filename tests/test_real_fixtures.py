@@ -229,7 +229,7 @@ def test_plan_probe_records_sensor_representatives_and_frames() -> None:
     # top-level field, equal, so either read order lands on the same number.
     frame = frames["light_level"]["frame"]
     items = [
-        cast("dict[str, Any]", item)
+        item
         for event in cast("list[dict[str, Any]]", frame["events"])
         for item in cast("list[dict[str, Any]]", event["data"])
         if item.get("type") == "light_level"
