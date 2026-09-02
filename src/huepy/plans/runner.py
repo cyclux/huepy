@@ -513,16 +513,21 @@ class PlanRunner:
         now = self._clock()
         for path in self._scope_of.get(change.resource_id, ()):
             report = _describe_report(change.resource_id, brightness, on)
-            fade = self.arbiter.state_of(path).fade
+            state = self.arbiter.state_of(path)
+            # After a hand change the fade it interrupted goes on explaining
+            # the members the human did not touch; say which one answered.
+            fade = state.fade if state.fade is not None else state.lapsed
+            which = "running" if state.fade is not None else "interrupted"
             expected = fade.expected_at(now).brightness if fade is not None else None
             if not self.arbiter.note_foreign_change(path, brightness, now, on=on):
                 # One line per progress report the bridge sends during a fade.
                 # It is the override arithmetic's verdict, which is the thing
                 # to read when a light is yielded that should not have been.
                 logger.debug(
-                    "%s: %s explained by the running fade (expected %s)",
+                    "%s: %s explained by the %s fade (expected %s)",
                     self._label(path),
                     report,
+                    which,
                     _brightness_text(expected),
                 )
                 continue
