@@ -255,16 +255,24 @@ class Fade:
 
         """
         expected = self.expected_at(at)
-        if on is not None and on != (expected.on if expected.on is not None else True):
+        expected_on = expected.on if expected.on is not None else True
+        if on is False and expected_on is False:
+            # Off as asked. Whatever brightness rides along is the reading of
+            # a dark bulb -- the bridge reports `on=False brightness=0` for
+            # each member some twenty seconds after a fade-out lands.
+            return True
+        fading_out = self.target.on is False and at < self.ends_at()
+        if on is not None and on != expected_on and not (fading_out and on is True):
             return False
         if brightness is None:
             return True
         if expected.brightness is None:
-            # The fade never asked for a brightness, so a reported one is not
-            # its doing: someone reached for the dial while the plan was only
-            # switching the light. Waving it through once left the dial's
-            # setting unremembered and the next fade starting from a stale one.
-            return False
+            # A fade-out dims on its way down, and the bridge reports the bulb
+            # on and falling until the ramp ends. Past that, or on a fade that
+            # only switches the light on, a brightness the fade never asked
+            # for is someone at the dial. Waving it through once left the
+            # dial's setting unremembered.
+            return fading_out
         unknown_start = self.start is None or self.start.brightness is None
         if unknown_start and at < self.ends_at():
             return True
@@ -348,6 +356,12 @@ class ScopeState:
 
     Attributes:
         fade: The transition currently running, if any.
+        lapsed: The transition a hand change interrupted. The bridge keeps
+            running it on the members the human did not touch, and their
+            progress must not read as a second hand change: it once yielded
+            a room again on every report for the rest of the ramp, and
+            overwrote where the human had left the light with where the
+            other bulbs were.
         owner: The claim that last drove it. Its ``source`` is what tells
             "the same thing, still in force" from a hand-over -- comparing
             sources rather than scenario names is what makes a hold lapsing
@@ -369,6 +383,7 @@ class ScopeState:
     """
 
     fade: Fade | None = None
+    lapsed: Fade | None = None
     owner: Claim | None = None
     reported: Action | None = None
     yielded_at: datetime.datetime | None = None
@@ -736,7 +751,9 @@ class Arbiter:
         """
         # Deliberately not touching `owner`: it holds the claim that drove the
         # scope, and a fade knows nothing about who asked for it.
-        self.state_of(fade.scope).fade = fade
+        state = self.state_of(fade.scope)
+        state.fade = fade
+        state.lapsed = None
 
     def note_foreign_change(
         self,
@@ -768,6 +785,21 @@ class Arbiter:
         fade = state.fade
         if fade is not None and fade.explains(brightness, at, on=on):
             return False
+        lapsed = state.lapsed
+        if (
+            fade is None
+            and lapsed is not None
+            and on is None
+            and lapsed.explains(brightness, at)
+        ):
+            # A member the human did not touch, still fading as the bridge was
+            # told to. Not a second hand change. Only a bare dimming report
+            # qualifies: one that names `on` is a switch, and forgetting a
+            # switch is how a later step comes to drop `on` and leave a room
+            # dark.
+            return False
+        if fade is not None:
+            state.lapsed = fade
         state.fade = None
         if on is not None or brightness is not None:
             # Where the human left it is where the next fade starts from.

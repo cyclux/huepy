@@ -29,6 +29,7 @@ portal mirror in `docs/hue-dev-docs/` or this repo's own bridge fixtures.
 | A light's `dimming.brightness` is a transition's *target* from the moment the write is accepted, and a bare switch-off leaves it there; switched back on with no other field, it reports the target again | `tests/fixtures/plan_probe.json`, asserted at `test_plan_probe_measures_a_transition_across_switch_off` | The fade after a switch-off starts from the interrupted fade's target. Only a cold start is blind to brightness |
 | For that bulb the stream carried the target once and no progress report in sixty seconds | same fixture | A missing progress report is normal; the override arithmetic must not expect one |
 | During a 40 s room fade each bulb's own progress reports track the linear ramp within 2 points, one report every 15-20 s; the `grouped_light` reports the average of its members' *last* reports, up to 27 points off the ramp | `tests/fixtures/plan_probe.json`, asserted at `test_plan_probe_measures_progress_reports_during_a_room_fade` | Only `light` reports are judged; a group's report is not a measurement, and its members are all indexed |
+| A `light_level` event's delta carries `light.light_level_report.light_level` and the deprecated `light.light_level`, equal, with `light_level_valid` | same fixture, `test_plan_probe_records_sensor_representatives_and_frames` | `runner._reported_level()` reads the report and falls back to the field; both are real |
 
 The duration ceiling is **measured, not documented** — the API reference gives
 no bound at all. It was probed on a BSB002 at CLIP 1.78.0, and independently
@@ -248,6 +249,22 @@ bulb's progress that sat twenty-seven points off the ramp and yielded a room
 nobody had touched. `runner._observe()` therefore judges `light` reports only.
 Every member of a room or zone scope is indexed, so nothing is lost.
 
+A five-minute daemon soak on that room -- three timed steps, one light
+dimmed by hand mid-fade, the take-back at the next step -- found three more
+things the fakes had never modelled. A light a fade switches on from off
+ramps up from *dark*, whatever brightness the bridge held for it while off
+(17, 26, 37 on the way to 40), so `timeline.fade_origin()` starts the
+arithmetic at zero for a fade-in. A fade to off with a ramp reports each bulb
+still on and dimming until the ramp ends, then `on=False brightness=0` some
+twenty seconds later; `Fade.explains()` accepts both. And after the hand
+change, the bridge kept fading the two lights the human had not touched, and
+every one of their progress reports read as another hand change: the yield's
+instant crept forward for the rest of the ramp and `reported` ended at the
+other bulbs' level rather than the human's. `ScopeState.lapsed` keeps the
+interrupted fade so a bare dimming report it explains is left alone; a report
+that names `on` is always a switch, because forgetting one is how a later
+step comes to drop `on`.
+
 The corollary that was missed once: `Change.origin == "self"` *is* that time
 window, so the runner must not use it as proof either. Driven through a real
 `HueState`, a brightness of 95 reported thirty minutes into a fade expecting 73
@@ -365,7 +382,8 @@ integration probe establishing whether a third-party app key can POST one.
 | `stop()` ends `run()` without cancelling it; SIGTERM reaches it; what a write logs | `TestClose`, `TestLogging`, `tests/test_plans_cli.py::TestStopSignals` |
 | What `validate` prints per binding; a disabled sensor is a warning, not an error | `tests/test_plans_cli.py::TestValidateReport`, `TestResolveTriggers` |
 | Against a real bridge, in one vetted room: one-snapshot resolution, one `grouped_light` PUT per catch-up reaching every member, the echo is not a yield, a hand switch-off and a hand jump both yield through the state layer's window, a ceiling-length first segment is accepted on a group | `tests/integration/test_live_plans.py` (opt-in) |
-| What a bare switch-off leaves as the light's brightness; a real `light_level` resource shape | `tests/test_real_fixtures.py::test_plan_probe_*` |
+| What a bare switch-off leaves as the light's brightness; a real `light_level` resource and event shape | `tests/test_real_fixtures.py::test_plan_probe_*` |
 | A switch-off keeps the running segment's target, or the off step's starting level; a jump during the fade that follows is seen; a report naming only `on` keeps the brightness; a dimming report during an on-only fade is a human | `TestSwitchOffMemory` |
 | A refused write leaves the previous fade in force, so a switch-off after it remembers what the bridge holds; a refused first segment and a failed tail both retry as a chain | `TestBeliefAfterFailure` |
 | A `grouped_light` report is never judged; a member light's still is | `TestGroupReports` |
+| A fade-out's own on-and-dimming and off-at-zero reports are the fade; a fade-in from off is judged from dark; untouched members' progress after a hand change is not a second hand change, a switch is | `TestFadeOut`, `TestProgressAfterHandChange`, `TestLapsedFade` |

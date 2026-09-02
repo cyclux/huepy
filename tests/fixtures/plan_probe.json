@@ -1,13 +1,47 @@
 {
   "passive_sensors": {
-    "frames": {},
-    "listened_seconds": 180.05654132400014,
+    "frames": {
+      "light_level": {
+        "at_seconds": 204.51833374299895,
+        "frame": {
+          "event_id": "1700000000:0",
+          "events": [
+            {
+              "creationtime": "2020-01-01T00:00:00.000Z",
+              "data": [
+                {
+                  "id": "resource-001",
+                  "id_v1": "/scrubbed/resource",
+                  "light": {
+                    "light_level": 6131,
+                    "light_level_report": {
+                      "changed": "2020-01-01T00:00:00.001Z",
+                      "light_level": 6131
+                    },
+                    "light_level_valid": true
+                  },
+                  "owner": {
+                    "rid": "resource-002",
+                    "rtype": "device"
+                  },
+                  "type": "light_level"
+                }
+              ],
+              "id": "resource-003",
+              "type": "update"
+            }
+          ],
+          "received_at": "2020-01-01T00:00:00.002Z"
+        }
+      }
+    },
+    "listened_seconds": 204.51836824699785,
     "representatives": {
       "button": {
         "button": {
           "button_report": {
             "event": "long_release",
-            "updated": "2020-01-01T00:00:00.000Z"
+            "updated": "2020-01-01T00:00:00.003Z"
           },
           "event_values": [
             "initial_press",
@@ -19,49 +53,49 @@
           "last_event": "long_release",
           "repeat_interval": 800
         },
-        "id": "resource-001",
+        "id": "resource-004",
         "id_v1": "/scrubbed/resource",
         "metadata": {
           "control_id": 2
         },
         "owner": {
-          "rid": "resource-002",
+          "rid": "resource-005",
           "rtype": "device"
         },
         "type": "button"
       },
       "light_level": {
         "enabled": true,
-        "id": "resource-003",
+        "id": "resource-001",
         "id_v1": "/scrubbed/resource",
         "light": {
-          "light_level": 7002,
+          "light_level": 5619,
           "light_level_report": {
-            "changed": "2020-01-01T00:00:00.001Z",
-            "light_level": 7002
+            "changed": "2020-01-01T00:00:00.004Z",
+            "light_level": 5619
           },
           "light_level_valid": true
         },
         "owner": {
-          "rid": "resource-004",
+          "rid": "resource-002",
           "rtype": "device"
         },
         "type": "light_level"
       },
       "motion": {
         "enabled": true,
-        "id": "resource-005",
+        "id": "resource-006",
         "id_v1": "/scrubbed/resource",
         "motion": {
           "motion": false,
           "motion_report": {
-            "changed": "2020-01-01T00:00:00.002Z",
+            "changed": "2020-01-01T00:00:00.005Z",
             "motion": false
           },
           "motion_valid": true
         },
         "owner": {
-          "rid": "resource-004",
+          "rid": "resource-002",
           "rtype": "device"
         },
         "sensitivity": {
@@ -225,16 +259,16 @@
           "event_id": "1700000000:0",
           "events": [
             {
-              "creationtime": "2020-01-01T00:00:00.003Z",
+              "creationtime": "2020-01-01T00:00:00.000Z",
               "data": [
                 {
-                  "id": "resource-006",
+                  "id": "resource-001",
                   "id_v1": "/scrubbed/resource",
                   "on": {
                     "on": true
                   },
                   "owner": {
-                    "rid": "resource-007",
+                    "rid": "resource-002",
                     "rtype": "device"
                   },
                   "service_id": 0,
@@ -244,21 +278,21 @@
                   "dimming": {
                     "brightness": 20.16
                   },
-                  "id": "resource-006",
+                  "id": "resource-001",
                   "id_v1": "/scrubbed/resource",
                   "owner": {
-                    "rid": "resource-007",
+                    "rid": "resource-002",
                     "rtype": "device"
                   },
                   "service_id": 0,
                   "type": "light"
                 }
               ],
-              "id": "resource-008",
+              "id": "resource-003",
               "type": "update"
             }
           ],
-          "received_at": "2020-01-01T00:00:00.004Z"
+          "received_at": "2020-01-01T00:00:00.001Z"
         }
       },
       {
@@ -267,27 +301,27 @@
           "event_id": "1700000002:0",
           "events": [
             {
-              "creationtime": "2020-01-01T00:00:00.005Z",
+              "creationtime": "2020-01-01T00:00:00.002Z",
               "data": [
                 {
                   "dimming": {
                     "brightness": 100.0
                   },
-                  "id": "resource-006",
+                  "id": "resource-001",
                   "id_v1": "/scrubbed/resource",
                   "owner": {
-                    "rid": "resource-007",
+                    "rid": "resource-002",
                     "rtype": "device"
                   },
                   "service_id": 0,
                   "type": "light"
                 }
               ],
-              "id": "resource-009",
+              "id": "resource-004",
               "type": "update"
             }
           ],
-          "received_at": "2020-01-01T00:00:00.006Z"
+          "received_at": "2020-01-01T00:00:00.003Z"
         }
       },
       {
@@ -296,27 +330,27 @@
           "event_id": "1700000012:0",
           "events": [
             {
-              "creationtime": "2020-01-01T00:00:00.007Z",
+              "creationtime": "2020-01-01T00:00:00.004Z",
               "data": [
                 {
-                  "id": "resource-006",
+                  "id": "resource-001",
                   "id_v1": "/scrubbed/resource",
                   "on": {
                     "on": false
                   },
                   "owner": {
-                    "rid": "resource-007",
+                    "rid": "resource-002",
                     "rtype": "device"
                   },
                   "service_id": 0,
                   "type": "light"
                 }
               ],
-              "id": "resource-010",
+              "id": "resource-005",
               "type": "update"
             }
           ],
-          "received_at": "2020-01-01T00:00:00.008Z"
+          "received_at": "2020-01-01T00:00:00.005Z"
         }
       },
       {
@@ -325,27 +359,27 @@
           "event_id": "1700000022:0",
           "events": [
             {
-              "creationtime": "2020-01-01T00:00:00.009Z",
+              "creationtime": "2020-01-01T00:00:00.006Z",
               "data": [
                 {
-                  "id": "resource-006",
+                  "id": "resource-001",
                   "id_v1": "/scrubbed/resource",
                   "on": {
                     "on": true
                   },
                   "owner": {
-                    "rid": "resource-007",
+                    "rid": "resource-002",
                     "rtype": "device"
                   },
                   "service_id": 0,
                   "type": "light"
                 }
               ],
-              "id": "resource-011",
+              "id": "resource-006",
               "type": "update"
             }
           ],
-          "received_at": "2020-01-01T00:00:00.010Z"
+          "received_at": "2020-01-01T00:00:00.007Z"
         }
       }
     ],

@@ -287,6 +287,29 @@ def interpolate(start: Action | None, end: Action, fraction: float) -> Action:
     return Action(on=end.on, brightness=brightness, xy=xy, mirek=mirek)
 
 
+def fade_origin(start: Action | None, target: Action) -> Action | None:
+    """Where a fade physically begins.
+
+    A light this fade switches on ramps up from dark, whatever brightness the
+    bridge held for it while it was off: driven from off to 40 over 45 s, a
+    bulb reported 17, 26 and 37 on the way, a straight line from zero (the
+    daemon soak in ``PLANS.md``). Judging that against a line from the held
+    brightness called every one of those reports a human.
+
+    Args:
+        start: The state the fade is believed to begin from, if known.
+        target: Where it is heading.
+
+    Returns:
+        The start with brightness zero when the fade turns the light on from
+        off; otherwise the start as given.
+
+    """
+    if start is None or start.on is not False or target.on is not True:
+        return start
+    return Action(on=False, brightness=0.0, xy=start.xy, mirek=start.mirek)
+
+
 def current_step(
     plan: Plan,
     scenario: Scenario,

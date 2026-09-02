@@ -40,7 +40,14 @@ from huepy.plans.fields import (
 from huepy.plans.protocol import Cancellable, ChangeSource, PlanClient
 from huepy.plans.resolve import Binding, ResolvedPlan, TriggerBinding, resolve
 from huepy.plans.schema import Plan, Rule, Side
-from huepy.plans.timeline import Zone, combine, in_zone, next_transition, zone_of
+from huepy.plans.timeline import (
+    Zone,
+    combine,
+    fade_origin,
+    in_zone,
+    next_transition,
+    zone_of,
+)
 from huepy.state.records import Change, Resync
 
 logger = logging.getLogger(__name__)
@@ -876,6 +883,10 @@ class PlanRunner:
         # and the fade has no brightness expectation to judge reports by.
         previous = state.fade
         start = previous.expected_at(now) if previous is not None else state.reported
+        # A light switched on from off ramps up from dark, not from the
+        # brightness the bridge held for it; the waypoints and the arithmetic
+        # that judges the bridge's reports both have to start there.
+        start = fade_origin(start, claim.target)
 
         segments = plan_segments(
             claim.binding,

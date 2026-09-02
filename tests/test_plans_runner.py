@@ -861,13 +861,19 @@ def contact(at, state):
 
 
 def light_level(at, lux, *, valid=True):
-    """Build a level report as the portal documents it: the report, not the field."""
+    """Build a level report shaped like the real one in tests/fixtures/plan_probe.json.
+
+    The bridge sends the report and the deprecated top-level field together,
+    with the same value.
+    """
+    raw = round(raw_light_level(lux))
     return sensor_change(
         LIGHT_LEVEL,
         "light_level",
         at,
         light={
-            "light_level_report": {"light_level": round(raw_light_level(lux))},
+            "light_level": raw,
+            "light_level_report": {"light_level": raw},
             "light_level_valid": valid,
         },
     )
@@ -1606,14 +1612,7 @@ class TestProgressAfterHandChange:
             assert await runner.tick() == 0
         assert len(http.writes) == 1
 
-    async def test_a_fade_from_a_switch_off_starts_from_the_interrupted_target(
-        self, bridge, http, clock
-    ):
-        # A switch-off leaves the bridge's brightness at the interrupted
-        # fade's target (tests/fixtures/plan_probe.json), so the fade that
-        # follows has a start to judge against: progress consistent with
-        # 80 -> 100 over an hour is ours, and a second switch-off is seen.
-        changes = FakeChanges()
+    async def fade_in_after_a_switch_off(self, bridge, clock, changes):
         clock.now = datetime.datetime(2026, 9, 1, 9, 0, tzinfo=BERLIN)
         runner = await watched_runner(bridge, clock, changes, RAMPED_ON_PLAN)
         await runner.catch_up()
@@ -1621,12 +1620,31 @@ class TestProgressAfterHandChange:
         changes.report(LIGHT, None, clock.now, delta={"on": {"on": False}})
         clock.now = datetime.datetime(2026, 9, 1, 12, 0, tzinfo=BERLIN)
         assert await runner.tick() == 1
-        assert http.writes[-1][2]["on"] == {"on": True}
-
         clock.advance(minutes=15)
-        changes.report(LIGHT, 85.0, clock.now)
+        return runner
+
+    async def test_a_fade_in_after_a_switch_off_ramps_up_from_dark(
+        self, bridge, http, clock
+    ):
+        # A switch-off leaves the bridge holding the interrupted fade's
+        # target, but a light a fade switches back on ramps up from dark
+        # (the daemon soak in PLANS.md): fifteen minutes into an hour from
+        # 0 to 100 the fade expects 25. A second switch-off is still seen.
+        changes = FakeChanges()
+        runner = await self.fade_in_after_a_switch_off(bridge, clock, changes)
+        assert http.writes[-1][2]["on"] == {"on": True}
+        changes.report(LIGHT, 25.0, clock.now)
         assert not runner.arbiter.is_yielded(GROUP_PATH)
         changes.report(LIGHT, None, clock.now, delta={"on": {"on": False}})
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+
+    async def test_a_report_on_the_held_line_after_a_fade_in_is_a_human(
+        self, bridge, http, clock
+    ):
+        # Where a line from the held 80 would be. The bulb is nowhere near it.
+        changes = FakeChanges()
+        runner = await self.fade_in_after_a_switch_off(bridge, clock, changes)
+        changes.report(LIGHT, 85.0, clock.now)
         assert runner.arbiter.is_yielded(GROUP_PATH)
 
 
@@ -2383,3 +2401,147 @@ class TestGroupReports:
         clock.advance(minutes=10)
         changes.report(LIGHT, 80.0, clock.now)
         assert runner.arbiter.is_yielded(GROUP_PATH)
+
+
+OFF_WITH_RAMP_PLAN = {
+    "version": 1,
+    "defaults": {"catchup_ramp": "5s"},
+    "scenario": [
+        {
+            "name": "day",
+            "scope": ["room:Living Room"],
+            "step": [
+                {"at": "08:00", "set": {"on": True, "brightness": 80}},
+                {"at": "22:00", "ramp": "10s", "set": {"on": False}},
+            ],
+        }
+    ],
+}
+
+
+class TestFadeOut:
+    """What the bridge reports while and after a fade to off (the daemon soak)."""
+
+    async def fading_out(self, bridge, clock, changes):
+        clock.now = datetime.datetime(2026, 9, 1, 21, 0, tzinfo=BERLIN)
+        runner = await watched_runner(bridge, clock, changes, OFF_WITH_RAMP_PLAN)
+        await runner.catch_up()
+        clock.now = datetime.datetime(2026, 9, 1, 22, 0, tzinfo=BERLIN)
+        assert await runner.tick() == 1
+        return runner
+
+    async def test_still_on_and_dimming_during_the_ramp_is_the_fade(
+        self, bridge, clock
+    ):
+        changes = FakeChanges()
+        runner = await self.fading_out(bridge, clock, changes)
+        clock.advance(seconds=3)
+        report = {"on": {"on": True}, "dimming": {"brightness": 50.0}}
+        changes.deliver(change(LIGHT, None, clock.now, delta=report))
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+
+    async def test_off_at_zero_after_the_ramp_is_the_fade(self, bridge, clock):
+        changes = FakeChanges()
+        runner = await self.fading_out(bridge, clock, changes)
+        clock.advance(seconds=30)
+        report = {"on": {"on": False}, "dimming": {"brightness": 0.0}}
+        changes.deliver(change(LIGHT, None, clock.now, delta=report))
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+
+    async def test_switched_on_after_the_ramp_is_a_human(self, bridge, clock):
+        changes = FakeChanges()
+        runner = await self.fading_out(bridge, clock, changes)
+        clock.advance(minutes=1)
+        changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": True}}))
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+
+
+SECOND_LIGHT = "light-2"
+
+
+def two_light_resources():
+    return [
+        {
+            "id": "room-living",
+            "type": "room",
+            "metadata": {"name": "Living Room"},
+            "children": [
+                {"rid": DEVICE, "rtype": "device"},
+                {"rid": "dev-lamp2", "rtype": "device"},
+            ],
+            "services": [{"rid": GROUPED_LIGHT, "rtype": "grouped_light"}],
+        },
+        {
+            "id": LIGHT,
+            "type": "light",
+            "metadata": {"name": "Corner Lamp"},
+            "owner": {"rid": DEVICE, "rtype": "device"},
+        },
+        {
+            "id": SECOND_LIGHT,
+            "type": "light",
+            "metadata": {"name": "Floor Lamp"},
+            "owner": {"rid": "dev-lamp2", "rtype": "device"},
+        },
+    ]
+
+
+class TestLapsedFade:
+    """After a hand change to one light, the bridge keeps fading the others."""
+
+    async def yielded_mid_fade(self, hue, http, clock, changes):
+        http.queue("/clip/v2/resource", envelope(*two_light_resources()))
+        clock.now = datetime.datetime(2026, 9, 1, 9, 0, tzinfo=BERLIN)
+        runner = await watched_runner(hue, clock, changes, DAY_PLAN)
+        await runner.catch_up()
+        await runner.tick()
+        clock.advance(minutes=10)
+        changes.report(LIGHT, 95.0, clock.now)
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+        return runner
+
+    async def test_an_untouched_members_progress_is_not_a_second_hand_change(
+        self, hue, http, clock
+    ):
+        # 20 -> 100 over an hour expects 47 at twenty past. The other lamp
+        # reporting exactly that is the fade the bridge is still running,
+        # not someone else at a switch: the yield keeps its instant and the
+        # hand change keeps its level.
+        changes = FakeChanges()
+        runner = await self.yielded_mid_fade(hue, http, clock, changes)
+        yielded_at = runner.arbiter.state_of(GROUP_PATH).yielded_at
+        clock.advance(minutes=10)
+        changes.report(SECOND_LIGHT, 47.0, clock.now)
+        state = runner.arbiter.state_of(GROUP_PATH)
+        assert state.yielded_at == yielded_at
+        assert state.reported == Action(brightness=95.0)
+
+    async def test_a_second_hand_change_still_counts(self, hue, http, clock):
+        changes = FakeChanges()
+        runner = await self.yielded_mid_fade(hue, http, clock, changes)
+        clock.advance(minutes=10)
+        changes.report(SECOND_LIGHT, 5.0, clock.now)
+        state = runner.arbiter.state_of(GROUP_PATH)
+        assert state.yielded_at == clock.now
+        assert state.reported == Action(brightness=5.0)
+
+    async def test_a_switch_the_lapsed_fade_would_explain_still_counts(
+        self, hue, http, clock
+    ):
+        # Forgetting a switch is how a later step comes to drop `on`.
+        changes = FakeChanges()
+        runner = await self.yielded_mid_fade(hue, http, clock, changes)
+        clock.advance(minutes=10)
+        changes.deliver(
+            change(SECOND_LIGHT, None, clock.now, delta={"on": {"on": True}})
+        )
+        state = runner.arbiter.state_of(GROUP_PATH)
+        assert state.yielded_at == clock.now
+        assert state.reported == Action(on=True, brightness=95.0)
+
+    async def test_the_next_fade_forgets_the_lapsed_one(self, hue, http, clock):
+        changes = FakeChanges()
+        runner = await self.yielded_mid_fade(hue, http, clock, changes)
+        clock.now = datetime.datetime(2026, 9, 1, 22, 0, tzinfo=BERLIN)
+        assert await runner.tick() == 1
+        assert runner.arbiter.state_of(GROUP_PATH).lapsed is None

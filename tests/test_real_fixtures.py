@@ -224,8 +224,25 @@ def test_plan_probe_records_sensor_representatives_and_frames() -> None:
         frame = cast("dict[str, Any]", record["frame"])
         for event in cast("list[dict[str, Any]]", frame["events"]):
             _ = HueEvent.model_validate(event)
-    if "light_level" not in frames:
-        pytest.skip("the passive listen caught no light_level event; rerun the probe")
+
+    # A real level event: the delta carries the report *and* the deprecated
+    # top-level field, equal, so either read order lands on the same number.
+    frame = frames["light_level"]["frame"]
+    items = [
+        cast("dict[str, Any]", item)
+        for event in cast("list[dict[str, Any]]", frame["events"])
+        for item in cast("list[dict[str, Any]]", event["data"])
+        if item.get("type") == "light_level"
+    ]
+    assert items
+    reading = cast("dict[str, Any]", items[0]["light"])
+    report = cast("dict[str, Any]", reading["light_level_report"])
+    assert reading["light_level_valid"] is True
+    assert report["light_level"] == reading["light_level"] > 0
+    parsed = models.parse_resource(items[0])
+    assert isinstance(parsed, models.LightLevel)
+    assert parsed.lux is not None
+    assert parsed.lux > 0
 
 
 def test_real_fixtures_contain_no_raw_uuids() -> None:

@@ -16,7 +16,8 @@ each, so a ``light_level`` trigger can be checked against a real delta.
 
 Every write is restored even when a step fails, and no display name is ever
 written into the evidence: the scrubber replaces ``name`` keys but cannot
-recognise a name inside free text.
+recognise a name inside free text. Each run scrubs only the sections it
+captured, so synthetic ids are consistent within a section, not across runs.
 """
 
 import argparse
@@ -385,22 +386,24 @@ async def main() -> None:
         raise RuntimeError(msg)
     args = parse_args()
     evidence = await asyncio.to_thread(load_evidence)
+    fresh: dict[str, Any] = {}
     async with Hue() as hue:
         if not args.skip_resume:
-            evidence["resume_after_switch_off"] = await probe_resume_after_switch_off(
-                hue
-            )
+            fresh["resume_after_switch_off"] = await probe_resume_after_switch_off(hue)
         if not args.skip_progress:
-            evidence[
+            fresh[
                 "progress_during_group_fade"
             ] = await probe_progress_during_group_fade(hue)
         if not args.skip_passive:
-            evidence["passive_sensors"] = await probe_passive_sensors(
+            fresh["passive_sensors"] = await probe_passive_sensors(
                 hue, max(0.1, cast("float", args.listen_minutes))
             )
 
-    scrubbed = Scrubber().value(evidence)
-    await asyncio.to_thread(write_evidence, cast("dict[str, Any]", scrubbed))
+    # Only what this run captured is scrubbed. Sections already in the file
+    # carry synthetic ids and cursors; rebasing a real cursor against one of
+    # those as the epoch once produced a cursor the hygiene test refuses.
+    evidence.update(cast("dict[str, Any]", Scrubber().value(fresh)))
+    await asyncio.to_thread(write_evidence, evidence)
     _say(f"wrote {OUTPUT_FILE}")
 
 
