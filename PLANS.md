@@ -307,3 +307,4 @@ integration probe establishing whether a third-party app key can POST one.
 | One failing scope neither stops the runner nor is forgotten | `TestFailureIsolation` |
 | `stop()` ends `run()` without cancelling it; SIGTERM reaches it; what a write logs | `TestClose`, `TestLogging`, `tests/test_plans_cli.py::TestStopSignals` |
 | What `validate` prints per binding; a disabled sensor is a warning, not an error | `tests/test_plans_cli.py::TestValidateReport`, `TestResolveTriggers` |
+| Against a real bridge, in one vetted room: one-snapshot resolution, one `grouped_light` PUT per catch-up reaching every member, the echo is not a yield, a hand switch-off and a hand jump both yield through the state layer's window, a ceiling-length first segment is accepted on a group | `tests/integration/test_live_plans.py` (opt-in) |

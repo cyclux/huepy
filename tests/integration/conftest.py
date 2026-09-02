@@ -22,7 +22,7 @@ from typing import Any
 import pytest
 from pydantic import JsonValue
 
-from huepy import BridgeConnectionError, Hue, models
+from huepy import BridgeConnectionError, Hue, ResourceNotFoundError, models
 from huepy.client.http import WriteObserver
 
 OPT_IN_ENV = "HUEPY_INTEGRATION"
@@ -132,6 +132,50 @@ async def a_room(hue: Hue, restore_all_lights: None) -> models.Room:
     if not usable:
         pytest.skip("no room with a grouped_light on this bridge")
     return usable[0]
+
+
+PLAN_ROOM = "Arbeitszimmer"
+"""The one room the plan runner's live tests are allowed to drive.
+
+A constant rather than an environment knob on purpose: the suite is already
+gated by `HUEPY_INTEGRATION`, and the room was chosen by hand for what is in
+it -- every member dims, nothing in it is a bathroom light someone needs. An
+override would invite pointing the suite at a room nobody vetted. Anyone else
+running the suite edits this line; the skip message names the rooms that exist.
+"""
+
+
+@pytest.fixture
+async def arbeitszimmer(hue: Hue) -> models.Room:
+    """Look up the vetted room by name. Reads only; changes nothing."""
+    try:
+        room = await hue.rooms.get(PLAN_ROOM)
+    except ResourceNotFoundError as exc:
+        pytest.skip(f"no room named {PLAN_ROOM!r}; known: {', '.join(exc.known)}")
+    if room.service_id(models.ResourceType.GROUPED_LIGHT) is None:
+        pytest.skip(f"{PLAN_ROOM!r} has no grouped_light to drive")
+    return room
+
+
+@pytest.fixture
+async def arbeitszimmer_restored(
+    hue: Hue, arbeitszimmer: models.Room, restore_all_lights: None
+) -> AsyncIterator[models.Room]:
+    """Yield the vetted room, and put its lights back afterwards.
+
+    Two nets: the room's own `GroupState` restores each member light with its
+    colour or colour temperature intact, and `restore_all_lights` -- already
+    settled and snapshotted by the time this runs -- covers anything a failing
+    test reached beyond the room.
+    """
+    before = await arbeitszimmer.capture()
+    if not before.lights:
+        pytest.skip(f"{PLAN_ROOM!r} contains no lights")
+    try:
+        yield arbeitszimmer
+    finally:
+        _ = await arbeitszimmer.restore(before)
+        await asyncio.sleep(SETTLE_BEFORE_SNAPSHOT)
 
 
 @pytest.fixture

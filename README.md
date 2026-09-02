@@ -551,7 +551,8 @@ Every test that changes lights snapshots their state first and restores it
 afterwards, including on failure; a suite-wide safety fixture restores all
 lights touched through the standard integration fixtures. These are the tests
 that catch what unit tests cannot: real firmware sending a shape no fixture
-predicted.
+predicted. The plan runner's live tests drive one room only, named by
+`PLAN_ROOM` in `tests/integration/conftest.py`, and skip when it is absent.
 
 The runnable examples are grouped by the API level they are meant to teach:
 
