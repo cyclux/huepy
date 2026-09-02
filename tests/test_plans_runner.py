@@ -2468,6 +2468,16 @@ class TestFadeOut:
         changes.report(LIGHT, 10.0, clock.now)
         assert not runner.arbiter.is_yielded(GROUP_PATH)
 
+    async def test_a_straggler_just_after_the_ramp_is_the_fade(self, bridge, clock):
+        # `on=True brightness=2` arrived 0.9 s after a fade-out landed: the
+        # tail of the fade on the bridge's cadence, not someone at a switch.
+        changes = FakeChanges()
+        runner = await self.fading_out(bridge, clock, changes)
+        clock.advance(seconds=12)
+        report = {"on": {"on": True}, "dimming": {"brightness": 2.0}}
+        changes.deliver(change(LIGHT, None, clock.now, delta=report))
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+
     async def test_switched_on_after_the_ramp_is_a_human(self, bridge, clock):
         changes = FakeChanges()
         runner = await self.fading_out(bridge, clock, changes)
@@ -2565,3 +2575,44 @@ class TestLapsedFade:
         clock.now = datetime.datetime(2026, 9, 1, 22, 0, tzinfo=BERLIN)
         assert await runner.tick() == 1
         assert runner.arbiter.state_of(GROUP_PATH).lapsed is None
+
+
+class TestLateWake:
+    async def test_waking_late_recomputes_rather_than_snapping(
+        self, bridge, http, clock
+    ):
+        # The daemon slept through a step -- a suspended laptop -- and woke
+        # half an hour on. Applying the step with what is left of its ramp
+        # is a snap; a late wake is a catch-up, landed over the catch-up ramp.
+        clock.now = datetime.datetime(2026, 9, 1, 8, 59, 59, 900000, tzinfo=BERLIN)
+        runner = await make_runner(bridge, clock)
+        task = asyncio.create_task(runner.run())
+        for _ in range(4):
+            await asyncio.sleep(0)
+        http.calls.clear()
+
+        clock.now = datetime.datetime(2026, 9, 1, 9, 30, tzinfo=BERLIN)
+        await asyncio.sleep(0.3)
+        await runner.close()
+        await asyncio.wait_for(task, timeout=1.0)
+
+        assert http.writes[0][2]["dimming"]["brightness"] == 60
+        assert http.writes[0][2]["dynamics"]["duration"] == 5000
+        assert http.writes[1][2]["dimming"]["brightness"] == 100
+        assert http.writes[1][2]["dynamics"]["duration"] == 30 * 60 * 1000
+
+    async def test_waking_on_time_ticks(self, bridge, http, clock):
+        clock.now = datetime.datetime(2026, 9, 1, 8, 59, 59, 900000, tzinfo=BERLIN)
+        runner = await make_runner(bridge, clock)
+        task = asyncio.create_task(runner.run())
+        for _ in range(4):
+            await asyncio.sleep(0)
+        http.calls.clear()
+
+        clock.now = datetime.datetime(2026, 9, 1, 9, 0, 0, 100000, tzinfo=BERLIN)
+        await asyncio.sleep(0.3)
+        await runner.close()
+        await asyncio.wait_for(task, timeout=1.0)
+
+        assert len(http.writes) == 1
+        assert http.writes[0][2]["dynamics"]["duration"] == 60 * 60 * 1000 - 100

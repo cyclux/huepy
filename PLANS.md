@@ -362,6 +362,12 @@ to replay and nothing that can get out of sync with reality.
 This is the reason `timeline.py` must stay pure and clock-injected. It is also
 why a whole simulated day runs in microseconds in `tests/test_plans_runner.py`.
 
+A late wake is a catch-up too. Suspended across a step with SIGSTOP, the
+daemon woke 45 seconds on and applied the missed step with what was left of
+its ramp -- nothing -- a snap to 90%. The loop now measures how far past its
+intended wake-up it resumed; more than `LATE_WAKE_SECONDS` and it recomputes
+every scope exactly as after a reconnect, landing over `catchup_ramp`.
+
 Stopping is a request, not a cancellation. `PlanRunner.stop()` sets the
 closing flag and wakes the loop; `run()` returns after the write it is on, and
 the context managers around it close the session in order. The CLI installs
@@ -411,4 +417,5 @@ integration probe establishing whether a third-party app key can POST one.
 | A switch-off keeps the running segment's target, or the off step's starting level; a jump during the fade that follows is seen; a report naming only `on` keeps the brightness; a dimming report during an on-only fade is a human | `TestSwitchOffMemory` |
 | A refused write leaves the previous fade in force, so a switch-off after it remembers what the bridge holds; a refused first segment and a failed tail both retry as a chain | `TestBeliefAfterFailure` |
 | A `grouped_light` report is never judged; a member light's still is | `TestGroupReports` |
-| A fade-out's own on-and-dimming and off-at-zero reports are the fade; a fade-in from off is judged from dark; untouched members' progress after a hand change is not a second hand change, a switch is | `TestFadeOut`, `TestProgressAfterHandChange`, `TestLapsedFade` |
+| A fade-out's own on-and-dimming and off-at-zero reports are the fade, a straggler within the grace too; a fade-in from off is judged from dark; untouched members' progress after a hand change is not a second hand change, a switch is | `TestFadeOut`, `TestProgressAfterHandChange`, `TestLapsedFade` |
+| A wake more than `LATE_WAKE_SECONDS` late is a catch-up, not a snap; an on-time wake ticks | `TestLateWake` |

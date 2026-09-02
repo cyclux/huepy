@@ -63,6 +63,21 @@ people.
 """
 
 
+FADE_OUT_GRACE = 5.0
+"""Seconds after a fade to off ends during which its last report may still arrive.
+
+Measured: `on=True brightness=2` from a member arrived 0.9 s after a ten
+second fade-out landed -- the tail of the fade, on the bridge's reporting
+cadence, not someone at the switch.
+"""
+
+FADE_OUT_TAIL = 10.0
+"""The most a bulb still reports while a fade-out's last report is on its way.
+
+A report in the grace that says the light is on counts as the fade's tail
+only when it is nearly dark like that; a bare ``on`` is a switch.
+"""
+
 TIMED_FROM_END = frozenset({TriggerKind.MOTION, TriggerKind.LIGHT_LEVEL})
 """The trigger kinds that last: a hold on one is timed from when it ends."""
 
@@ -257,7 +272,13 @@ class Fade:
         expected = self.expected_at(at)
         expected_on = expected.on if expected.on is not None else True
         to_off = self.target.on is False
-        fading_out = to_off and at < self.ends_at()
+        ends_at = self.ends_at()
+        tail = (
+            at < ends_at + datetime.timedelta(seconds=FADE_OUT_GRACE)
+            and brightness is not None
+            and brightness <= FADE_OUT_TAIL
+        )
+        fading_out = to_off and (at < ends_at or tail)
         # Off as asked. A report that does not say the light is on is the
         # reading of a dark bulb: the bridge sends `on=False brightness=0` for
         # each member some twenty seconds after a fade-out lands, `dimming 0`

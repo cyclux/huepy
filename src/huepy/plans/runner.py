@@ -52,6 +52,15 @@ from huepy.state.records import Change, Resync
 
 logger = logging.getLogger(__name__)
 
+LATE_WAKE_SECONDS = 5.0
+"""How far past its intended wake-up the loop may resume before it recomputes.
+
+A laptop suspended across a step, a VM paused, a machine that hibernated:
+the loop wakes with the clock far ahead of where it expected. Applying the
+missed step then with its remaining ramp -- often nothing -- is a snap, and
+the beliefs about what is in flight are stale. A late wake is a catch-up.
+"""
+
 MAX_SLEEP = 900.0
 """Longest nap between wake-ups, in seconds.
 
@@ -1078,6 +1087,12 @@ class PlanRunner:
                     _ = waker.cancel()
             if self._closing.is_set():
                 break
+            overslept = (self._clock() - now).total_seconds() - delay
+            if overslept > LATE_WAKE_SECONDS:
+                logger.info(
+                    "woke %s late; recomputing every scope", format_duration(overslept)
+                )
+                self._needs_catchup = True
             # Cleared here, after the wait and before the work, never before
             # the wait. A trigger that lands while a tick is awaiting a write
             # sets the event mid-tick; clearing on the way back into the loop

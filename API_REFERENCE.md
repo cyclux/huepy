@@ -1202,11 +1202,12 @@ ZigBee message.
 
 ### Restarts
 
-The runner keeps no durable state. On start, and after every reconnect, it asks
-where each scope *should* be at this instant — interpolating a part-finished
-fade — moves there over `defaults.catchup_ramp`, and then hands the rest of the
-step's ramp to the bridge. A process killed half an hour into a sunset comes
-back, lands in the right place, and carries on fading.
+The runner keeps no durable state. On start, after every reconnect, and after
+waking more than a few seconds later than it meant to — a suspended laptop —
+it asks where each scope *should* be at this instant — interpolating a
+part-finished fade — moves there over `defaults.catchup_ramp`, and then hands
+the rest of the step's ramp to the bridge. A process killed half an hour into
+a sunset comes back, lands in the right place, and carries on fading.
 
 ### Manual changes
 
