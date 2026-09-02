@@ -46,7 +46,7 @@ from huepy.plans.resolve import resolve
 from huepy.plans.schema import Plan
 from huepy.state.records import Change
 
-from .conftest import PLAN_ROOM, Sent
+from .conftest import PLAN_ROOM, PLAN_ROOM_IGNORED, Sent
 
 pytestmark = pytest.mark.integration
 
@@ -181,7 +181,12 @@ async def hand(opt_in: None) -> AsyncIterator[Hue]:
 
 
 async def dimmable_members(room: models.Room) -> list[models.Light]:
-    members = [light for light in await room.lights() if light.dimming is not None]
+    """The room's real, dimmable lights: what a test reads back and touches by hand."""
+    members = [
+        light
+        for light in await room.lights()
+        if light.dimming is not None and light.name not in PLAN_ROOM_IGNORED
+    ]
     if not members:
         pytest.skip(f"{PLAN_ROOM!r} has no dimmable lights")
     return members

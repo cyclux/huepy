@@ -145,6 +145,16 @@ running the suite edits this line; the skip message names the rooms that exist.
 """
 
 
+PLAN_ROOM_IGNORED = frozenset({"Buzzer"})
+"""Members of `PLAN_ROOM` that are not real lights.
+
+"Buzzer" is a development device. The room's grouped_light still reaches it,
+so it stays in the binding a test checks, but nothing reads it back or
+expects it to follow a fade: the bridge answers every command to it with an
+advisory "communication issues".
+"""
+
+
 @pytest.fixture
 async def arbeitszimmer(hue: Hue) -> models.Room:
     """Look up the vetted room by name. Reads only; changes nothing."""
