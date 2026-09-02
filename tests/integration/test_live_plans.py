@@ -51,6 +51,8 @@ from .conftest import PLAN_ROOM, Sent
 pytestmark = pytest.mark.integration
 
 PLAN_DIMMER = "Dimmer Arbeitszimmer"
+PLAN_LEVEL_SENSOR = "Bewegungssensor Bad"
+"""The one motion sensor on the reference bridge whose light level is enabled."""
 RESOURCE_ROOT = "/clip/v2/resource"
 SETTLE = 2.0
 """Seconds between a write and reading the light back, as in test_live_write."""
@@ -196,7 +198,11 @@ async def test_resolve_binds_the_room_and_the_dimmer(
     dimmer = next((d for d in devices if d.name == PLAN_DIMMER), None)
     if dimmer is None:
         pytest.skip(f"no device named {PLAN_DIMMER!r}")
+    sensor = next((d for d in devices if d.name == PLAN_LEVEL_SENSOR), None)
+    if sensor is None:
+        pytest.skip(f"no device named {PLAN_LEVEL_SENSOR!r}")
     buttons = {s.rid for s in dimmer.services if s.rtype == "button"}
+    levels = {s.rid for s in sensor.services if s.rtype == "light_level"}
 
     plan = Plan.model_validate(
         {
@@ -206,7 +212,14 @@ async def test_resolve_binds_the_room_and_the_dimmer(
                     "name": "room",
                     "scope": [f"room:{PLAN_ROOM}"],
                     "set": {"on": True},
-                    "rule": [{"when": f"button:{PLAN_DIMMER}", "set": {"on": False}}],
+                    "rule": [
+                        {"when": f"button:{PLAN_DIMMER}", "set": {"on": False}},
+                        {
+                            "when": f"light_level:{PLAN_LEVEL_SENSOR}",
+                            "below": 30,
+                            "set": {"on": True, "brightness": 40},
+                        },
+                    ],
                 }
             ],
         }
@@ -220,6 +233,10 @@ async def test_resolve_binds_the_room_and_the_dimmer(
     assert len(binding.light_ids) == len(members)
     assert set(resolved.triggers[f"button:{PLAN_DIMMER}"].resource_ids) == buttons
     assert buttons
+    level = resolved.triggers[f"light_level:{PLAN_LEVEL_SENSOR}"]
+    assert set(level.resource_ids) == levels
+    assert levels
+    assert resolved.warnings == (), "the reference sensor's level is enabled"
     assert calls == [Sent("GET", RESOURCE_ROOT, None)]
 
 

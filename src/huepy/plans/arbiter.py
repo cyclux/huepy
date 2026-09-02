@@ -61,6 +61,10 @@ people.
 """
 
 
+TIMED_FROM_END = frozenset({TriggerKind.MOTION, TriggerKind.LIGHT_LEVEL})
+"""The trigger kinds that last: a hold on one is timed from when it ends."""
+
+
 def _remember(
     state: "ScopeState",
     fade: "Fade | None",
@@ -208,8 +212,9 @@ class Hold:
             scope by hand is what ends that yield; one placed before it is
             not.
         until: When the hold lapses. None means no clock is running on it:
-            motion is still being reported, or the rule has no ``hold`` and
-            nothing scheduled covers the scope. Such a hold ends when a human
+            motion is still being reported, the light level is still past its
+            threshold, or the rule has no ``hold`` and nothing scheduled
+            covers the scope. Such a hold ends when a human
             changes the scope, when its scenario is released, or when a
             higher-priority claim takes over.
 
@@ -578,12 +583,13 @@ class Arbiter:
                 # say", not "forever": a button press should not switch the
                 # day curve off for good.
                 until = self.next_step_for(binding.path, now)
-            elif rule.when.kind == TriggerKind.MOTION:
-                # Motion is the one trigger with a duration. The hold's clock
-                # starts when the sensor reports the room still, not when it
-                # first saw movement -- otherwise someone standing in the
-                # hall for three minutes loses the light after ninety
-                # seconds. See :meth:`ended`.
+            elif rule.when.kind in TIMED_FROM_END:
+                # Motion and a light level have a duration. The hold's clock
+                # starts when the sensor reports the room still, or the level
+                # goes back past its threshold, not when the trigger first
+                # fired -- otherwise someone standing in the hall for three
+                # minutes loses the light after ninety seconds. See
+                # :meth:`ended`.
                 until = None
             else:
                 until = now + datetime.timedelta(seconds=rule.hold)

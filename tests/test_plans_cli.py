@@ -201,6 +201,35 @@ set = { brightness = 10 }
         assert "(2 requests)" in capsys.readouterr().out
 
 
+LEVEL_PLAN = """
+version = 1
+
+[[scenario]]
+name = "dusk"
+scope = ["room:Living Room"]
+
+[[scenario.rule]]
+when = "light_level:Window sensor"
+below = 30
+hold = "90s"
+set = { on = true, brightness = 15 }
+"""
+
+
+class TestExplainLevels:
+    def test_a_level_rule_prints_its_threshold_and_release(self, tmp_path, capsys):
+        path = tmp_path / "dusk.toml"
+        _ = path.write_text(LEVEL_PLAN)
+        assert (
+            main(["plan", "explain", str(path), "--at", "2026-09-01T12:00"]) == EXIT_OK
+        )
+        out = capsys.readouterr().out
+        assert (
+            "on light_level:Window sensor below 30 lux: on=True brightness=15, "
+            "hold 1m30s after it brightens past 150 lux"
+        ) in out
+
+
 class TestHelp:
     def test_every_verb_is_listed(self, capsys):
         with pytest.raises(SystemExit) as stopped:

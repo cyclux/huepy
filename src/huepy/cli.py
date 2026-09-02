@@ -24,7 +24,14 @@ from huepy.client.base import Hue
 from huepy.exceptions import HueError, PlanError
 from huepy.models import AnyResource, NamedResource
 from huepy.plans.executor import plan_segments
-from huepy.plans.fields import Selector, TriggerKind, format_duration
+from huepy.plans.fields import (
+    LIGHT_LEVEL_DEADBAND,
+    Selector,
+    TriggerKind,
+    format_duration,
+    lux_of_light_level,
+    raw_light_level,
+)
 from huepy.plans.loader import load_plans
 from huepy.plans.resolve import Binding, ResolvedPlan, TriggerBinding, bind
 from huepy.plans.runner import PlanRunner
@@ -103,8 +110,12 @@ def _explain(plan: Plan, when: datetime.datetime) -> None:
                 if rule.between is not None
                 else ""
             )
+            level = ""
+            if rule.threshold is not None:
+                side, lux = rule.threshold
+                level = f" {side} {_lux(lux)}"
             hold = _hold_of(rule, scenario, plan)
-            print(f"  on {rule.when}{window}: {rule.set.describe()}, {hold}")
+            print(f"  on {rule.when}{level}{window}: {rule.set.describe()}, {hold}")
 
 
 def _explain_flat(scenario: Scenario, plan: Plan) -> None:
@@ -166,6 +177,19 @@ def _explain_steps(
         print(f"  {span}  {waypoint.action.describe()}  ({requests})")
 
 
+def _lux(value: float) -> str:
+    """Render an illuminance the way a plan author would write it.
+
+    Args:
+        value: Lux.
+
+    Returns:
+        Whole lux from ten up, one decimal below.
+
+    """
+    return f"{value:.0f} lux" if value >= 10 else f"{value:.1f} lux"  # noqa: PLR2004 - the point where a decimal stops meaning anything
+
+
 def _hold_of(rule: Rule, scenario: Scenario, plan: Plan) -> str:
     """Say how long a rule keeps its scope, as the runner would decide it.
 
@@ -182,6 +206,14 @@ def _hold_of(rule: Rule, scenario: Scenario, plan: Plan) -> str:
         held = format_duration(rule.hold)
         if rule.when.kind == TriggerKind.MOTION:
             return f"hold {held} after motion stops"
+        if rule.threshold is not None:
+            side, lux = rule.threshold
+            raw = raw_light_level(lux)
+            if side == "below":
+                release = lux_of_light_level(raw + LIGHT_LEVEL_DEADBAND)
+                return f"hold {held} after it brightens past {_lux(release)}"
+            release = lux_of_light_level(raw - LIGHT_LEVEL_DEADBAND)
+            return f"hold {held} after it darkens past {_lux(release)}"
         return f"hold {held}"
     covered = {str(selector) for selector in scenario.scope}
     scheduled = any(

@@ -1169,23 +1169,26 @@ set = { brightness = 60, kelvin = 2700 }
 | `days` | `[[scenario]]` | Restrict a day curve to certain weekdays. |
 | `activate_on` / `release_on` | `[[scenario]]` | Make it a mode, dormant until a trigger fires. |
 | `when` / `between` / `hold` | `[[scenario.rule]]` | A trigger, an optional window, and how long to stay. |
+| `below` / `above` | `[[scenario.rule]]` | For a `light_level:` trigger, the illuminance in lux that fires it. Exactly one of the two. |
 
 Triggers and scopes share one `kind:name` grammar. Scopes take `light:`, `room:`
-and `zone:`; triggers take `motion:`, `button:`, `contact:` and `signal:`. A
-sensor carries no name of its own, so `motion:Hall sensor` means the motion
-service belonging to the *device* called `Hall sensor`.
+and `zone:`; triggers take `motion:`, `button:`, `contact:`, `light_level:` and
+`signal:`. A sensor carries no name of its own, so `motion:Hall sensor` means
+the motion service belonging to the *device* called `Hall sensor`.
 
 | Trigger | Fires when |
 | --- | --- |
 | `motion:Name` | The device's motion sensor reports motion starting. A `hold` on a motion rule starts counting when the sensor reports the room still again. |
 | `button:Name` | Any button on the device goes down (`initial_press`). |
 | `contact:Name` | The device's contact sensor opens (`no_contact`). |
+| `light_level:Name` | The device's light sensor crosses the rule's `below` or `above` lux. It ends — and a `hold` starts counting — once the reading is back past the threshold by about a factor of five, the band the Hue app itself uses, so a sensor that sees the light it switched on does not blink. A reading that stays on the firing side never re-fires. |
 | `signal:name` | The application calls `runner.fire("name")`. |
 
 Every trigger goes through one path, so any of them can sit in `activate_on`,
 `release_on` or a rule's `when`: a mode can be woken by a door contact and a
-rule can be fired by a signal. There is no `light_level:` trigger — a level
-only means something against a threshold, and the format has no key for one.
+rule can be fired by a signal. The one exception is `light_level:`, which
+needs a threshold and so only makes sense on a rule. Every rule naming one
+sensor must agree on its threshold.
 
 ### A fade is one request, not a tick loop
 
@@ -1248,6 +1251,9 @@ held until its next scheduled step — not forever, so a button press cannot
 switch a day curve off for good; when nothing scheduled covers the scope, the
 hold lasts until a hand change, a higher-priority claim, or the owning mode
 releasing. `between` is checked when the trigger fires, and wraps midnight.
+A `light_level:` rule usually wants no `between`: the crossing that matters
+often happens before a window opens, and a rule whose window opened after the
+room went dark has nothing left to fire on.
 
 When the hold lapses the scope goes back to whatever is underneath. A scope
 nobody claims is left alone, so a motion light that should switch itself off

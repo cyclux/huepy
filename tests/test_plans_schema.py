@@ -245,6 +245,65 @@ class TestRuleHold:
             )
 
 
+def level_rule(**keys):
+    return {"when": "light_level:Hall sensor", "set": {"brightness": 1}} | keys
+
+
+class TestLevelThreshold:
+    def test_a_light_level_rule_needs_a_threshold(self):
+        with pytest.raises(ValidationError, match="'below' or 'above'"):
+            _ = Rule.model_validate(level_rule())
+
+    def test_both_thresholds_are_rejected(self):
+        with pytest.raises(ValidationError, match="not both"):
+            _ = Rule.model_validate(level_rule(below=30, above=100))
+
+    def test_a_threshold_on_a_motion_rule_is_rejected(self):
+        with pytest.raises(ValidationError, match="only applies to a light_level"):
+            _ = Rule.model_validate(
+                {"when": "motion:Hall sensor", "below": 30, "set": {"brightness": 1}}
+            )
+
+    def test_a_zero_threshold_is_rejected(self):
+        with pytest.raises(ValidationError, match="below"):
+            _ = Rule.model_validate(level_rule(below=0))
+
+    def test_threshold_reports_the_side_and_lux(self):
+        assert Rule.model_validate(level_rule(below=30)).threshold == ("below", 30.0)
+        assert Rule.model_validate(level_rule(above=500)).threshold == ("above", 500.0)
+        motion = Rule.model_validate(
+            {"when": "motion:Hall sensor", "set": {"brightness": 1}}
+        )
+        assert motion.threshold is None
+
+    def test_activate_on_cannot_be_a_level(self):
+        with pytest.raises(
+            ValidationError, match="'activate_on' cannot be a light_level"
+        ):
+            _ = Scenario.model_validate(scenario(activate_on="light_level:Window"))
+
+    def test_two_rules_on_one_sensor_must_agree(self):
+        plan = {
+            "version": 1,
+            "scenario": [
+                scenario(name="dusk", rule=[level_rule(below=30)]),
+                scenario(name="dawn", rule=[level_rule(above=500)]),
+            ],
+        }
+        with pytest.raises(ValidationError, match="two thresholds"):
+            _ = Plan.model_validate(plan)
+
+    def test_two_rules_on_one_sensor_that_agree_are_fine(self):
+        plan = {
+            "version": 1,
+            "scenario": [
+                scenario(name="a", rule=[level_rule(below=30)]),
+                scenario(name="b", rule=[level_rule(below=30)]),
+            ],
+        }
+        assert len(Plan.model_validate(plan).scenario) == 2
+
+
 class TestLocation:
     def test_an_unknown_timezone_is_rejected_at_load(self):
         # Otherwise `huepy plan check` passes and `run` crashes on the first

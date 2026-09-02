@@ -25,15 +25,21 @@ import contextlib
 import datetime
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any, Literal, Self, cast
 
 from huepy.exceptions import HueError
 from huepy.plans.arbiter import Arbiter, Claim, Fade
 from huepy.plans.executor import Segment, plan_segments, send, send_chain
-from huepy.plans.fields import TriggerKind, format_duration
+from huepy.plans.fields import (
+    LIGHT_LEVEL_DEADBAND,
+    TriggerKind,
+    format_duration,
+    raw_light_level,
+)
 from huepy.plans.protocol import Cancellable, ChangeSource, PlanClient
 from huepy.plans.resolve import Binding, ResolvedPlan, TriggerBinding, resolve
-from huepy.plans.schema import Plan
+from huepy.plans.schema import Plan, Rule, Side
 from huepy.plans.timeline import Zone, combine, in_zone, next_transition, zone_of
 from huepy.state.records import Change, Resync
 
@@ -61,7 +67,41 @@ CONTACT_OPENED = "no_contact"
 type Clock = Callable[[], datetime.datetime]
 type Sleeper = Callable[[float], Awaitable[None]]
 type Edge = Literal["start", "end"]
-"""Which way a trigger moved: it fired, or -- for motion only -- it stopped."""
+"""Which way a trigger moved: it fired, or -- for motion and a level -- it stopped."""
+
+
+@dataclass(frozen=True, slots=True)
+class Threshold:
+    """A ``light_level:`` rule's threshold, on the bridge's own scale.
+
+    Attributes:
+        raw: The rule's lux, converted once with :func:`raw_light_level`.
+        side: Which side of it fires.
+
+    """
+
+    raw: float
+    side: Side
+
+    @classmethod
+    def of(cls, rule: Rule) -> "Threshold":
+        """Read a rule's threshold.
+
+        Args:
+            rule: A rule the schema has already required a threshold on.
+
+        Returns:
+            The threshold.
+
+        Raises:
+            ValueError: If the rule has none, which the schema prevents.
+
+        """
+        if rule.threshold is None:
+            msg = f"{rule.when} carries no threshold"
+            raise ValueError(msg)
+        side, lux = rule.threshold
+        return cls(raw=raw_light_level(lux), side=side)
 
 
 def _system_clock() -> datetime.datetime:
@@ -135,14 +175,85 @@ def _nested(delta: dict[str, Any], *keys: str) -> object:
     return current
 
 
+def _reported_level(change: Change) -> float | None:
+    """Pull a light level out of a change's delta, if it carried a valid one.
+
+    The report is read first: the bridge marks the top-level ``light_level``
+    deprecated in its favour, and a real event carries only the report.
+
+    Args:
+        change: The observed transition on a ``light_level`` service.
+
+    Returns:
+        The level on the bridge's scale, or None when the change carried no
+        reading or said the reading was invalid.
+
+    """
+    raw = change.delta.get("light")
+    if not isinstance(raw, dict):
+        return None
+    reading = cast("dict[str, Any]", raw)
+    if reading.get("light_level_valid") is False:
+        return None
+    value = _nested(reading, "light_level_report", "light_level")
+    if value is None:
+        value = reading.get("light_level")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _level_edge(
+    previous: float | None, level: float, threshold: Threshold
+) -> Edge | None:
+    """Work out whether a light-level reading crossed its rule's threshold.
+
+    A level fires on the *crossing*, never on a periodic repeat: a still-dark
+    reading three minutes after someone dimmed the hall by hand must not
+    refresh the hold and take the scope back from them. It is released only
+    once the reading is past the threshold by :data:`LIGHT_LEVEL_DEADBAND`,
+    so a sensor that sees the light it switched on does not blink.
+
+    With no previous reading the first one is judged as if the reading
+    before it had been on the far side: a daemon started after dark fires on
+    the sensor's next report, and one started in daylight does not.
+
+    Args:
+        previous: The last valid reading, if there was one.
+        level: The reading, on the bridge's scale.
+        threshold: The rule's threshold.
+
+    Returns:
+        ``"start"`` on crossing into the firing side, ``"end"`` on crossing
+        out past the band, None otherwise -- including anywhere inside the band.
+
+    """
+    if threshold.side == "above":
+        # Above is below with the axis flipped.
+        mirrored = Threshold(raw=-threshold.raw, side="below")
+        return _level_edge(None if previous is None else -previous, -level, mirrored)
+    release = threshold.raw + LIGHT_LEVEL_DEADBAND
+    firing = level < threshold.raw
+    released = level >= release
+    was_firing = previous is not None and previous < threshold.raw
+    was_released = previous is not None and previous >= release
+    if firing and not was_firing:
+        return "start"
+    if released and not was_released:
+        return "end"
+    return None
+
+
 def _edge(kind: str, change: Change) -> Edge | None:
     """Work out whether a change on a sensor service is the event its trigger means.
 
     Each kind has one meaning, chosen to be the thing a plan author means by
-    naming it: motion *starting*, a button going *down*, a door *opening*.
-    Only the delta is read -- what the bridge sent for this event -- never the
-    folded state, so a sensor being enabled or reporting its reading invalid
-    while its last state happened to be "motion" fires nothing.
+    naming it: motion *starting*, a button going *down*, a door *opening*. A
+    light level is the exception with a threshold, and lives in
+    :func:`_level_edge`. Only the delta is read -- what the bridge sent for
+    this event -- never the folded state, so a sensor being enabled or
+    reporting its reading invalid while its last state happened to be
+    "motion" fires nothing.
 
     Motion is the one kind with an *end*: the sensor reports ``false`` once
     the room has been still for its own timeout, and that is when a hold's
@@ -218,6 +329,8 @@ class PlanRunner:
         self._scope_of: dict[str, set[str]] = {}
         self._binding_of: dict[str, Binding] = {}
         self._triggers_of: dict[str, list[TriggerBinding]] = {}
+        self._thresholds: dict[str, Threshold] = {}
+        self._levels: dict[str, float] = {}
         self._fades: dict[str, asyncio.Task[None]] = {}
         self._wake: asyncio.Event = asyncio.Event()
         self._closing: asyncio.Event = asyncio.Event()
@@ -314,6 +427,12 @@ class PlanRunner:
         for trigger in resolved.triggers.values():
             for resource_id in trigger.resource_ids:
                 self._triggers_of.setdefault(resource_id, []).append(trigger)
+        # The schema has already made every rule naming one sensor agree on
+        # its threshold, so the first is as good as any.
+        for scenario in self.plan.scenario:
+            for rule in scenario.rule:
+                if rule.threshold is not None:
+                    _ = self._thresholds.setdefault(str(rule.when), Threshold.of(rule))
 
     def _observe(self, change: Change) -> None:
         """React to a change: a sensor firing, or a human adjusting a light.
@@ -370,9 +489,17 @@ class PlanRunner:
 
         """
         now = self._clock()
+        level = _reported_level(change)
+        previous = self._levels.get(change.resource_id)
         for trigger in triggers:
             key = str(trigger.selector)
-            edge = _edge(trigger.selector.kind, change)
+            threshold = self._thresholds.get(key)
+            if threshold is None:
+                edge = _edge(trigger.selector.kind, change)
+            elif level is None:
+                edge = None
+            else:
+                edge = _level_edge(previous, level, threshold)
             if edge is None:
                 continue
             outcomes = (
@@ -383,6 +510,12 @@ class PlanRunner:
             for outcome in outcomes:
                 logger.info("%s: %s", key, outcome)
             self._wake.set()
+        if level is not None:
+            # Remembered even when nothing fired: the band is judged from the
+            # last reading, whichever side of the threshold it sat on. Kept
+            # across a resync too -- a stale previous still gives the right
+            # direction for the next crossing.
+            self._levels[change.resource_id] = level
 
     def _observe_resync(self, resync: Resync) -> None:
         """React to a break in the change stream.

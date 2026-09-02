@@ -18,7 +18,8 @@ from huepy.client.http import SSEFrame
 from huepy.exceptions import HueAPIError, PlanError
 from huepy.models import parse_resource
 from huepy.plans.arbiter import BRIGHTNESS_TOLERANCE, Fade
-from huepy.plans.runner import PlanRunner
+from huepy.plans.fields import raw_light_level
+from huepy.plans.runner import PlanRunner, Threshold, _level_edge
 from huepy.plans.schema import Action, Plan
 from huepy.state.records import Change, ChangeKind, Resync, ResyncReason
 
@@ -803,6 +804,7 @@ SENSOR_DEVICE = "dev-hall"
 MOTION = "motion-1"
 BUTTON = "button-1"
 CONTACT = "contact-1"
+LIGHT_LEVEL = "level-1"
 
 
 def sensor_resources():
@@ -816,6 +818,7 @@ def sensor_resources():
                 {"rid": MOTION, "rtype": "motion"},
                 {"rid": BUTTON, "rtype": "button"},
                 {"rid": CONTACT, "rtype": "contact"},
+                {"rid": LIGHT_LEVEL, "rtype": "light_level"},
             ],
         },
     ]
@@ -854,6 +857,19 @@ def contact(at, state):
     return sensor_change(CONTACT, "contact", at, contact_report={"state": state})
 
 
+def light_level(at, lux, *, valid=True):
+    """Build a level report as a real event carries it: the report, not the field."""
+    return sensor_change(
+        LIGHT_LEVEL,
+        "light_level",
+        at,
+        light={
+            "light_level_report": {"light_level": round(raw_light_level(lux))},
+            "light_level_valid": valid,
+        },
+    )
+
+
 RULE_PLAN: dict[str, Any] = {
     "version": 1,
     "defaults": {"catchup_ramp": "5s"},
@@ -889,6 +905,11 @@ def rule_plan(**rule: Any) -> dict[str, Any]:
     plan = copy.deepcopy(RULE_PLAN)
     plan["scenario"][1]["rule"][0].update(rule)
     return plan
+
+
+def level_plan(**rule: Any) -> dict[str, Any]:
+    """Copy the rule plan, with its rule reading the hall sensor's light level."""
+    return rule_plan(when="light_level:Hall sensor", below=30, **rule)
 
 
 @pytest.fixture
@@ -1964,3 +1985,196 @@ class TestSwitchOffMemory:
         changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": True}}))
         reported = runner.arbiter.state_of(GROUP_PATH).reported
         assert reported == Action(on=True, brightness=50.0)
+
+
+def hold_of(runner: PlanRunner):
+    hold = runner.arbiter.state_of(GROUP_PATH).hold
+    assert hold is not None
+    return hold
+
+
+class TestLevelRules:
+    """A level fires on the crossing, releases past a band, never on a repeat."""
+
+    async def test_a_first_report_below_the_threshold_fires(
+        self, sensor_bridge, http, clock
+    ):
+        changes = FakeChanges()
+        runner = await rule_runner(sensor_bridge, clock, changes, level_plan())
+        http.calls.clear()
+
+        changes.deliver(light_level(clock.now, lux=8))
+        assert await runner.tick() == 1
+        assert http.writes[0][2]["dimming"]["brightness"] == 15
+
+    async def test_a_first_report_above_the_threshold_does_not_fire(
+        self, sensor_bridge, http, clock
+    ):
+        changes = FakeChanges()
+        runner = await rule_runner(sensor_bridge, clock, changes, level_plan())
+        http.calls.clear()
+
+        changes.deliver(light_level(clock.now, lux=300))
+        assert await runner.tick() == 0
+
+    async def test_a_repeat_below_the_threshold_does_not_refire(
+        self, sensor_bridge, http, clock
+    ):
+        changes = FakeChanges()
+        runner = await rule_runner(sensor_bridge, clock, changes, level_plan())
+        changes.deliver(light_level(clock.now, lux=8))
+        await runner.tick()
+        placed = runner.arbiter.state_of(GROUP_PATH).hold
+        assert placed is not None
+        http.calls.clear()
+
+        clock.advance(minutes=3)
+        changes.deliver(light_level(clock.now, lux=6))
+        assert await runner.tick() == 0
+        assert runner.arbiter.state_of(GROUP_PATH).hold is placed
+
+    async def test_crossing_back_past_the_band_starts_the_hold_clock(
+        self, sensor_bridge, http, clock
+    ):
+        changes = FakeChanges()
+        runner = await rule_runner(sensor_bridge, clock, changes, level_plan())
+        changes.deliver(light_level(clock.now, lux=8))
+        await runner.tick()
+        assert hold_of(runner).until is None
+
+        # 30 lux times the band's factor of five is 150; 316 is well past it.
+        clock.advance(minutes=3)
+        changes.deliver(light_level(clock.now, lux=316))
+        assert hold_of(runner).until is not None
+        assert runner._seconds_until_next(clock.now) == pytest.approx(90.0)
+
+    async def test_inside_the_band_neither_fires_nor_ends(
+        self, sensor_bridge, http, clock
+    ):
+        changes = FakeChanges()
+        runner = await rule_runner(sensor_bridge, clock, changes, level_plan())
+        changes.deliver(light_level(clock.now, lux=8))
+        await runner.tick()
+        http.calls.clear()
+
+        clock.advance(minutes=3)
+        changes.deliver(light_level(clock.now, lux=63))
+        assert await runner.tick() == 0
+        assert hold_of(runner).until is None
+
+    async def test_an_invalid_reading_is_ignored_and_not_remembered(
+        self, sensor_bridge, http, clock
+    ):
+        changes = FakeChanges()
+        runner = await rule_runner(sensor_bridge, clock, changes, level_plan())
+        http.calls.clear()
+
+        changes.deliver(light_level(clock.now, lux=8, valid=False))
+        assert await runner.tick() == 0
+        # Still a first reading: it fires as a crossing from the far side.
+        changes.deliver(light_level(clock.now, lux=8))
+        assert await runner.tick() == 1
+
+    async def test_a_report_without_a_level_is_ignored(
+        self, sensor_bridge, http, clock
+    ):
+        changes = FakeChanges()
+        runner = await rule_runner(sensor_bridge, clock, changes, level_plan())
+        http.calls.clear()
+
+        changes.deliver(
+            sensor_change(LIGHT_LEVEL, "light_level", clock.now, enabled=True)
+        )
+        assert await runner.tick() == 0
+
+    async def test_the_deprecated_top_level_field_is_a_fallback(
+        self, sensor_bridge, http, clock
+    ):
+        changes = FakeChanges()
+        runner = await rule_runner(sensor_bridge, clock, changes, level_plan())
+        http.calls.clear()
+
+        raw = round(raw_light_level(8))
+        changes.deliver(
+            sensor_change(
+                LIGHT_LEVEL,
+                "light_level",
+                clock.now,
+                light={"light_level": raw, "light_level_valid": True},
+            )
+        )
+        assert await runner.tick() == 1
+
+    async def test_an_above_rule_mirrors_below(self, sensor_bridge, http, clock):
+        changes = FakeChanges()
+        plan = rule_plan(when="light_level:Hall sensor", above=200)
+        runner = await rule_runner(sensor_bridge, clock, changes, plan)
+        http.calls.clear()
+
+        changes.deliver(light_level(clock.now, lux=500))
+        assert await runner.tick() == 1
+        hold = runner.arbiter.state_of(GROUP_PATH).hold
+        assert hold is not None
+        assert hold.until is None
+
+        # 200 lux over the band's factor of five is 40; 100 is still inside.
+        clock.advance(minutes=1)
+        changes.deliver(light_level(clock.now, lux=100))
+        assert hold_of(runner).until is None
+        changes.deliver(light_level(clock.now, lux=30))
+        assert hold_of(runner).until is not None
+
+    async def test_a_still_dark_report_does_not_take_back_a_yielded_scope(
+        self, sensor_bridge, http, clock
+    ):
+        # The bug the crossing rule prevents: a periodic "still dark" report
+        # refreshing the hold and un-yielding a room someone dimmed by hand.
+        changes = FakeChanges()
+        runner = await rule_runner(sensor_bridge, clock, changes, level_plan())
+        changes.deliver(light_level(clock.now, lux=8))
+        await runner.tick()
+        clock.advance(seconds=10)
+        changes.report(LIGHT, 50.0, clock.now)
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+        http.calls.clear()
+
+        clock.advance(minutes=3)
+        changes.deliver(light_level(clock.now, lux=6))
+        assert await runner.tick() == 0
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+
+
+class TestLevelEdge:
+    BELOW = Threshold(raw=20_000, side="below")
+    ABOVE = Threshold(raw=20_000, side="above")
+
+    @pytest.mark.parametrize(
+        ("previous", "level", "expected"),
+        [
+            (None, 15_000, "start"),
+            (None, 30_000, "end"),
+            (None, 25_000, None),
+            (15_000, 16_000, None),
+            (25_000, 15_000, "start"),
+            (15_000, 30_000, "end"),
+            (15_000, 25_000, None),
+            (30_000, 31_000, None),
+            (30_000, 25_000, None),
+        ],
+    )
+    def test_below(self, previous, level, expected):
+        assert _level_edge(previous, level, self.BELOW) == expected
+
+    @pytest.mark.parametrize(
+        ("previous", "level", "expected"),
+        [
+            (None, 25_000, "start"),
+            (None, 10_000, "end"),
+            (25_000, 26_000, None),
+            (25_000, 10_000, "end"),
+            (25_000, 15_000, None),
+            (10_000, 25_000, "start"),
+        ],
+    )
+    def test_above(self, previous, level, expected):
+        assert _level_edge(previous, level, self.ABOVE) == expected

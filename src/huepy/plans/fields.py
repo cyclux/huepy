@@ -19,6 +19,7 @@ Typical usage example:
 """
 
 import datetime
+import math
 import re
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Literal, override
@@ -91,20 +92,77 @@ class TriggerKind(StrEnum):
 
     Each kind fires on one event: ``MOTION`` when motion starts, ``BUTTON``
     when any button on the device goes down, ``CONTACT`` when the door or
-    window opens. ``SIGNAL`` is the one that is not a bridge resource: it
-    names a string the hosting application fires through
+    window opens, ``LIGHT_LEVEL`` when the reading crosses the rule's
+    ``below`` or ``above`` threshold. ``SIGNAL`` is the one that is not a
+    bridge resource: it names a string the hosting application fires through
     ``PlanRunner.fire()``.
 
-    There is deliberately no ``light_level``. A level only means something
-    against a threshold, and the format has no key for one yet; accepting the
-    selector without a way to say "below 30 lux" would be a trigger that
-    parses and never fires.
+    A level only means something against a threshold, so a ``light_level:``
+    selector is accepted only on a rule that carries one; without that it
+    would be a trigger that parses and never fires.
     """
 
     MOTION = "motion"
     BUTTON = "button"
     CONTACT = "contact"
+    LIGHT_LEVEL = "light_level"
     SIGNAL = "signal"
+
+
+LIGHT_LEVEL_SCALE = 10_000
+"""Raw light-level units per decade of lux.
+
+The bridge reports ``10000 * log10(lux) + 1``.
+"""
+
+LIGHT_LEVEL_OFFSET = 1
+"""The raw value the bridge reports for one lux."""
+
+LIGHT_LEVEL_DEADBAND = 7000
+"""How far past its threshold a level must go, in raw units, to release a rule.
+
+That is a factor of about five in lux. It is the ``offset`` the Hue app writes
+into a motion sensor's ``daylight_sensitivity`` next to its ``dark_threshold``,
+read off this bridge's own behaviour instances -- measured, not documented.
+Without a band, a hallway sensor that sees the night light it switches on would
+release the rule the moment the light came up and fire again the moment it went
+out, a blink with the period of the hold.
+"""
+
+
+def raw_light_level(lux: float) -> float:
+    """Convert lux to the bridge's light-level scale.
+
+    Args:
+        lux: An illuminance, above zero.
+
+    Returns:
+        The level the bridge would report for it, unrounded.
+
+    Raises:
+        ValueError: If the illuminance is zero or negative, which has no
+            logarithm and no meaning as a threshold.
+
+    """
+    if lux <= 0:
+        msg = f"a light level must be above 0 lux, not {lux}"
+        raise ValueError(msg)
+    return LIGHT_LEVEL_SCALE * math.log10(lux) + LIGHT_LEVEL_OFFSET
+
+
+def lux_of_light_level(raw: float) -> float:
+    """Convert a bridge light level back to lux.
+
+    The inverse of :func:`raw_light_level`, and of ``models.LightLevel.lux``.
+
+    Args:
+        raw: A level on the bridge's scale.
+
+    Returns:
+        The illuminance in lux.
+
+    """
+    return 10 ** ((raw - LIGHT_LEVEL_OFFSET) / LIGHT_LEVEL_SCALE)
 
 
 def _sum_tokens(text: str, original: object) -> float:

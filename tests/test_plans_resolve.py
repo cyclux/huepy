@@ -25,6 +25,7 @@ DEVICE = "dev-lamp"
 LIGHT = "light-1"
 SENSOR_DEVICE = "dev-hall"
 MOTION = "motion-1"
+LEVEL = "level-1"
 
 
 def bridge_resources():
@@ -46,7 +47,10 @@ def bridge_resources():
             "id": SENSOR_DEVICE,
             "type": "device",
             "metadata": {"name": "Hall sensor"},
-            "services": [{"rid": MOTION, "rtype": "motion"}],
+            "services": [
+                {"rid": MOTION, "rtype": "motion"},
+                {"rid": LEVEL, "rtype": "light_level"},
+            ],
         },
     ]
 
@@ -180,6 +184,11 @@ class TestResolveTriggers:
         http.queue("/clip/v2/resource", envelope(*bridge_resources(), service))
         plan = make_plan(rule=[{"when": "motion:Hall sensor", "set": {"on": True}}])
         assert (await resolve(hue, plan)).warnings == ()
+
+    async def test_a_light_level_trigger_binds_the_level_service(self, bridge):
+        rule = {"when": "light_level:Hall sensor", "below": 30, "set": {"on": True}}
+        resolved = await resolve(bridge, make_plan(rule=[rule]))
+        assert resolved.triggers["light_level:Hall sensor"].resource_ids == (LEVEL,)
 
     async def test_a_signal_binds_to_nothing_on_the_bridge(self, bridge):
         plan = make_plan(activate_on="signal:movie_started")

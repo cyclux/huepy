@@ -500,7 +500,8 @@ set = { on = true, brightness = 15 }
 The hall comes up dim when the sensor fires at night, stays while the sensor
 keeps reporting motion and for ninety seconds after it stops, then hands back
 to whatever lower-priority scenario is underneath, over that scenario's ramp.
-`button:` fires on a press, `contact:` when a door opens, and `signal:name`
+`button:` fires on a press, `contact:` when a door opens, `light_level:` when
+a sensor's reading crosses the rule's `below` or `above` lux, and `signal:name`
 when your code calls `runner.fire("name")`.
 
 ### Errors

@@ -9,7 +9,10 @@ import datetime
 
 import pytest
 
+from huepy.models import LightLevel, parse_resource
 from huepy.plans.fields import (
+    LIGHT_LEVEL_DEADBAND,
+    LIGHT_LEVEL_OFFSET,
     ClockAnchor,
     ScopeKind,
     Selector,
@@ -17,10 +20,12 @@ from huepy.plans.fields import (
     SunEvent,
     TriggerKind,
     format_duration,
+    lux_of_light_level,
     parse_anchor,
     parse_duration,
     parse_selector,
     parse_trigger,
+    raw_light_level,
 )
 
 
@@ -144,6 +149,37 @@ class TestParseAnchor:
     )
     def test_str_round_trips(self, text):
         assert str(parse_anchor(text)) == text
+
+
+class TestLightLevelUnits:
+    def test_raw_round_trips_through_the_model(self):
+        level = parse_resource(
+            {
+                "id": "level-1",
+                "type": "light_level",
+                "light": {
+                    "light_level": round(raw_light_level(30)),
+                    "light_level_valid": True,
+                },
+            }
+        )
+        assert isinstance(level, LightLevel)
+        assert level.lux == pytest.approx(30, rel=0.001)
+
+    def test_raw_of_one_lux_is_the_offset(self):
+        assert raw_light_level(1) == LIGHT_LEVEL_OFFSET
+
+    def test_lux_is_the_inverse(self):
+        assert lux_of_light_level(raw_light_level(123.4)) == pytest.approx(123.4)
+
+    @pytest.mark.parametrize("lux", [0, -1])
+    def test_rejects_non_positive_lux(self, lux):
+        with pytest.raises(ValueError, match="above 0 lux"):
+            _ = raw_light_level(lux)
+
+    def test_the_deadband_is_about_five_times_in_lux(self):
+        release = lux_of_light_level(raw_light_level(30) + LIGHT_LEVEL_DEADBAND)
+        assert release == pytest.approx(150.4, abs=0.5)
 
 
 class TestParseSelector:

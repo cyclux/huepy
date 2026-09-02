@@ -9,15 +9,9 @@ assumed.
 
 Shipped: the TOML format, solar computation, day-curve scheduling, name
 resolution, the write executor, priority arbitration, manual-override yielding,
-reconnect recovery, sensor rules (`motion:`, `button:`, `contact:`),
-application signals, and a CLI.
-
-Not shipped: a `light_level:` trigger. A level only means something against a
-threshold, and the format has no key for one; accepting the selector without a
-way to write "below 30 lux" would be a trigger that parses and never fires. It
-is additive when wanted — a `below` / `above` pair on `Rule`, and a crossing
-check in the runner that fires on the transition rather than on every
-periodic report.
+reconnect recovery, sensor rules (`motion:`, `button:`, `contact:`,
+`light_level:` with a `below` / `above` threshold in lux), application
+signals, and a CLI.
 
 ## What the bridge can and cannot do
 
@@ -127,12 +121,33 @@ light reacts before the finger lifts), a contact opening (`no_contact`). Only
 the delta is read, never the folded state, so enabling a sensor whose last
 state happened to be "motion" does not fire a rule.
 
-Motion is the one trigger with a duration, and its hold is timed from the
-*end*: the sensor reports `false` once the room has been still for its own
-timeout, and that is when a `hold` starts counting (`Arbiter.ended()`). Timed
-from the start, someone standing in the hall for three minutes lost the light
-after ninety seconds — the Hue sensor reports `true` once and then says
-nothing while movement continues.
+Motion and a light level are the triggers with a duration, and their holds
+are timed from the *end*: the sensor reports `false` once the room has been
+still for its own timeout, or the level goes back past its threshold, and
+that is when a `hold` starts counting (`Arbiter.ended()`). Timed from the
+start, someone standing in the hall for three minutes lost the light after
+ninety seconds — the Hue sensor reports `true` once and then says nothing
+while movement continues.
+
+A light level is the one kind with a threshold, and `runner._level_edge()` is
+where it fires: on the *crossing* of the rule's `below` or `above` lux, never
+on a periodic repeat, and released only once the reading is past the
+threshold by `LIGHT_LEVEL_DEADBAND` — 7000 raw units, a factor of about five
+in lux. The band is the `offset` the Hue app writes into a motion sensor's
+`daylight_sensitivity` beside its `dark_threshold`, read off this bridge's own
+behaviour instances: measured, not documented. Without it a hallway sensor
+that sees the night light it switches on releases the rule as the light comes
+up and fires again as it goes out. The crossing needs the previous reading,
+so `PlanRunner._levels` keeps one per sensor — the runner's only per-sensor
+memory, kept across a resync because a stale previous still gives the right
+direction. A first reading is judged as if the one before it had been on the
+far side, so a daemon started after dark fires on the sensor's next report,
+and a still-dark report three minutes after someone dimmed the hall by hand
+does not refresh the hold and take the room back. A trigger reaches the
+arbiter as the selector string it was written as, and one crossing fires
+every rule naming it, so the schema makes every rule naming one sensor agree
+on its threshold; two thresholds on one sensor would need a `Rule.key` in
+place of the selector, an upgrade nothing else would notice.
 
 The state layer folds every resource type, and each sensor event carries a
 fresh `changed` / `updated` timestamp, so a repeated `initial_press` is a
@@ -305,6 +320,7 @@ integration probe establishing whether a third-party app key can POST one.
 | The three offline CLI verbs never need a bridge | `tests/test_plans_cli.py` |
 | A `days` scenario falls silent on days it does not run | `TestRecurrenceExpiry` |
 | What fires each trigger kind, holds, windows, hand-back, the no-snap floor | `TestRules`, `TestModeHandback` |
+| A level fires on the crossing, releases past the band, never on a repeat, and a still-dark report does not un-yield a scope; the lux scale round-trips through `models.LightLevel`; the schema ties `below`/`above` to `light_level:` and makes rules on one sensor agree | `TestLevelRules`, `TestLevelEdge`, `tests/test_plans_fields.py::TestLightLevelUnits`, `tests/test_plans_schema.py::TestLevelThreshold` |
 | A trigger landing mid-write is not lost by the loop | `TestRules::test_a_trigger_during_a_write_is_not_lost` |
 | `origin="self"` is not proof; `command_echo` is; a switch-off yields and resets `on` | `TestObservation` |
 | A yield ends at the first later step, hold or mode; a losing hold does not end it | `TestYieldResume` |

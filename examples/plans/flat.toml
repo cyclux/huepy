@@ -111,3 +111,20 @@ scope = ["room:Hallway"]
 priority = 0
 ramp = "10s"
 set = { on = false }
+
+# A light-level rule. `below` is in lux; the rule fires when the reading
+# crosses under it and ends once the reading is back above about five times
+# that, so a sensor that sees the lamp it switched on does not blink it. A
+# reading that stays dark never re-fires, so a lamp someone dimmed by hand
+# stays dimmed. No `between`: an overcast afternoon is exactly the case this
+# is for, and the crossing would already have happened by sunset.
+[[scenario]]
+name = "living-room-overcast"
+scope = ["room:Living Room"]
+priority = 5
+
+[[scenario.rule]]
+when = "light_level:Window sensor"
+below = 30
+ramp = "5m"
+set = { on = true, brightness = 70, kelvin = 4000 }

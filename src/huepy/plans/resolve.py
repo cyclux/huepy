@@ -43,6 +43,7 @@ _SERVICE_FOR_TRIGGER: dict[str, str] = {
     TriggerKind.MOTION: "motion",
     TriggerKind.BUTTON: "button",
     TriggerKind.CONTACT: "contact",
+    TriggerKind.LIGHT_LEVEL: "light_level",
 }
 
 

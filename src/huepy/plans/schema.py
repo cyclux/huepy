@@ -37,6 +37,7 @@ from huepy.plans.fields import (
     Duration,
     ScopeSelector,
     SunAnchor,
+    TriggerKind,
     TriggerSelector,
 )
 
@@ -251,6 +252,10 @@ class Step(BaseModel):
     set: Action
 
 
+type Side = Literal["below", "above"]
+"""Which side of a light-level threshold fires a rule."""
+
+
 class Rule(BaseModel):
     """A discrete trigger and what it does.
 
@@ -261,11 +266,19 @@ class Rule(BaseModel):
             later than ``to``, so ``["sunset", "sunrise"]`` means "at night".
         ramp: How long the change takes. Falls back to the plan's default.
         hold: How long to stay there before handing the scope back to
-            whatever is underneath. For ``motion:`` the clock starts when the
-            sensor reports the room still, so the light stays as long as
-            someone is there. Without a hold the scope is held until its next
-            scheduled step -- or, when nothing scheduled covers it, until a
-            hand change, a higher-priority claim, or the owning mode releasing.
+            whatever is underneath. For ``motion:`` and ``light_level:`` the
+            clock starts when the trigger ends -- the sensor reports the room
+            still, or the level goes back past its threshold by the deadband
+            -- so the light stays as long as the condition does. Without a
+            hold the scope is held until its next scheduled step -- or, when
+            nothing scheduled covers it, until a hand change, a
+            higher-priority claim, or the owning mode releasing.
+        below: For a ``light_level:`` trigger, the illuminance in lux the
+            reading must drop under to fire. Released once it climbs back past
+            about five times that.
+        above: The mirror: the illuminance the reading must climb over to
+            fire. Exactly one of ``below`` and ``above`` on a ``light_level:``
+            rule; neither on any other kind.
         set: The target state.
 
     """
@@ -276,7 +289,57 @@ class Rule(BaseModel):
     between: tuple[Anchor, Anchor] | None = None
     ramp: Duration | None = None
     hold: Annotated[Duration, Field(gt=0)] | None = None
+    below: Annotated[float, Field(gt=0)] | None = None
+    above: Annotated[float, Field(gt=0)] | None = None
     set: Action
+
+    @property
+    def threshold(self) -> tuple[Side, float] | None:
+        """Which side of what illuminance fires this rule.
+
+        Returns:
+            ``("below", lux)`` or ``("above", lux)`` for a ``light_level:``
+            rule, None for any other kind.
+
+        """
+        if self.below is not None:
+            return ("below", self.below)
+        if self.above is not None:
+            return ("above", self.above)
+        return None
+
+    @model_validator(mode="after")
+    def _threshold_matches_kind(self) -> Self:
+        """Tie ``below`` and ``above`` to the one kind they mean something for.
+
+        Returns:
+            The validated rule.
+
+        Raises:
+            ValueError: If a ``light_level:`` rule has no threshold or both,
+                or any other rule has one.
+
+        """
+        is_level = self.when.kind == TriggerKind.LIGHT_LEVEL
+        given = [key for key in ("below", "above") if getattr(self, key) is not None]
+        if is_level and not given:
+            msg = (
+                f"a light_level: rule needs 'below' or 'above': a level only "
+                f"means something against a threshold ({self.when})"
+            )
+            raise ValueError(msg)
+        if is_level and len(given) > 1:
+            msg = (
+                f"give a light_level: rule either 'below' or 'above', not both; "
+                f"the release band is built in ({self.when})"
+            )
+            raise ValueError(msg)
+        if given and not is_level:
+            msg = (
+                f"'{given[0]}' only applies to a light_level: trigger, not {self.when}"
+            )
+            raise ValueError(msg)
+        return self
 
 
 class Scenario(BaseModel):
@@ -344,6 +407,15 @@ class Scenario(BaseModel):
                 f"so nothing could ever activate it"
             )
             raise ValueError(msg)
+        for key in ("activate_on", "release_on"):
+            selector: TriggerSelector | None = getattr(self, key)
+            if selector is not None and selector.kind == TriggerKind.LIGHT_LEVEL:
+                msg = (
+                    f"scenario {self.name!r}: '{key}' cannot be a light_level: "
+                    f"trigger; a level needs a threshold, and only a rule "
+                    f"carries one"
+                )
+                raise ValueError(msg)
         self._reject_duplicate_steps()
         return self
 
@@ -429,8 +501,9 @@ class Plan(BaseModel):
             The validated plan.
 
         Raises:
-            ValueError: If two scenarios share a name, or a sun anchor is used
-                with no location to compute it from.
+            ValueError: If two scenarios share a name, a sun anchor is used
+                with no location to compute it from, or two rules give one
+                light-level sensor different thresholds.
 
         """
         seen: set[str] = set()
@@ -439,6 +512,7 @@ class Plan(BaseModel):
                 msg = f"two scenarios are named {scenario.name!r}"
                 raise ValueError(msg)
             seen.add(scenario.name)
+        self._reject_disagreeing_thresholds()
 
         if self.location is None:
             solar = [s.name for s in self.scenario if s.uses_sun()]
@@ -451,6 +525,35 @@ class Plan(BaseModel):
                 )
                 raise ValueError(msg)
         return self
+
+    def _reject_disagreeing_thresholds(self) -> None:
+        """Reject two rules that read one sensor against different thresholds.
+
+        A trigger reaches the arbiter as the selector string it was written
+        as, and one crossing fires every rule naming it. Two thresholds on one
+        selector would need two crossings, so every rule naming a sensor must
+        agree on where the crossing is.
+
+        Raises:
+            ValueError: If two rules disagree.
+
+        """
+        first: dict[str, tuple[str, tuple[Side, float]]] = {}
+        for scenario in self.scenario:
+            for rule in scenario.rule:
+                threshold = rule.threshold
+                if threshold is None:
+                    continue
+                key = str(rule.when)
+                earlier = first.setdefault(key, (scenario.name, threshold))
+                if earlier[1] != threshold:
+                    msg = (
+                        f"{key!r} is used with two thresholds ({earlier[0]!r}: "
+                        f"{earlier[1][0]} {earlier[1][1]:g} lux, {scenario.name!r}: "
+                        f"{threshold[0]} {threshold[1]:g} lux). A level trigger "
+                        f"fires on one crossing, so every rule naming it must agree"
+                    )
+                    raise ValueError(msg)
 
     def scenarios_for_day(self, day: datetime.date) -> list[Scenario]:
         """Select the enabled scenarios whose recurrence includes a date.

@@ -150,7 +150,9 @@ maths, or the executor.
   `observation == "command_echo"` and judges everything else.
 - **Every trigger is one path.** Sensors and signals alike reach
   `Arbiter.fire(key, now)` as the selector string they were written as; do not
-  add a second dispatch. What a kind *means* lives in `runner._edge()`.
+  add a second dispatch. What a kind *means* lives in `runner._edge()` and,
+  for a level crossing, `runner._level_edge()`; the runner's `_levels` dict is
+  its only per-sensor memory.
 - **Handing a scope back never snaps.** The return to a day curve is floored at
   `catchup_ramp`; a mode keeps its author's ramp. `Claim.source` vs
   `ScopeState.owner.source` is what tells a hand-over from a claim still in
