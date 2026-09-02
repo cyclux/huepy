@@ -14,9 +14,11 @@ Nothing here keeps durable state. After a restart or a reconnect the runner
 asks the timeline where the lights *should* be at this instant and fades there,
 so a crash mid-sunset recovers into the right place.
 
-Triggers -- motion, buttons, door contacts, and signals the application fires
--- all go through one path. A rule that fires holds its scope for a while and
-then hands it back to whatever curve was underneath, without a snap.
+Triggers -- motion, buttons, door contacts, light levels, and signals the
+application fires -- all go through one path. A rule that fires holds its
+scope for a while and then hands it back to whatever curve was underneath,
+without a snap. :class:`SignalServer` makes the signals reachable over HTTP
+from outside the process.
 
 The scheduling arithmetic, the executor and the arbiter stay reachable as
 :mod:`huepy.plans.timeline`, :mod:`huepy.plans.executor` and
@@ -48,6 +50,7 @@ from huepy.plans.schema import (
     Scenario,
     Step,
 )
+from huepy.plans.signals import DEFAULT_SIGNAL_PORT, SignalServer
 from huepy.plans.sun import solar_event
 from huepy.plans.timeline import (
     Waypoint,
@@ -59,6 +62,7 @@ from huepy.plans.timeline import (
 )
 
 __all__ = [
+    "DEFAULT_SIGNAL_PORT",
     "Action",
     "Binding",
     "ChangeSource",
@@ -70,6 +74,7 @@ __all__ = [
     "ResolvedPlan",
     "Rule",
     "Scenario",
+    "SignalServer",
     "Step",
     "SunEvent",
     "TriggerBinding",

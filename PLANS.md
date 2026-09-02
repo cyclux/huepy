@@ -11,7 +11,8 @@ Shipped: the TOML format, solar computation, day-curve scheduling, name
 resolution, the write executor, priority arbitration, manual-override yielding,
 reconnect recovery, sensor rules (`motion:`, `button:`, `contact:`,
 `light_level:` with a `below` / `above` threshold in lux), application
-signals, and a CLI.
+signals, an HTTP signal server so those reach a daemon from outside the
+process, and a CLI.
 
 ## What the bridge can and cannot do
 
@@ -79,6 +80,21 @@ Impure:
 `plans/` depends on the `PlanClient` Protocol in `plans/protocol.py`, never on
 `client/base.py`. That is what keeps the import graph acyclic, and it is why
 every test in the package runs without a bridge.
+
+### Signals from outside the process
+
+`signals.py` serves `PlanRunner.fire()` over HTTP: `POST /signals/NAME`,
+`GET /signals`. It is the one `aiohttp` import outside the client, and it is a
+*server* that never talks to a bridge, so the `Transport` seam is untouched.
+HTTP rather than a Unix socket because the users of this hook are shell
+scripts, `curl` and a home-automation box, and because it works on Windows;
+`aiohttp.web` rather than a hand-rolled parser on `asyncio.start_server`
+because real clients send keep-alive, `Expect` and chunked bodies, and parsing
+those by hand is where the bugs would live. Loopback by default; binding
+anywhere else refuses to start without a bearer token, so a plan is reachable
+from another machine on purpose or not at all. The server needs only a
+callable and a set of names, which is what lets `cli.py` stay the one place
+that binds it to a runner.
 
 ### `days` gates the whole day, not just the step times
 
@@ -321,6 +337,7 @@ integration probe establishing whether a third-party app key can POST one.
 | A `days` scenario falls silent on days it does not run | `TestRecurrenceExpiry` |
 | What fires each trigger kind, holds, windows, hand-back, the no-snap floor | `TestRules`, `TestModeHandback` |
 | A level fires on the crossing, releases past the band, never on a repeat, and a still-dark report does not un-yield a scope; the lux scale round-trips through `models.LightLevel`; the schema ties `below`/`above` to `light_level:` and makes rules on one sensor agree | `TestLevelRules`, `TestLevelEdge`, `tests/test_plans_fields.py::TestLightLevelUnits`, `tests/test_plans_schema.py::TestLevelThreshold` |
+| The signal server fires known names, refuses unknown ones with the list, guards a token, survives a failing callback, and will not bind beyond loopback unguarded; `huepy plan signal` reaches it | `tests/test_plans_signals.py`, `tests/test_plans_cli.py::TestSignal` |
 | A trigger landing mid-write is not lost by the loop | `TestRules::test_a_trigger_during_a_write_is_not_lost` |
 | `origin="self"` is not proof; `command_echo` is; a switch-off yields and resets `on` | `TestObservation` |
 | A yield ends at the first later step, hold or mode; a losing hold does not end it | `TestYieldResume` |

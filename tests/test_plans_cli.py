@@ -18,13 +18,16 @@ from huepy.cli import (
     EXIT_FAILED,
     EXIT_OK,
     _binding_report,
+    _listen_address,
     _log_level,
     _stopping_on_signals,
     main,
 )
+from huepy.exceptions import PlanError
 from huepy.models import parse_resource
 from huepy.plans.resolve import bind
 from huepy.plans.schema import Plan
+from huepy.plans.signals import SignalServer
 
 from .conftest import envelope
 
@@ -236,7 +239,7 @@ class TestHelp:
             _ = main(["plan", "--help"])
         assert stopped.value.code == EXIT_OK
         out = capsys.readouterr().out
-        for verb in ("check", "explain", "validate", "run", "schema"):
+        for verb in ("check", "explain", "validate", "run", "signal", "schema"):
             assert verb in out
 
 
@@ -374,6 +377,70 @@ class TestValidate:
         assert main(["plan", "validate", str(path)]) == EXIT_FAILED
         err = capsys.readouterr().err
         assert "room:Livng Room: no such room. Known: Living Room" in err
+
+
+GUARD = "s3cret"
+
+
+class TestSignal:
+    async def test_it_fires_and_prints_the_outcomes(self, capsys):
+        fired: list[str] = []
+
+        def fire(name: str) -> tuple[str, ...]:
+            fired.append(name)
+            return (f"activated {name!r}",)
+
+        async with SignalServer(fire, {"movie_started"}, port=0) as server:
+            url = f"http://127.0.0.1:{server.port}"
+            # main() blocks on the request, and the server answering it lives
+            # on this loop, so the call has to leave the loop free.
+            code = await asyncio.to_thread(
+                main, ["plan", "signal", "movie_started", "--url", url]
+            )
+        assert code == EXIT_OK
+        assert fired == ["movie_started"]
+        assert "activated 'movie_started'" in capsys.readouterr().out
+
+    async def test_an_unknown_signal_fails_and_lists_the_known_ones(self, capsys):
+        async with SignalServer(lambda _name: (), {"movie_started"}, port=0) as server:
+            url = f"http://127.0.0.1:{server.port}"
+            code = await asyncio.to_thread(
+                main, ["plan", "signal", "doorbell", "--url", url]
+            )
+        assert code == EXIT_FAILED
+        err = capsys.readouterr().err
+        assert "no signal 'doorbell'" in err
+        assert "listens for: movie_started" in err
+
+    async def test_a_guarded_plan_wants_the_token(self, capsys):
+        async with SignalServer(lambda _n: (), {"x"}, port=0, token=GUARD) as server:
+            url = f"http://127.0.0.1:{server.port}"
+            refused = await asyncio.to_thread(
+                main, ["plan", "signal", "x", "--url", url]
+            )
+            accepted = await asyncio.to_thread(
+                main, ["plan", "signal", "x", "--url", url, "--token", GUARD]
+            )
+        assert refused == EXIT_FAILED
+        assert accepted == EXIT_OK
+        assert "requires a token" in capsys.readouterr().err
+
+    def test_nothing_listening_fails_with_a_hint(self, capsys):
+        code = main(["plan", "signal", "x", "--url", "http://127.0.0.1:1"])
+        assert code == EXIT_FAILED
+        assert "is 'huepy plan run' running?" in capsys.readouterr().err
+
+
+class TestListen:
+    def test_host_and_port(self):
+        assert _listen_address("0.0.0.0:9000") == ("0.0.0.0", 9000)  # noqa: S104 - a parsing test
+
+    def test_a_bare_port_uses_the_default_host(self):
+        assert _listen_address("9000") == ("127.0.0.1", 9000)
+
+    def test_a_bad_port_is_an_error(self):
+        with pytest.raises(PlanError, match="HOST:PORT"):
+            _ = _listen_address("localhost:http")
 
 
 class TestVerbosity:

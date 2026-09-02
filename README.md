@@ -502,7 +502,8 @@ keeps reporting motion and for ninety seconds after it stops, then hands back
 to whatever lower-priority scenario is underneath, over that scenario's ramp.
 `button:` fires on a press, `contact:` when a door opens, `light_level:` when
 a sensor's reading crosses the rule's `below` or `above` lux, and `signal:name`
-when your code calls `runner.fire("name")`.
+when your code calls `runner.fire("name")` — or, with `huepy plan run`, when
+`huepy plan signal name` posts to it from another shell.
 
 ### Errors
 

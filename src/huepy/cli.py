@@ -1,6 +1,6 @@
 """Command line entry point for huepy.
 
-Five verbs, and only ``run`` writes to a bridge. That is deliberate: the thing
+Six verbs, and only ``run`` writes to a bridge. That is deliberate: the thing
 most likely to be wrong about a plan is the plan, and finding out should not
 cost anyone a room full of lights changing colour.
 
@@ -15,10 +15,16 @@ import contextlib
 import datetime
 import json
 import logging
+import os
 import signal
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 from collections.abc import Callable, Generator, Sequence
+from http import HTTPStatus
 from pathlib import Path
+from typing import Any, cast
 
 from huepy.client.base import Hue
 from huepy.exceptions import HueError, PlanError
@@ -36,10 +42,12 @@ from huepy.plans.loader import load_plans
 from huepy.plans.resolve import Binding, ResolvedPlan, TriggerBinding, bind
 from huepy.plans.runner import PlanRunner
 from huepy.plans.schema import Plan, Rule, Scenario
+from huepy.plans.signals import DEFAULT_SIGNAL_HOST, DEFAULT_SIGNAL_PORT, SignalServer
 from huepy.plans.timeline import Zone, combine, waypoints_for_day, zone_of
 
 EXIT_OK = 0
 EXIT_FAILED = 1
+TOKEN_ENV = "HUEPY_PLAN_TOKEN"  # noqa: S105 - the name of a variable, not a secret
 
 DESCRIPTION = """\
 Declarative light plans for a Hue bridge.
@@ -48,9 +56,13 @@ Declarative light plans for a Hue bridge.
   plan explain   print the day the plan describes; read-only
   plan validate  also resolve every name against the bridge
   plan run       execute the plan until interrupted
+  plan signal    fire a signal: trigger into the running plan
   plan schema    print the plan format as JSON Schema
 
 Only `run` writes to a bridge, and only `validate` and `run` need one.
+`run` serves its signals at http://127.0.0.1:8757/signals (--listen to
+change it; a token is required to listen beyond this machine), and
+`signal NAME` posts to that address from another shell.
 
 `huepy -v plan run PATH` logs every write the runner makes; `-vv` adds the
 sleeps, the skips and the wire payloads; `-q` keeps only errors. Ctrl-C or
@@ -294,17 +306,17 @@ def _binding_report(
     return lines
 
 
-async def _validate(path: str) -> int:
+async def _validate(args: argparse.Namespace) -> int:
     """Resolve a plan's names against a real bridge, and say what they bound to.
 
     Args:
-        path: The plan file or directory.
+        args: Parsed arguments.
 
     Returns:
         A process exit code.
 
     """
-    plan = load_plans(path)
+    plan = load_plans(args.path)
     async with Hue() as hue:
         resources = await hue.snapshot()
     resolved = bind(resources, plan)
@@ -352,17 +364,39 @@ def _stopping_on_signals(stop: Callable[[], None]) -> Generator[None]:
             _ = loop.remove_signal_handler(sig)
 
 
-async def _run(path: str) -> int:
+def _listen_address(text: str) -> tuple[str, int]:
+    """Read a ``--listen`` value.
+
+    Args:
+        text: ``HOST:PORT``, or a bare ``PORT`` on the default host.
+
+    Returns:
+        The host and port to bind.
+
+    Raises:
+        PlanError: If the port is not a number.
+
+    """
+    host, _, port = text.rpartition(":")
+    try:
+        return (host or DEFAULT_SIGNAL_HOST, int(port))
+    except ValueError as error:
+        msg = f"--listen {text!r} is not HOST:PORT or PORT"
+        raise PlanError(msg) from error
+
+
+async def _run(args: argparse.Namespace) -> int:
     """Run a plan until stopped.
 
     Args:
-        path: The plan file or directory.
+        args: Parsed arguments.
 
     Returns:
         A process exit code.
 
     """
-    plan = load_plans(path)
+    plan = load_plans(args.path)
+    host, port = _listen_address(args.listen)
     async with Hue(state=True) as hue:
         # The same report `validate` prints, so the log that follows can be
         # read against what each name meant. The runner resolves once more
@@ -372,10 +406,84 @@ async def _run(path: str) -> int:
             print(line)
         runner = PlanRunner(hue, plan, changes=hue.state)
         async with runner:
-            print(f"Running {len(plan.scenario)} scenarios. Ctrl-C to stop.")
-            with _stopping_on_signals(runner.stop):
-                await runner.run()
+            server = SignalServer(
+                runner.fire, runner.signals, host=host, port=port, token=args.token
+            )
+            async with server:
+                signals = f"http://{server.host}:{server.port}/signals"
+                print(f"Running {len(plan.scenario)} scenarios; signals at {signals}.")
+                print("Ctrl-C to stop.")
+                with _stopping_on_signals(runner.stop):
+                    await runner.run()
             print("Stopping.")
+    return EXIT_OK
+
+
+def send_signal(url: str, name: str, *, token: str | None = None) -> tuple[str, ...]:
+    """Fire a signal into a running plan over HTTP.
+
+    Synchronous: one request, one answer, and nothing else to do meanwhile.
+    Proxies from the environment are ignored, because a plan's signal server
+    is an address the operator named, never something to route through.
+
+    Args:
+        url: Where the plan serves its signals, up to but not including
+            ``/signals``.
+        name: The signal, as written in the plan without ``signal:``.
+        token: The bearer token the server requires, if any.
+
+    Returns:
+        What the signal did, one phrase per scenario it reached.
+
+    Raises:
+        PlanError: If nothing is listening, the plan does not know the
+            signal, or the server wants a token this call did not carry.
+
+    """
+    request = urllib.request.Request(  # noqa: S310 - an http address the operator named
+        f"{url.rstrip('/')}/signals/{urllib.parse.quote(name, safe='')}",
+        method="POST",
+    )
+    if token is not None:
+        request.add_header("Authorization", f"Bearer {token}")
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(request, timeout=5) as response:
+            body = cast("dict[str, Any]", json.load(response))
+    except urllib.error.HTTPError as error:
+        payload: dict[str, Any] = {}
+        if error.headers.get_content_type() == "application/json":
+            payload = cast("dict[str, Any]", json.load(error))
+        if error.code == HTTPStatus.NOT_FOUND:
+            known = ", ".join(cast("list[str]", payload.get("known", []))) or "none"
+            msg = f"the running plan has no signal {name!r}; it listens for: {known}"
+        elif error.code == HTTPStatus.UNAUTHORIZED:
+            msg = f"the running plan requires a token; pass --token or set {TOKEN_ENV}"
+        else:
+            msg = f"the running plan refused the signal: HTTP {error.code}"
+        raise PlanError(msg) from error
+    except urllib.error.URLError as error:
+        hint = "is 'huepy plan run' running?"
+        msg = f"no plan is listening at {url} ({hint}): {error.reason}"
+        raise PlanError(msg) from error
+    return tuple(cast("list[str]", body.get("outcomes", [])))
+
+
+def _signal(args: argparse.Namespace) -> int:
+    """Fire a signal into the running plan.
+
+    Args:
+        args: Parsed arguments.
+
+    Returns:
+        A process exit code.
+
+    """
+    outcomes = send_signal(args.url, args.name, token=args.token)
+    for outcome in outcomes:
+        print(outcome)
+    if not outcomes:
+        print("ok")
     return EXIT_OK
 
 
@@ -500,10 +608,30 @@ def _build_parser() -> argparse.ArgumentParser:
     for name, help_text in (
         ("check", "parse the plan files without touching a bridge"),
         ("validate", "also resolve every name against the bridge"),
-        ("run", "execute the plan until interrupted"),
     ):
         sub = actions.add_parser(name, help=help_text)
         _ = sub.add_argument("path", help="a .toml plan file, or a directory of them")
+
+    guard_help = "bearer token for the signal server; defaults to $HUEPY_PLAN_TOKEN"
+    run = actions.add_parser("run", help="execute the plan until interrupted")
+    _ = run.add_argument("path", help="a .toml plan file, or a directory of them")
+    _ = run.add_argument(
+        "--listen",
+        default=f"{DEFAULT_SIGNAL_HOST}:{DEFAULT_SIGNAL_PORT}",
+        help="HOST:PORT for the signal server; a token is required off loopback",
+    )
+    _ = run.add_argument("--token", default=os.environ.get(TOKEN_ENV), help=guard_help)
+
+    fire = actions.add_parser(
+        "signal", help="fire a signal: trigger into the running plan"
+    )
+    _ = fire.add_argument("name", help="the signal name, as written after signal:")
+    _ = fire.add_argument(
+        "--url",
+        default=f"http://{DEFAULT_SIGNAL_HOST}:{DEFAULT_SIGNAL_PORT}",
+        help="where the running plan serves its signals",
+    )
+    _ = fire.add_argument("--token", default=os.environ.get(TOKEN_ENV), help=guard_help)
 
     explain = actions.add_parser("explain", help="print the day the plan describes")
     _ = explain.add_argument("path", help="a .toml plan file, or a directory of them")
@@ -535,6 +663,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "schema": _print_schema,
         "check": _check,
         "explain": _explain_command,
+        "signal": _signal,
     }
     online = {"validate": _validate, "run": _run}
 
@@ -542,7 +671,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         handler = offline.get(args.action)
         if handler is not None:
             return handler(args)
-        return asyncio.run(online[args.action](args.path))
+        return asyncio.run(online[args.action](args))
     except HueError as error:
         print(f"error: {error}", file=sys.stderr)
         return EXIT_FAILED

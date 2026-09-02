@@ -100,9 +100,10 @@ applyTo: '**'
 
 ## huepy Architecture
 
-- Keep `aiohttp` confined to `src/huepy/client/http.py` and `src/huepy/client/discovery.py` (the
-  latter runs before any bridge session exists); other modules depend on the `Transport` protocol
-  in `client/protocol.py`. Runtime deps are `aiohttp`, `pydantic`, `zeroconf` (mDNS only)
+- Keep `aiohttp` confined to `src/huepy/client/http.py`, `src/huepy/client/discovery.py` (which
+  runs before any bridge session exists) and the HTTP *server* in `src/huepy/plans/signals.py`
+  (which never talks to a bridge); other modules depend on the `Transport` protocol in
+  `client/protocol.py`. Runtime deps are `aiohttp`, `pydantic`, `zeroconf` (mDNS only)
 - Keep `resources/` independent of `client/base.py` to preserve the acyclic import graph
 - TLS is verified against Signify's bundled root CAs by default (`client/tls.py`), pinning the
   bridge-id common name when known; `TlsMode.INSECURE` is the explicit opt-out. Writes are paced
@@ -161,7 +162,9 @@ maths, or the executor.
   `ScopeState.reported` and is where the next fade starts.
 - `plans/` depends on the `PlanClient` Protocol in `plans/protocol.py`, never on
   `client/base.py`. `src/huepy/cli.py` is the composition root: the one module
-  outside `client/` that binds a plan to a concrete `Hue`.
+  outside `client/` that binds a plan to a concrete `Hue`, and the one that
+  binds `plans/signals.py` -- which needs only a callable `fire` and a set of
+  names -- to a runner.
 - Sun times are computed in-process: `geolocation` reports a sunset but never a
   sunrise, its coordinates are write-only, and `smart_scene` timeslots accept
   neither sunrise nor offsets. Plans are not compiled to the bridge.
