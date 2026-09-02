@@ -1298,7 +1298,8 @@ the names the plan does listen for. `GET /signals` lists them. `--listen
 HOST:PORT` moves the server; listening on anything but loopback requires
 `--token` (or `HUEPY_PLAN_TOKEN`), which every request must then carry as
 `Authorization: Bearer`. A Home Assistant `rest_command` with that URL and
-header is all it takes to start the movie mode from an automation. Embedding
+header is all it takes to start the movie mode from an automation. A second
+plan started on the same port fails with a `PlanError` naming it. Embedding
 users get the same server as `SignalServer(runner.fire, runner.signals)`.
 
 ### Command line

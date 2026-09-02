@@ -147,6 +147,16 @@ class TestToken:
 
 
 class TestLifecycle:
+    async def test_a_taken_port_is_a_plan_error(self):
+        # Two plans on one machine, or one restarted before the old one
+        # died: the answer names the port and the way out, not a traceback.
+        async with SignalServer(Recording().fire, KNOWN, port=0) as first:
+            second = SignalServer(Recording().fire, KNOWN, port=first.port)
+            with pytest.raises(PlanError, match="Is another plan running"):
+                await second.start()
+        with pytest.raises(RuntimeError, match="not been started"):
+            _ = second.port
+
     def test_the_port_before_starting_is_an_error(self):
         with pytest.raises(RuntimeError, match="not been started"):
             _ = SignalServer(Recording().fire, KNOWN, port=0).port

@@ -126,7 +126,13 @@ class SignalServer:
         return self._port
 
     async def start(self) -> None:
-        """Bind and start serving."""
+        """Bind and start serving.
+
+        Raises:
+            PlanError: If the address cannot be bound -- another plan is
+                already listening there, most likely.
+
+        """
         app = web.Application()
         _ = app.add_routes(
             [
@@ -139,7 +145,19 @@ class SignalServer:
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
         site = web.TCPSite(self._runner, self.host, self._requested_port)
-        await site.start()
+        try:
+            await site.start()
+        except OSError as error:
+            # Almost always another plan already running: asyncio's own
+            # message is a traceback ending in "address already in use".
+            await self._runner.cleanup()
+            self._runner = None
+            msg = (
+                f"could not listen on {self.host}:{self._requested_port} "
+                f"({error.strerror or error}). Is another plan running? Stop "
+                f"it, or pass --listen to use a different port"
+            )
+            raise PlanError(msg) from error
         # The bound address, for when the port asked for was 0.
         bound = cast("list[tuple[str, int]]", self._runner.addresses)
         self._port = bound[0][1]
