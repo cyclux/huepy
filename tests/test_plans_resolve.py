@@ -174,6 +174,55 @@ class TestResolveTriggers:
         )
         assert resolved.warnings == (warning,)
 
+    async def test_an_app_automation_on_the_same_dimmer_is_a_warning(self, hue, http):
+        dimmer = {
+            "id": "dev-dimmer",
+            "type": "device",
+            "metadata": {"name": "Dimmer"},
+            "services": [{"rid": "button-1", "rtype": "button"}],
+        }
+        automation = {
+            "id": "auto-1",
+            "type": "behavior_instance",
+            "enabled": True,
+            "metadata": {"name": "Dimmer Study"},
+            "dependees": [
+                {"target": {"rid": "dev-dimmer", "rtype": "device"}},
+                {"target": {"rid": "button-1", "rtype": "button"}},
+            ],
+        }
+        http.queue(
+            "/clip/v2/resource", envelope(*bridge_resources(), dimmer, automation)
+        )
+        plan = make_plan(rule=[{"when": "button:Dimmer", "set": {"on": True}}])
+        resolved = await resolve(hue, plan)
+        assert resolved.warnings == (
+            "button:Dimmer: the Hue app's automation 'Dimmer Study' also listens "
+            "to this device; what it does to lights this plan drives arrives as "
+            "a hand change and cancels the rule. Disable it in the app to let "
+            "the rule win",
+        )
+
+    async def test_a_disabled_app_automation_is_no_warning(self, hue, http):
+        dimmer = {
+            "id": "dev-dimmer",
+            "type": "device",
+            "metadata": {"name": "Dimmer"},
+            "services": [{"rid": "button-1", "rtype": "button"}],
+        }
+        automation = {
+            "id": "auto-1",
+            "type": "behavior_instance",
+            "enabled": False,
+            "metadata": {"name": "Dimmer Study"},
+            "dependees": [{"target": {"rid": "button-1", "rtype": "button"}}],
+        }
+        http.queue(
+            "/clip/v2/resource", envelope(*bridge_resources(), dimmer, automation)
+        )
+        plan = make_plan(rule=[{"when": "button:Dimmer", "set": {"on": True}}])
+        assert (await resolve(hue, plan)).warnings == ()
+
     async def test_an_enabled_sensor_raises_no_warning(self, hue, http):
         service = {
             "id": MOTION,

@@ -2448,6 +2448,22 @@ class TestFadeOut:
         changes.deliver(change(LIGHT, None, clock.now, delta=report))
         assert not runner.arbiter.is_yielded(GROUP_PATH)
 
+    async def test_dark_without_on_after_the_ramp_is_the_fade(self, bridge, clock):
+        # Already-off members report only `dimming 0`, since `on` did not
+        # change. Seen on a room whose catch-up was a second switch-off.
+        changes = FakeChanges()
+        runner = await self.fading_out(bridge, clock, changes)
+        clock.advance(seconds=20)
+        changes.report(LIGHT, 0.0, clock.now)
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+
+    async def test_a_dial_turn_on_the_dark_room_is_a_human(self, bridge, clock):
+        changes = FakeChanges()
+        runner = await self.fading_out(bridge, clock, changes)
+        clock.advance(seconds=20)
+        changes.report(LIGHT, 50.0, clock.now)
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+
     async def test_switched_on_after_the_ramp_is_a_human(self, bridge, clock):
         changes = FakeChanges()
         runner = await self.fading_out(bridge, clock, changes)

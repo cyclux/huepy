@@ -1307,7 +1307,7 @@ users get the same server as `SignalServer(runner.fire, runner.signals)`.
 | --- | --- | --- |
 | `huepy plan check PATH` | no | Parses the files and reports what is malformed. |
 | `huepy plan explain PATH [--at ISO]` | no | Prints the day, every solar anchor resolved, with the request count per step. |
-| `huepy plan validate PATH` | reads | Also resolves every name, reporting all unknown ones at once, and prints what each bound to: the `grouped_light` and member lights behind a room, the services behind a sensor, and a warning for a sensor disabled on the bridge. `run` prints the same report before it starts. |
+| `huepy plan validate PATH` | reads | Also resolves every name, reporting all unknown ones at once, and prints what each bound to: the `grouped_light` and member lights behind a room, the services behind a sensor, a warning for a sensor disabled on the bridge, and a warning for a dimmer or sensor the Hue app's own automation also listens to, whose action arrives as a hand change and cancels the rule. `run` prints the same report before it starts. |
 | `huepy plan run PATH [--listen HOST:PORT] [--token T]` | writes | Executes the plan until Ctrl-C or SIGTERM, which stop it after the write it is on, serving its signals at `http://127.0.0.1:8757/signals` meanwhile. |
 | `huepy plan signal NAME [--url U] [--token T]` | no | Fires `signal:NAME` into the running plan and prints what it did. |
 | `huepy plan schema` | no | Emits the format as JSON Schema, for editor completion. |

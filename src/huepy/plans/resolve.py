@@ -22,10 +22,12 @@ Typical usage example:
 
 from collections import defaultdict
 from dataclasses import dataclass
+from typing import Any, cast
 
 from huepy.exceptions import PlanError
 from huepy.models import (
     AnyResource,
+    BehaviorInstance,
     Contact,
     Device,
     Light,
@@ -142,6 +144,8 @@ class _Catalog:
         devices: Devices by name.
         all_lights: Every light, for resolving group membership.
         disabled: Ids of sensor services switched off on the bridge.
+        automated: The name of the enabled Hue-app automation listening to
+            each device or sensor service it depends on.
 
     """
 
@@ -151,6 +155,7 @@ class _Catalog:
     devices: dict[str, list[Device]]
     all_lights: list[Light]
     disabled: frozenset[str]
+    automated: dict[str, str]
 
 
 def _index(resources: list[AnyResource]) -> _Catalog:
@@ -169,6 +174,7 @@ def _index(resources: list[AnyResource]) -> _Catalog:
     devices: dict[str, list[Device]] = defaultdict(list)
     all_lights: list[Light] = []
     disabled: set[str] = set()
+    automated: dict[str, str] = {}
 
     for resource in resources:
         if isinstance(resource, Room):
@@ -186,6 +192,16 @@ def _index(resources: list[AnyResource]) -> _Catalog:
             # Buttons have no switch; these three do, and a plan naming one
             # that is off in the app would resolve cleanly and never fire.
             disabled.add(resource.id)
+        elif isinstance(resource, BehaviorInstance) and resource.enabled:
+            # The app's own automations list what they listen to. One on the
+            # same dimmer as a rule acts on the same press, and what it does
+            # to the lights arrives as a hand change that cancels the rule.
+            for dependee in resource.dependees:
+                target = dependee.get("target")
+                if isinstance(target, dict):
+                    rid = cast("dict[str, Any]", target).get("rid")
+                    if isinstance(rid, str):
+                        _ = automated.setdefault(rid, resource.name)
     return _Catalog(
         rooms=rooms,
         zones=zones,
@@ -193,6 +209,7 @@ def _index(resources: list[AnyResource]) -> _Catalog:
         devices=devices,
         all_lights=all_lights,
         disabled=frozenset(disabled),
+        automated=automated,
     )
 
 
@@ -329,6 +346,22 @@ def _bind_trigger(
         msg = (
             f"{selector}: the sensor is disabled on the bridge, "
             f"so this trigger will never fire"
+        )
+        warnings.append(msg)
+    automation = next(
+        (
+            catalog.automated[rid]
+            for rid in (device.id, *services)
+            if rid in catalog.automated
+        ),
+        None,
+    )
+    if automation is not None:
+        msg = (
+            f"{selector}: the Hue app's automation {automation!r} also listens to "
+            f"this device; what it does to lights this plan drives arrives as a "
+            f"hand change and cancels the rule. Disable it in the app to let "
+            f"the rule win"
         )
         warnings.append(msg)
     return TriggerBinding(selector=selector, resource_ids=services)

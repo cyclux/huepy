@@ -63,6 +63,9 @@ people.
 """
 
 
+DARK = 1.0
+"""The brightness a bulb reports once a fade to off has landed, give or take."""
+
 TIMED_FROM_END = frozenset({TriggerKind.MOTION, TriggerKind.LIGHT_LEVEL})
 """The trigger kinds that last: a hold on one is timed from when it ends."""
 
@@ -265,6 +268,10 @@ class Fade:
         if on is not None and on != expected_on and not (fading_out and on is True):
             return False
         if brightness is None:
+            return True
+        if self.target.on is False and on is None and brightness <= DARK:
+            # The same dark bulb, reported without `on` because `on` did not
+            # change -- the room was already off when the fade-out was sent.
             return True
         if expected.brightness is None:
             # A fade-out dims on its way down, and the bridge reports the bulb

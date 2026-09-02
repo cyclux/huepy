@@ -265,6 +265,14 @@ interrupted fade so a bare dimming report it explains is left alone; a report
 that names `on` is always a switch, because forgetting one is how a later
 step comes to drop `on`.
 
+The first run of the tour plan on that room showed the other side of hand
+detection: pressing the dimmer fired the plan's rule and, in the same
+millisecond, the Hue app's own automation for that dimmer set the room to
+80%. The runner rightly called that a hand change and dropped the hold. Both
+were listening to one button, and the app's action is indistinguishable from
+a person's. `validate` now warns when an enabled `behavior_instance` lists a
+trigger's device or services among its dependees; the fix is in the app.
+
 The corollary that was missed once: `Change.origin == "self"` *is* that time
 window, so the runner must not use it as proof either. Driven through a real
 `HueState`, a brightness of 95 reported thirty minutes into a fade expecting 73
