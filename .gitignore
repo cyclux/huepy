@@ -17,3 +17,12 @@ htmlcov/
 
 .claude
 CLAUDE.md
+# Playwright MCP's default output: console logs and page snapshots from browser sessions
+.playwright-mcp/
+# Credentials and exported browser sessions (see docs/hue-portal-access.md)
+.env
+*.jar
+cookie*.txt
+
+# Mirrored external Hue developer docs (see docs/hue-portal-access.md)
+docs/hue-dev-docs/

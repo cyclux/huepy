@@ -115,6 +115,11 @@ applyTo: '**'
 - Keep `recording/` depending only on `state/records.py` and the models; sinks receive enriched
   records, never the state graph, and own their own blocking work
 - One logical light command is one PUT composed by `build_light_payload()`
+- The authoritative v2 CLIP reference is the gated `developers.meethue.com` portal. Follow
+  `docs/hue-portal-access.md`: a human solves the Cloudflare Turnstile once in the Playwright MCP
+  browser, then `curl` reads every page with the exported session into `docs/hue-dev-docs/`
+  (git-ignored). Credentials live in `.env` (git-ignored); never automate the challenge or commit
+  the session
 
 ## Declarative plans
 
