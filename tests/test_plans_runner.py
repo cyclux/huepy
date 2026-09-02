@@ -745,6 +745,59 @@ class TestClose:
         await asyncio.wait_for(task, timeout=1.0)
         assert task.done()
 
+    async def test_stop_returns_run_without_cancelling_it(self, bridge, clock):
+        # A signal handler calls stop(); run() must come back normally so the
+        # context managers around it close the session rather than unwind.
+        runner = await make_runner(bridge, clock)
+        task = asyncio.create_task(runner.run())
+        await asyncio.sleep(0)
+        runner.stop()
+        await asyncio.wait_for(task, timeout=1.0)
+        assert not task.cancelled()
+        assert task.exception() is None
+
+    async def test_stop_during_the_catch_up_wait_skips_the_tick(
+        self, bridge, http, clock
+    ):
+        clock.now = datetime.datetime(2026, 9, 1, 9, 30, tzinfo=BERLIN)
+        started: list[PlanRunner] = []
+
+        async def stopping_sleep(_seconds: float) -> None:
+            started[0].stop()
+
+        runner = PlanRunner(
+            bridge, Plan.model_validate(DAY_PLAN), clock=clock, sleep=stopping_sleep
+        )
+        started.append(runner)
+        await runner.start()
+        await asyncio.wait_for(runner.run(), timeout=1.0)
+        assert len(http.writes) == 1
+
+
+class TestLogging:
+    async def test_a_write_logs_scope_target_ramp_and_requests(
+        self, bridge, clock, caplog
+    ):
+        runner = await make_runner(bridge, clock)
+        clock.now = datetime.datetime(2026, 9, 1, 9, 0, tzinfo=BERLIN)
+        with caplog.at_level(logging.INFO, logger="huepy.plans.runner"):
+            assert await runner.tick() == 1
+        line = next(r.getMessage() for r in caplog.records if " -> " in r.getMessage())
+        assert line.startswith("room:Living Room: day -> brightness=100 ")
+        assert line.endswith("over 1h, 1 request, ends 10:00:00")
+
+    async def test_an_idempotent_tick_logs_the_skip_at_debug_only(
+        self, bridge, clock, caplog
+    ):
+        runner = await make_runner(bridge, clock)
+        clock.now = datetime.datetime(2026, 9, 1, 9, 0, tzinfo=BERLIN)
+        await runner.tick()
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG, logger="huepy.plans.runner"):
+            assert await runner.tick() == 0
+        assert [r.levelno for r in caplog.records] == [logging.DEBUG]
+        assert "still in force, nothing to send" in caplog.text
+
 
 SENSOR_DEVICE = "dev-hall"
 MOTION = "motion-1"

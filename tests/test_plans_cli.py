@@ -1,15 +1,19 @@
 """The command line interface.
 
-Three of the four verbs must never touch a bridge -- that is the whole point of
+Three of the five verbs must never touch a bridge -- that is the whole point of
 being able to check a plan before running it -- so these tests pass no client at
 all and would fail loudly if one were needed.
 """
 
+import asyncio
 import json
+import logging
+import signal
+import sys
 
 import pytest
 
-from huepy.cli import EXIT_FAILED, EXIT_OK, main
+from huepy.cli import EXIT_FAILED, EXIT_OK, _log_level, _stopping_on_signals, main
 
 PLAN = """
 version = 1
@@ -192,6 +196,36 @@ class TestHelp:
         out = capsys.readouterr().out
         for verb in ("check", "explain", "validate", "run", "schema"):
             assert verb in out
+
+
+class TestVerbosity:
+    @pytest.mark.parametrize(
+        ("verbose", "quiet", "level"),
+        [
+            (0, False, logging.WARNING),
+            (1, False, logging.INFO),
+            (2, False, logging.DEBUG),
+            (3, False, logging.DEBUG),
+            (0, True, logging.ERROR),
+            (2, True, logging.ERROR),
+        ],
+    )
+    def test_flags_map_to_levels(self, verbose, quiet, level):
+        assert _log_level(verbose, quiet=quiet) == level
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="no loop signal handlers")
+class TestStopSignals:
+    async def test_sigterm_calls_stop(self):
+        stopped = asyncio.Event()
+        with _stopping_on_signals(stopped.set):
+            signal.raise_signal(signal.SIGTERM)
+            await asyncio.wait_for(stopped.wait(), timeout=1.0)
+
+    async def test_handlers_are_removed_afterwards(self):
+        with _stopping_on_signals(lambda: None):
+            assert signal.getsignal(signal.SIGTERM) is not signal.SIG_DFL
+        assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
 
 
 class TestSchema:

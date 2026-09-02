@@ -30,7 +30,7 @@ from typing import Any, Literal, Self, cast
 from huepy.exceptions import HueError
 from huepy.plans.arbiter import Arbiter, Claim, Fade
 from huepy.plans.executor import Segment, plan_segments, send, send_chain
-from huepy.plans.fields import TriggerKind
+from huepy.plans.fields import TriggerKind, format_duration
 from huepy.plans.protocol import Cancellable, ChangeSource, PlanClient
 from huepy.plans.resolve import Binding, ResolvedPlan, TriggerBinding, resolve
 from huepy.plans.schema import Plan
@@ -250,6 +250,17 @@ class PlanRunner:
             len(self.plan.scenario),
             sum(len(bindings) for bindings in self._resolved.scopes.values()),
         )
+        for binding in self._binding_of.values():
+            logger.debug(
+                "%s -> %s (%d lights)",
+                binding.selector,
+                binding.path,
+                len(binding.light_ids),
+            )
+        for key, trigger in self._resolved.triggers.items():
+            logger.debug(
+                "%s -> %s", key, ", ".join(trigger.resource_ids) or "application signal"
+            )
 
     def _index_scopes(self, resolved: ResolvedPlan) -> None:
         """Map every resource id a scope covers back to that scope.
@@ -331,6 +342,12 @@ class PlanRunner:
         now = self._clock()
         for path in self._scope_of.get(change.resource_id, ()):
             if not self.arbiter.note_foreign_change(path, brightness, now, on=on):
+                # One line per progress report the bridge sends during a fade.
+                # It is the override arithmetic's verdict, which is the thing
+                # to read when a light is yielded that should not have been.
+                logger.debug(
+                    "%s: report explained by the running fade", self._label(path)
+                )
                 continue
             # Stop the rest of a chained fade. Without this, the second half of
             # a three-hour sunset would still land an hour after someone turned
@@ -387,14 +404,28 @@ class PlanRunner:
         if pending is not None:
             _ = pending.cancel()
 
+    def stop(self) -> None:
+        """Ask :meth:`run` to return after the write it is on.
+
+        Synchronous and idempotent, so it can be installed as a signal
+        handler. The loop checks between scopes and after every wait, so the
+        lag is at most one write -- or the catch-up ramp, when a restart is
+        still settling. A fade already handed to the bridge keeps running
+        there. Not thread-safe: from another thread, go through
+        ``loop.call_soon_threadsafe(runner.stop)``.
+        """
+        if not self._closing.is_set():
+            logger.info("stop requested")
+        self._closing.set()
+        self._wake.set()
+
     async def close(self) -> None:
         """Stop the runner, cancelling any fade still being chained.
 
         A fade already handed to the bridge keeps running there -- that is the
         point of a long transition -- but the chaining of later segments stops.
         """
-        self._closing.set()
-        self._wake.set()
+        self.stop()
         for subscription in (self._subscription, self._resync):
             if subscription is not None:
                 subscription.cancel()
@@ -507,13 +538,21 @@ class PlanRunner:
         """
         now = self._clock()
         written = 0
-        for claim in self.arbiter.claims(now, catching_up=True):
+        claims = self.arbiter.claims(now, catching_up=True)
+        for claim in claims:
             if self._closing.is_set():
                 break
             if self.arbiter.is_yielded(claim.binding.path):
                 continue
+            logger.debug(
+                "%s: catching up to %s over %s",
+                claim.binding.selector,
+                claim.target.describe(),
+                format_duration(claim.ramp),
+            )
             if await self._drive_safely(claim, now, ramp=claim.ramp):
                 written += 1
+        logger.info("catch-up: %d of %d scopes written", written, len(claims))
         return written
 
     async def tick(self) -> int:
@@ -550,6 +589,11 @@ class PlanRunner:
                 and state.owner.source == claim.source
                 and not self._target_changed(claim)
             ):
+                logger.debug(
+                    "%s: %s still in force, nothing to send",
+                    claim.binding.selector,
+                    claim.source,
+                )
                 continue
             if await self._drive_safely(claim, now, ramp=claim.ramp):
                 written += 1
@@ -650,36 +694,38 @@ class PlanRunner:
         if existing is not None:
             _ = existing.cancel()
 
+        fade = Fade(
+            scope=path, start=start, target=claim.target, started_at=now, ramp=ramp
+        )
         if not segments:
             # Already where it should be. Still record the intent, so the next
             # tick knows this target is in force and does not re-send it.
-            self.arbiter.note_fade(
-                Fade(
-                    scope=path,
-                    start=start,
-                    target=claim.target,
-                    started_at=now,
-                    ramp=ramp,
-                )
-            )
+            self.arbiter.note_fade(fade)
             state.owner = claim
+            logger.debug(
+                "%s: already at %s, nothing to send",
+                self._label(path),
+                claim.target.describe(),
+            )
             return False
 
-        self.arbiter.note_fade(
-            Fade(
-                scope=path,
-                start=start,
-                target=claim.target,
-                started_at=now,
-                ramp=ramp,
-            )
-        )
+        self.arbiter.note_fade(fade)
 
         await send(self._client, segments[0])
         # Only now. A rejected write leaves the previous owner in place, so the
         # retry next tick still looks like the hand-over it is and keeps the
         # no-snap floor rather than believing this scenario already had it.
         state.owner = claim
+        logger.info(
+            "%s: %s -> %s over %s, %d request%s, ends %s",
+            self._label(path),
+            claim.source,
+            claim.target.describe(),
+            format_duration(ramp),
+            len(segments),
+            "" if len(segments) == 1 else "s",
+            self._local(fade.ends_at()),
+        )
 
         # Re-check after the await: `_observe` runs on the state layer's own
         # dispatch task and may have handed this scope to a human while the
@@ -712,7 +758,13 @@ class PlanRunner:
 
         """
         try:
-            _ = await send_chain(self._client, segments, sleep=self._sleep)
+            sent = await send_chain(self._client, segments, sleep=self._sleep)
+            logger.info(
+                "%s: chained fade landed, %d more request%s",
+                self._label(path),
+                sent,
+                "" if sent == 1 else "s",
+            )
         except asyncio.CancelledError:
             raise
         except HueError:
@@ -727,6 +779,18 @@ class PlanRunner:
         finally:
             if self._fades.get(path) is asyncio.current_task():
                 del self._fades[path]
+
+    def _local(self, when: datetime.datetime) -> str:
+        """Render an instant as a clock time in the plan's zone, for logs.
+
+        Args:
+            when: The instant.
+
+        Returns:
+            ``HH:MM:SS`` in the plan's zone, or the host's when it has none.
+
+        """
+        return in_zone(when, self._zone).strftime("%H:%M:%S")
 
     def _seconds_until_next(self, now: datetime.datetime) -> float:
         """How long to sleep before the next scheduled step or hold expiry.
@@ -770,6 +834,10 @@ class PlanRunner:
         remaining ramp from wherever it happened to be.
         """
         if await self.catch_up():
+            logger.debug(
+                "waiting %s for the catch-up fade to land",
+                format_duration(self.plan.defaults.catchup_ramp),
+            )
             await self._sleep(self.plan.defaults.catchup_ramp)
             if self._closing.is_set():
                 # close() returned while this was asleep; a tick now would
@@ -782,7 +850,13 @@ class PlanRunner:
         self._closing.clear()
         await self._settle()
         while not self._closing.is_set():
-            delay = self._seconds_until_next(self._clock())
+            now = self._clock()
+            delay = self._seconds_until_next(now)
+            until = self._local(now + datetime.timedelta(seconds=delay))
+            if delay >= MAX_SLEEP:
+                logger.debug("nothing due before %s; stirring then", until)
+            else:
+                logger.debug("sleeping %s, until %s", format_duration(delay), until)
             waker = asyncio.ensure_future(self._wake.wait())
             try:
                 _ = await asyncio.wait_for(waker, timeout=delay)

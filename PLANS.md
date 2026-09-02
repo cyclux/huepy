@@ -265,6 +265,13 @@ to replay and nothing that can get out of sync with reality.
 This is the reason `timeline.py` must stay pure and clock-injected. It is also
 why a whole simulated day runs in microseconds in `tests/test_plans_runner.py`.
 
+Stopping is a request, not a cancellation. `PlanRunner.stop()` sets the
+closing flag and wakes the loop; `run()` returns after the write it is on, and
+the context managers around it close the session in order. The CLI installs
+that as the SIGINT and SIGTERM handler, because `kill` and systemd send
+SIGTERM, and Python's default answer to it is to end the process with the
+bridge session and the event stream dropped mid-frame.
+
 ## Deliberately excluded
 
 Compiling a plan to bridge-side `smart_scene` resources would let the schedule
@@ -298,3 +305,4 @@ integration probe establishing whether a third-party app key can POST one.
 | A host-local clock time survives a DST change | `TestZone` |
 | Body-level write rejections raise rather than stranding a scope | `TestWriteErrors` |
 | One failing scope neither stops the runner nor is forgotten | `TestFailureIsolation` |
+| `stop()` ends `run()` without cancelling it; SIGTERM reaches it; what a write logs | `TestClose`, `TestLogging`, `tests/test_plans_cli.py::TestStopSignals` |

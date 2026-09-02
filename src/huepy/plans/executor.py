@@ -240,6 +240,7 @@ async def send(client: PlanClient, segment: Segment) -> None:
         HueResponseError: If the bridge rejected the write in its body.
 
     """
+    logger.debug("PUT %s %s", segment.path, segment.payload)
     _ = unwrap(await client.http.put(segment.path, segment.payload), ResourceIdentifier)
 
 

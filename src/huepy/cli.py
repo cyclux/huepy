@@ -11,11 +11,13 @@ Typical usage example:
 
 import argparse
 import asyncio
+import contextlib
 import datetime
 import json
 import logging
+import signal
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Generator, Sequence
 from pathlib import Path
 
 from huepy.client.base import Hue
@@ -41,6 +43,11 @@ Declarative light plans for a Hue bridge.
   plan schema    print the plan format as JSON Schema
 
 Only `run` writes to a bridge, and only `validate` and `run` need one.
+
+`huepy -v plan run PATH` logs every write the runner makes; `-vv` adds the
+sleeps, the skips and the wire payloads; `-q` keeps only errors. Ctrl-C or
+SIGTERM stops a running plan after the write it is on; a second Ctrl-C
+forces it.
 """
 
 
@@ -205,8 +212,47 @@ async def _validate(path: str) -> int:
     return EXIT_OK
 
 
+@contextlib.contextmanager
+def _stopping_on_signals(stop: Callable[[], None]) -> Generator[None]:
+    """Turn SIGINT and SIGTERM into a call to ``stop`` while the body runs.
+
+    Without this, SIGTERM -- what systemd and ``kill`` send -- ends the
+    process on the spot: no ``close()``, the bridge session and the event
+    stream dropped mid-frame, the tail of a chained fade lost. Ctrl-C only
+    looks graceful because asyncio turns it into a cancellation that happens
+    to unwind through the context managers.
+
+    The handlers are removed on the way out, so a second Ctrl-C during the
+    shutdown itself is the ordinary ``KeyboardInterrupt`` again: the force
+    path, for when a bridge stops answering.
+
+    Args:
+        stop: What to call when either signal arrives. Runs on the loop, so
+            it may touch loop state directly.
+
+    Yields:
+        Nothing; the body runs with the handlers installed.
+
+    """
+    loop = asyncio.get_running_loop()
+    installed: list[signal.Signals] = []
+    try:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, stop)
+            except NotImplementedError:
+                # Windows' Proactor loop has no signal handlers. Ctrl-C then
+                # still arrives as KeyboardInterrupt, which main() handles.
+                break
+            installed.append(sig)
+        yield
+    finally:
+        for sig in installed:
+            _ = loop.remove_signal_handler(sig)
+
+
 async def _run(path: str) -> int:
-    """Run a plan until interrupted.
+    """Run a plan until stopped.
 
     Args:
         path: The plan file or directory.
@@ -220,8 +266,28 @@ async def _run(path: str) -> int:
         runner = PlanRunner(hue, plan, changes=hue.state)
         async with runner:
             print(f"Running {len(plan.scenario)} scenarios. Ctrl-C to stop.")
-            await runner.run()
+            with _stopping_on_signals(runner.stop):
+                await runner.run()
+            print("Stopping.")
     return EXIT_OK
+
+
+def _log_level(verbose: int, *, quiet: bool) -> int:
+    """Map the verbosity flags to a logging level.
+
+    Args:
+        verbose: How many times ``-v`` was given.
+        quiet: Whether ``-q`` was given.
+
+    Returns:
+        The level for the root logger.
+
+    """
+    if quiet:
+        return logging.ERROR
+    if verbose >= 2:  # noqa: PLR2004 - `-vv` is the spelling, not a magic number
+        return logging.DEBUG
+    return logging.INFO if verbose else logging.WARNING
 
 
 def _print_schema(_args: argparse.Namespace) -> int:
@@ -311,7 +377,14 @@ def _build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _ = parser.add_argument(
-        "-v", "--verbose", action="store_true", help="log what the runner is doing"
+        "-v",
+        "--verbose",
+        action="count",
+        default=0,
+        help="log every write the runner makes; -vv adds sleeps, skips and payloads",
+    )
+    _ = parser.add_argument(
+        "-q", "--quiet", action="store_true", help="log nothing but errors"
     )
     verbs = parser.add_subparsers(dest="group", required=True)
     plan = verbs.add_parser("plan", help="work with declarative light plans")
@@ -347,7 +420,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     """
     args = _build_parser().parse_args(argv)
     logging.basicConfig(
-        level=logging.INFO if args.verbose else logging.WARNING,
+        level=_log_level(args.verbose, quiet=args.quiet),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 

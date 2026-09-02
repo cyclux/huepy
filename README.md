@@ -471,8 +471,8 @@ async with Hue(state=True) as hue:
 ```
 
 Or from the shell: `huepy plan explain ./plans` prints the day with every solar
-anchor resolved and never touches the bridge; `huepy plan run ./plans` executes
-it.
+anchor resolved and never touches the bridge; `huepy -v plan run ./plans`
+executes it, logging every write, and stops cleanly on Ctrl-C or SIGTERM.
 
 Sunrise is computed in-process, because the bridge cannot help — its
 `geolocation` resource reports a sunset but no sunrise, and smart scene

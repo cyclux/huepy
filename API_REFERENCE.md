@@ -1275,12 +1275,18 @@ so a callback can call it directly.
 | `huepy plan check PATH` | no | Parses the files and reports what is malformed. |
 | `huepy plan explain PATH [--at ISO]` | no | Prints the day, every solar anchor resolved, with the request count per step. |
 | `huepy plan validate PATH` | reads | Also resolves every name, reporting all unknown ones at once. |
-| `huepy plan run PATH` | writes | Executes the plan until interrupted. |
+| `huepy plan run PATH` | writes | Executes the plan until Ctrl-C or SIGTERM, which stop it after the write it is on. |
 | `huepy plan schema` | no | Emits the format as JSON Schema, for editor completion. |
 
 A name that does not resolve raises `PlanError`, which carries the file it came
 from. Nothing is written before resolution succeeds, so a misspelled room cannot
 half-run a plan.
+
+`huepy -v plan run PATH` logs every write — scope, target, ramp, request count
+and when the fade ends — plus hand changes, triggers and reconnects. `-vv`
+adds what was skipped as already in force, how long the loop sleeps, each
+progress report the override arithmetic explained, and the wire payload of
+every PUT. `-q` keeps only errors.
 
 ### What `huepy.plans` exports
 
@@ -1288,7 +1294,7 @@ half-run a plan.
 | --- | --- |
 | `load_plans(path)`, `load_plan(path)` | Read a `.toml` file, or a directory of them, into a `Plan`. `PlanError` on anything wrong, naming the file and key. |
 | `Plan`, `Scenario`, `Step`, `Rule`, `Action`, `Defaults`, `Location` | The format, as frozen pydantic models. `Plan.model_json_schema()` is what `huepy plan schema` prints. |
-| `PlanRunner` | Runs a plan. `changes=` takes anything with `on_change` and `on_resync` — `hue.state` — and `clock=` / `sleep=` are injectable for tests. `fire(name)` returns what the signal did, one phrase per scenario it reached, and `signals` is the set of names the plan listens for. |
+| `PlanRunner` | Runs a plan. `changes=` takes anything with `on_change` and `on_resync` — `hue.state` — and `clock=` / `sleep=` are injectable for tests. `fire(name)` returns what the signal did, one phrase per scenario it reached, and `signals` is the set of names the plan listens for. `stop()` asks `run()` to return after the write it is on, so a signal handler can end a daemon without cancelling it. |
 | `PlanClient`, `ChangeSource` | The two Protocols the runner depends on. `Hue` and `HueState` satisfy them. |
 | `resolve(client, plan)`, `ResolvedPlan`, `Binding`, `TriggerBinding` | Bind every name to a resource id in one snapshot, reporting every unknown name together. |
 | `waypoints_for_day(plan, scenario, day, zone)`, `Waypoint` | A scenario's day curve pinned to instants. Pure. |
