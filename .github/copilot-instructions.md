@@ -141,14 +141,19 @@ maths, or the executor.
 - **Override detection cannot use the state layer's time window.** A 100-minute
   fade would mask a human for the whole ramp, so `arbiter.Fade.explains()`
   compares a report against the fade's own interpolated expectation instead.
+  `Change.origin == "self"` *is* that window; the runner skips only
+  `observation == "command_echo"` and judges everything else.
 - **Every trigger is one path.** Sensors and signals alike reach
   `Arbiter.fire(key, now)` as the selector string they were written as; do not
   add a second dispatch. What a kind *means* lives in `runner._edge()`.
 - **Handing a scope back never snaps.** The return to a day curve is floored at
   `catchup_ramp`; a mode keeps its author's ramp. `Claim.source` vs
-  `ScopeState.owner` is what tells a hand-over from a claim still in force.
+  `ScopeState.owner` is what tells a hand-over from a claim still in force, and
+  `Claim.since` vs `ScopeState.yielded_at` is what ends a yield -- never a
+  precomputed resume time.
 - `plans/` depends on the `PlanClient` Protocol in `plans/protocol.py`, never on
-  `client/base.py`.
+  `client/base.py`. `src/huepy/cli.py` is the composition root: the one module
+  outside `client/` that binds a plan to a concrete `Hue`.
 - Sun times are computed in-process: `geolocation` reports a sunset but never a
   sunrise, its coordinates are write-only, and `smart_scene` timeslots accept
   neither sunrise nor offsets. Plans are not compiled to the bridge.

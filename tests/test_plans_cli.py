@@ -53,6 +53,20 @@ class TestCheck:
         assert main(["plan", "check", str(bad)]) == EXIT_FAILED
         assert "bad.toml" in capsys.readouterr().err
 
+    def test_an_unknown_timezone_fails_at_check(self, tmp_path, capsys):
+        bad = tmp_path / "tz.toml"
+        bad.write_text(
+            """
+version = 1
+[location]
+latitude = 48.1
+longitude = 11.5
+timezone = "Mars/Olympus"
+"""
+        )
+        assert main(["plan", "check", str(bad)]) == EXIT_FAILED
+        assert "timezone" in capsys.readouterr().err
+
     def test_an_invalid_plan_names_the_key(self, tmp_path, capsys):
         bad = tmp_path / "bad.toml"
         bad.write_text(
@@ -107,6 +121,77 @@ set = { brightness = 100 }
         )
         main(["plan", "explain", str(path), "--at", "2026-09-01T12:00"])
         assert "no steps today" in capsys.readouterr().out
+
+    def test_a_naive_at_is_read_in_the_plans_zone(self, tmp_path, capsys):
+        # A bare clock time on the command line means the plan's clock, not
+        # the host's. With the host east of the plan, the host's reading of
+        # 00:30 would describe the previous day.
+        path = tmp_path / "la.toml"
+        path.write_text(
+            """
+version = 1
+[location]
+latitude = 34.05
+longitude = -118.24
+timezone = "America/Los_Angeles"
+[[scenario]]
+name = "x"
+scope = ["room:X"]
+[[scenario.step]]
+at = "09:00"
+set = { brightness = 100 }
+"""
+        )
+        main(["plan", "explain", str(path), "--at", "2026-09-01T00:30"])
+        assert "Plan for 2026-09-01 (America/Los_Angeles)" in capsys.readouterr().out
+
+    def test_a_plan_without_a_zone_says_so(self, tmp_path, capsys):
+        path = tmp_path / "bare.toml"
+        path.write_text(
+            """
+version = 1
+[[scenario]]
+name = "x"
+scope = ["room:X"]
+[[scenario.step]]
+at = "09:00"
+set = { brightness = 100 }
+"""
+        )
+        main(["plan", "explain", str(path), "--at", "2026-09-01T12:00"])
+        assert "(host zone)" in capsys.readouterr().out
+
+    def test_a_long_first_step_is_costed_from_yesterday(self, tmp_path, capsys):
+        # The first step of the day fades from yesterday's last, so its
+        # request count must be the chained count the runner would send.
+        path = tmp_path / "first.toml"
+        path.write_text(
+            """
+version = 1
+[[scenario]]
+name = "x"
+scope = ["room:X"]
+[[scenario.step]]
+at = "06:00"
+ramp = "3h"
+set = { brightness = 100 }
+[[scenario.step]]
+at = "22:00"
+set = { brightness = 10 }
+"""
+        )
+        main(["plan", "explain", str(path), "--at", "2026-09-01T12:00"])
+        assert "(2 requests)" in capsys.readouterr().out
+
+
+class TestHelp:
+    def test_every_verb_is_listed(self, capsys):
+        with pytest.raises(SystemExit) as stopped:
+            _ = main(["plan", "--help"])
+        assert stopped.value.code == EXIT_OK
+        out = capsys.readouterr().out
+        for verb in ("check", "explain", "validate", "run", "schema"):
+            assert verb in out
 
 
 class TestSchema:

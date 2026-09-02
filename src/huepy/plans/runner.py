@@ -15,7 +15,8 @@ no journal to replay and nothing to get out of sync.
 Typical usage example:
 
     async with Hue(state=True) as hue:
-        async with PlanRunner(hue, load_plans("./plans")) as runner:
+        plan = load_plans("./plans")
+        async with PlanRunner(hue, plan, changes=hue.state) as runner:
             await runner.run()
 """
 
@@ -33,7 +34,7 @@ from huepy.plans.fields import TriggerKind
 from huepy.plans.protocol import Cancellable, ChangeSource, PlanClient
 from huepy.plans.resolve import ResolvedPlan, TriggerBinding, resolve
 from huepy.plans.schema import Plan
-from huepy.plans.timeline import Zone, next_transition, zone_of
+from huepy.plans.timeline import Zone, combine, in_zone, next_transition, zone_of
 from huepy.state.records import Change, Resync
 
 logger = logging.getLogger(__name__)
@@ -95,6 +96,23 @@ def _reported_brightness(change: Change) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return float(value)
+
+
+def _reported_on(change: Change) -> bool | None:
+    """Pull a power state out of a change's delta, if it carried one.
+
+    Args:
+        change: The observed transition.
+
+    Returns:
+        The reported state, or None when the change was about something else.
+
+    """
+    raw = change.delta.get("on")
+    if not isinstance(raw, dict):
+        return None
+    value = cast("dict[str, Any]", raw).get("on")
+    return value if isinstance(value, bool) else None
 
 
 def _nested(delta: dict[str, Any], *keys: str) -> object:
@@ -181,8 +199,10 @@ class PlanRunner:
                 Without it the plan simply never yields.
             clock: Where "now" comes from. Injectable so a simulated day runs
                 in microseconds.
-            sleep: How to wait between wake-ups. Injectable for the same
-                reason.
+            sleep: How to wait for a chained segment, or a catch-up fade, to
+                finish. Injectable for the same reason. The wait between
+                scheduled steps is not a sleep -- it has to be interruptible
+                by a trigger -- so it does not go through here.
 
         """
         self.plan: Plan = plan
@@ -216,11 +236,10 @@ class PlanRunner:
         self._index_scopes(self._resolved)
         self._index_triggers(self._resolved)
         if self._changes is not None:
-            listening = self.plan.defaults.on_manual_change != "reassert" or bool(
-                self._triggers_of
-            )
-            if listening:
-                self._subscription = self._changes.on_change(self._observe)
+            # Subscribed under `reassert` too: not yielding is a different
+            # thing from not looking. A hand switch-off still has to reset
+            # what the runner believes about the light.
+            self._subscription = self._changes.on_change(self._observe)
             # A gap in the stream invalidates every belief this runner holds
             # about what is in flight, so the answer is to re-derive the whole
             # picture from the clock rather than trust any of it.
@@ -273,19 +292,29 @@ class PlanRunner:
         if triggers is not None:
             self._observe_trigger(change, triggers)
             return
-        if self.plan.defaults.on_manual_change == "reassert":
-            return
-        if change.origin == "self":
+        if change.observation == "command_echo":
+            # The bridge repeating a transition's *target* back the moment it
+            # accepts the write. Judged against the fade's expectation at that
+            # instant it is a jump, and it is the one report that is ours by
+            # construction. `origin == "self"` is deliberately *not* trusted:
+            # it is the state layer's time window, which attributes every
+            # report on the light to us until the fade ends -- the masking
+            # the arbiter's own arithmetic exists to avoid.
             return
         brightness = _reported_brightness(change)
+        on = _reported_on(change)
         for path in self._scope_of.get(change.resource_id, ()):
-            if not self.arbiter.note_foreign_change(path, brightness, change.at):
+            if not self.arbiter.note_foreign_change(path, brightness, change.at, on=on):
                 continue
             # Stop the rest of a chained fade. Without this, the second half of
             # a three-hour sunset would still land an hour after someone turned
             # the lights up by hand.
             self._cancel_fade(path)
-            logger.info("%s: changed by hand, standing back until its next step", path)
+            if self.arbiter.is_yielded(path):
+                logger.info("%s: changed by hand, standing back", path)
+            else:
+                logger.info("%s: changed by hand, re-asserting", path)
+                self._wake.set()
 
     def _observe_trigger(self, change: Change, triggers: list[TriggerBinding]) -> None:
         """Fire every trigger a sensor change means.
@@ -443,13 +472,14 @@ class PlanRunner:
             path = claim.binding.path
             state = self.arbiter.state_of(path)
 
-            # A scope someone took over rejoins at its next scheduled step,
-            # not before: the human wins now, the plan wins later.
-            if state.yielded:
-                if state.resume_at is None or now < state.resume_at:
+            # A scope someone took over comes back at the first step, hold or
+            # mode that began after the hand change, not before: the human
+            # wins now, the plan wins later.
+            if state.yielded_at is not None:
+                if claim.since is None or claim.since < state.yielded_at:
                     continue
                 self.arbiter.resume(path)
-                logger.info("%s: resuming at a scheduled step", claim.binding.name)
+                logger.info("%s: taking the scope back", claim.binding.name)
 
             if state.owner == claim.source and not self._target_changed(claim):
                 continue
@@ -624,15 +654,35 @@ class PlanRunner:
         expiry = self.arbiter.next_expiry(now)
         if expiry is not None:
             upcoming.append(expiry)
+        if any(scenario.days is not None for scenario in self.plan.scenario):
+            # `days` gates by the local calendar date, so a scenario can start
+            # or stop claiming its scope at midnight with no step to wake for.
+            tomorrow = in_zone(now, self._zone).date() + datetime.timedelta(days=1)
+            upcoming.append(combine(tomorrow, datetime.time(), self._zone))
         if not upcoming:
             return MAX_SLEEP
         delay = (min(upcoming) - now).total_seconds()
         return max(0.0, min(delay, MAX_SLEEP))
 
+    async def _settle(self) -> None:
+        """Catch up, let the catch-up fade land, then carry on with the schedule.
+
+        Catching up moves each scope to where it should already be, over the
+        short catch-up ramp. That is only half of a restart mid-fade: the rest
+        of the step's ramp still has to be handed to the bridge, and nothing
+        scheduled would wake the loop for it -- the step has already started.
+        Waiting for the catch-up fade first matters too: a second PUT straight
+        after the first overrides it, and the light would run the whole
+        remaining ramp from wherever it happened to be.
+        """
+        if await self.catch_up():
+            await self._sleep(self.plan.defaults.catchup_ramp)
+        _ = await self.tick()
+
     async def run(self) -> None:
         """Catch up, then keep the plan running until closed or cancelled."""
         self._closing.clear()
-        _ = await self.catch_up()
+        await self._settle()
         while not self._closing.is_set():
             delay = self._seconds_until_next(self._clock())
             waker = asyncio.ensure_future(self._wake.wait())
@@ -655,6 +705,6 @@ class PlanRunner:
                 # The stream lost continuity, so nothing this runner believes
                 # about what is in flight can be trusted. Re-derive it all.
                 self._needs_catchup = False
-                _ = await self.catch_up()
+                await self._settle()
             else:
                 _ = await self.tick()

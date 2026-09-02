@@ -24,9 +24,10 @@ Typical usage example:
 """
 
 import datetime
+import zoneinfo
 from typing import Annotated, Any, ClassVar, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from huepy.models.group import WeekDay
 from huepy.models.state import build_light_payload
@@ -82,6 +83,35 @@ class Location(BaseModel):
     latitude: float = Field(ge=MIN_LATITUDE, le=MAX_LATITUDE)
     longitude: float = Field(ge=MIN_LONGITUDE, le=MAX_LONGITUDE)
     timezone: str | None = None
+
+    @field_validator("timezone")
+    @classmethod
+    def _must_be_a_known_zone(cls, value: str | None) -> str | None:
+        """Reject a timezone the host cannot resolve.
+
+        Checked at load so ``huepy plan check`` catches it, rather than the
+        first clock step crashing the daemon with a lookup error.
+
+        Args:
+            value: The IANA name as written, or None.
+
+        Returns:
+            The name, unchanged.
+
+        Raises:
+            ValueError: If no such zone is known.
+
+        """
+        if value is None:
+            return None
+        try:
+            _ = zoneinfo.ZoneInfo(value)
+        except (zoneinfo.ZoneInfoNotFoundError, ValueError) as error:
+            msg = (
+                f"unknown timezone {value!r}; use an IANA name such as 'Europe/Berlin'"
+            )
+            raise ValueError(msg) from error
+        return value
 
 
 class Action(BaseModel):
@@ -264,7 +294,7 @@ class Scenario(BaseModel):
     scope: list[ScopeSelector] = Field(min_length=1)
     priority: int = 0
     enabled: bool = True
-    days: list[WeekDay] | None = None
+    days: Annotated[list[WeekDay], Field(min_length=1)] | None = None
     activate_on: TriggerSelector | None = None
     release_on: TriggerSelector | None = None
     ramp: Duration | None = None

@@ -1201,16 +1201,20 @@ ZigBee message.
 
 The runner keeps no durable state. On start, and after every reconnect, it asks
 where each scope *should* be at this instant — interpolating a part-finished
-fade — and moves there over `defaults.catchup_ramp`. A process killed half an
-hour into a sunset comes back and lands in the right place.
+fade — moves there over `defaults.catchup_ramp`, and then hands the rest of the
+step's ramp to the bridge. A process killed half an hour into a sunset comes
+back, lands in the right place, and carries on fading.
 
 ### Manual changes
 
 By default a scope someone changes by hand is yielded: the runner stops
-asserting it and rejoins at that scope's next scheduled step. Because this layer
-issues fades lasting up to a hundred minutes, a running fade is checked against
-its own arithmetic rather than a time window — movement consistent with the ramp
-is ours, a jump is a human.
+asserting it and takes it back at the first step, trigger or mode that begins
+after the change. A switch-off counts, and the next write carries `on` again.
+Because this layer issues fades lasting up to a hundred minutes, a running fade
+is checked against its own arithmetic rather than a time window — movement
+consistent with the ramp is ours, a jump or a power change is a human. With
+`on_manual_change = "reassert"` the scope is never yielded, but the runner still
+notices the change and puts the light back.
 
 ### Rules
 
@@ -1271,6 +1275,24 @@ so a callback can call it directly.
 A name that does not resolve raises `PlanError`, which carries the file it came
 from. Nothing is written before resolution succeeds, so a misspelled room cannot
 half-run a plan.
+
+### What `huepy.plans` exports
+
+| Name | Is |
+| --- | --- |
+| `load_plans(path)`, `load_plan(path)` | Read a `.toml` file, or a directory of them, into a `Plan`. `PlanError` on anything wrong, naming the file and key. |
+| `Plan`, `Scenario`, `Step`, `Rule`, `Action`, `Defaults`, `Location` | The format, as frozen pydantic models. `Plan.model_json_schema()` is what `huepy plan schema` prints. |
+| `PlanRunner` | Runs a plan. `changes=` takes anything with `on_change` and `on_resync` — `hue.state` — and `clock=` / `sleep=` are injectable for tests. |
+| `PlanClient`, `ChangeSource` | The two Protocols the runner depends on. `Hue` and `HueState` satisfy them. |
+| `resolve(client, plan)`, `ResolvedPlan`, `Binding`, `TriggerBinding` | Bind every name to a resource id in one snapshot, reporting every unknown name together. |
+| `waypoints_for_day(plan, scenario, day, zone)`, `Waypoint` | A scenario's day curve pinned to instants. Pure. |
+| `current_step(plan, scenario, now, zone)`, `target_at(...)`, `next_transition(...)` | Which step is in force, where the light should already be, and when the next fade starts. Pure; `now` is a parameter. |
+| `zone_of(location)` | The zone a plan's clock times are written in — `None` for the host's own, which is resolved per instant rather than frozen at one DST offset. |
+| `solar_event(event, date, latitude, longitude)`, `SunEvent` | Sunrise, sunset, dawn or dusk as an aware UTC datetime; `None` in polar day or night. |
+
+The scheduling arithmetic, executor and arbiter stay reachable as
+`huepy.plans.timeline`, `huepy.plans.executor` and `huepy.plans.arbiter`, but
+are not part of the promise this table makes.
 
 ## `huepy.color`
 

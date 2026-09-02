@@ -64,5 +64,5 @@ the convenience layer does for you.
 
 | Script | What it shows |
 | --- | --- |
-| `run_plan.py` | Loading a TOML plan and running it: day curves, sun anchors, modes. |
+| `run_plan.py` | Loading a TOML plan and running it: day curves, sun anchors, a motion rule, a signalled mode. |
 | `plans/flat.toml` | The plan format itself, commented. |

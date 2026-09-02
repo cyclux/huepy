@@ -150,6 +150,16 @@ comparing `Claim.source` — the scenario name, or `scenario/trigger` for a
 hold — against `ScopeState.owner`. Comparing scenario names alone missed the
 case of a hold lapsing back into its own scenario's curve.
 
+A yield ends the same way, by comparing instants rather than by precomputing a
+resume time. `ScopeState.yielded_at` is when the human acted; `Claim.since` is
+when the authority behind the winning claim began — the step's start, the
+hold's placement, the mode's activation, whichever is latest. The scope comes
+back at the first winning claim whose `since` is not before `yielded_at`. A
+precomputed "next step" had no answer on a day when nothing covering the scope
+ran, and left the scope yielded for good; and it let a *losing* rule's hold
+un-yield a room the human had dimmed during a film. Releasing a mode is itself
+the trigger that ends a yield made while it held the scope.
+
 Two corollaries for plan authors. A rule without `hold` lasts until the scope's
 next scheduled step, not forever, or a button press would switch a day curve
 off for good. And a scope claimed by nobody is left alone, so a motion light
@@ -190,17 +200,39 @@ next hour.
 
 `arbiter.Fade.explains()` therefore checks a report against the fade's own
 interpolated expectation at that instant. Progress consistent with the ramp is
-ours; a jump beyond `BRIGHTNESS_TOLERANCE` is a human. The tolerance is
-deliberately generous — the bridge reports progress on the device's cadence, and
-a false "that was a human" costs one skipped step, while a false "that was us"
-ignores someone reaching for the switch.
+ours; a jump beyond `BRIGHTNESS_TOLERANCE` is a human, and so is a reported
+power state the fade did not ask for — a fade to a brightness is a fade on a
+light that is on. The tolerance is deliberately generous — the bridge reports
+progress on the device's cadence, and a false "that was a human" costs one
+skipped step, while a false "that was us" ignores someone reaching for the
+switch.
+
+The corollary that was missed once: `Change.origin == "self"` *is* that time
+window, so the runner must not use it as proof either. Driven through a real
+`HueState`, a brightness of 95 reported thirty minutes into a fade expecting 73
+arrived as `origin="self"` and was waved through. The one report that is ours
+by construction is `observation == "command_echo"` — the bridge repeating the
+transition's *target* back the moment it accepts the write — and that is the
+only thing `runner._observe()` skips. Everything else is judged.
+
+A hand change also resets what the runner believes about the light. The
+executor drops `on` when the previous fade already turned the light on, so a
+switch-off that went unnoticed made the noon step go out without `on` and the
+room stayed dark. Forgetting the fade is what makes the next write carry it
+again — under `reassert` as much as under `yield`, which is why a reassert plan
+still subscribes to changes.
 
 ## No durable state
 
 The runner writes nothing to disk and remembers nothing across restarts. On
 start, and after every reconnect, it asks the timeline where each scope should
-be at this instant and fades there. There is no journal to replay and nothing
-that can get out of sync with reality.
+be at this instant and fades there over `catchup_ramp`, waits for that fade to
+land, and then ticks once so the rest of the step's ramp goes to the bridge.
+Without that tick nothing scheduled would wake the loop — the step has already
+started — and a restart at 09:30 froze the light at 60% for a quarter of an
+hour. Without the wait, the second PUT overrides the first and the whole
+remaining ramp runs from wherever the light happened to be. There is no journal
+to replay and nothing that can get out of sync with reality.
 
 This is the reason `timeline.py` must stay pure and clock-injected. It is also
 why a whole simulated day runs in microseconds in `tests/test_plans_runner.py`.
@@ -228,6 +260,10 @@ integration probe establishing whether a third-party app key can POST one.
 | A `days` scenario falls silent on days it does not run | `TestRecurrenceExpiry` |
 | What fires each trigger kind, holds, windows, hand-back, the no-snap floor | `TestRules`, `TestModeHandback` |
 | A trigger landing mid-write is not lost by the loop | `TestRules::test_a_trigger_during_a_write_is_not_lost` |
+| `origin="self"` is not proof; `command_echo` is; a switch-off yields and resets `on` | `TestObservation` |
+| A yield ends at the first later step, hold or mode; a losing hold does not end it | `TestYieldResume` |
+| A restart mid-fade lands, waits, then continues the ramp | `TestRestart` |
+| Directory merge: singletons, versions, unknown keys, names across files | `tests/test_plans_loader.py` |
 | A host-local clock time survives a DST change | `TestZone` |
 | Body-level write rejections raise rather than stranding a scope | `TestWriteErrors` |
 | One failing scope neither stops the runner nor is forgotten | `TestFailureIsolation` |

@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 import huepy
-from huepy import Hue, PlanRunner, color, models
+from huepy import Hue, PlanRunner, color, models, plans
 from huepy.resources.base import NamedResourceHandler
 
 REFERENCE = Path(__file__).resolve().parent.parent / "API_REFERENCE.md"
@@ -154,12 +154,13 @@ def test_documented_calls_exist(reference_text, hue):
 def test_every_public_name_is_documented(reference_text):
     """Catches a new export shipping without a line in the reference.
 
-    ``huepy.__all__`` and ``huepy.color.__all__`` are the promises the package
-    makes; an undocumented one is a promise nobody can find.
+    ``huepy.__all__``, ``huepy.color.__all__`` and ``huepy.plans.__all__`` are
+    the promises the package makes; an undocumented one is a promise nobody
+    can find.
     """
     missing = [
         name
-        for name in [*huepy.__all__, *color.__all__]
+        for name in [*huepy.__all__, *color.__all__, *plans.__all__]
         if re.search(rf"\b{re.escape(name)}\b", reference_text) is None
     ]
     assert not missing, f"public names missing from the reference: {missing}"

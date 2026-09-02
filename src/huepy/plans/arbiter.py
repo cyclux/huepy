@@ -31,8 +31,8 @@ jump is not.
 
 Typical usage example:
 
-    if not fade.explains(brightness=12.0, at=now):
-        arbiter.yield_scope(scope)
+    if arbiter.note_foreign_change(path, brightness=12.0, at=now):
+        cancel_running_fade(path)
 """
 
 import datetime
@@ -59,6 +59,20 @@ false "that was a human" only costs one skipped step -- while a false "that was
 us" ignores someone reaching for the switch, which is the failure that annoys
 people.
 """
+
+
+def _latest(*instants: datetime.datetime | None) -> datetime.datetime | None:
+    """Pick the latest of some optional instants.
+
+    Args:
+        *instants: The candidates, any of which may be None.
+
+    Returns:
+        The latest, or None when none was given.
+
+    """
+    known = [instant for instant in instants if instant is not None]
+    return max(known) if known else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,27 +118,36 @@ class Fade:
         elapsed = (when - self.started_at).total_seconds()
         return interpolate(self.start, self.target, elapsed / self.ramp)
 
-    def explains(self, brightness: float | None, at: datetime.datetime) -> bool:
-        """Whether a reported brightness is this fade progressing.
+    def explains(
+        self,
+        brightness: float | None,
+        at: datetime.datetime,
+        *,
+        on: bool | None = None,
+    ) -> bool:
+        """Whether a report is this fade progressing.
 
         Args:
             brightness: The brightness the bridge reported, if it reported one.
             at: When it was reported.
+            on: The power state the bridge reported, if it reported one.
 
         Returns:
-            True when the report sits near where the fade should be, and so is
-            this client's own work rather than someone else's. A report with
-            no brightness in it says nothing either way, so it counts as ours
-            -- which means a change of colour alone, with the brightness left
-            where the fade expects it, is not currently detected as a takeover.
+            True when the report sits where the fade should be, and so is this
+            client's own work rather than someone else's. A power state the
+            fade did not ask for is never ours: a fade to a brightness is a
+            fade on a light that is on, so a reported ``off`` is a switch. A
+            report carrying neither field says nothing either way and counts
+            as ours -- which means a change of colour alone, with the
+            brightness left where the fade expects it, is not detected.
 
         """
-        if brightness is None:
+        expected = self.expected_at(at)
+        if on is not None and on != (expected.on if expected.on is not None else True):
+            return False
+        if brightness is None or expected.brightness is None:
             return True
-        expected = self.expected_at(at).brightness
-        if expected is None:
-            return True
-        return abs(brightness - expected) <= BRIGHTNESS_TOLERANCE
+        return abs(brightness - expected.brightness) <= BRIGHTNESS_TOLERANCE
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +157,9 @@ class Hold:
     Attributes:
         scenario: The scenario the rule belongs to.
         rule: The rule that fired.
+        placed_at: When it fired. A hold placed after someone changed the
+            scope by hand is what ends that yield; one placed before it is
+            not.
         until: When the hold lapses. None means no clock is running on it:
             motion is still being reported, or the rule has no ``hold`` and
             nothing scheduled covers the scope. Such a hold ends when a human
@@ -144,6 +170,7 @@ class Hold:
 
     scenario: str
     rule: Rule
+    placed_at: datetime.datetime
     until: datetime.datetime | None
 
     @property
@@ -170,24 +197,24 @@ class ScopeState:
 
     Attributes:
         fade: The transition currently running, if any.
-        yielded: Whether someone took the scope over by hand. Cleared at the
-            scope's next scheduled step or the next trigger that fires on it,
-            so the human wins now and the plan wins later.
         owner: The source of the claim that last drove it: a scenario name,
             or ``scenario/trigger`` for a rule hold. Comparing sources rather
             than scenario names is what makes a hold lapsing back into the same
             scenario's day curve look like the hand-over it is.
-        resume_at: When the plan takes the scope back. Recorded at the moment
-            of yielding, because clearing the running fade removes any other
-            way to tell that a new step has come round.
+        yielded_at: When someone took the scope over by hand, while the plan
+            is standing back; None otherwise. The plan takes the scope back at
+            the first step, hold or mode that *begins after* this instant --
+            the human wins now, the plan wins later -- which is why the
+            instant is kept rather than a precomputed resume time: on a day
+            when nothing covering the scope runs there is no next step to
+            precompute, and the scope must still come back when one arrives.
         hold: The rule currently holding this scope, if one fired.
 
     """
 
     fade: Fade | None = None
-    yielded: bool = False
     owner: str | None = None
-    resume_at: datetime.datetime | None = None
+    yielded_at: datetime.datetime | None = None
     hold: Hold | None = None
 
 
@@ -204,6 +231,11 @@ class Claim:
             ``scenario/trigger`` when a rule hold is. The runner compares this
             against :attr:`ScopeState.owner` to tell "same thing, still in
             force" from "something new".
+        since: When the authority behind this claim began -- the step's start,
+            the hold's placement, the mode's activation, whichever is latest.
+            None for a flat state that nothing switched on. Compared against
+            :attr:`ScopeState.yielded_at` to decide whether a yielded scope
+            comes back.
 
     """
 
@@ -212,6 +244,7 @@ class Claim:
     target: Action
     ramp: float
     source: str
+    since: datetime.datetime | None
 
 
 @dataclass(slots=True)
@@ -221,14 +254,15 @@ class Arbiter:
     Attributes:
         resolved: The plan, with every name bound.
         zone: The plan's timezone.
-        active_modes: Names of mode scenarios currently claiming their scope.
+        active_modes: Mode scenarios currently claiming their scope, by name,
+            with the instant each was activated.
         scopes: Per-scope state, keyed by the scope's write path.
 
     """
 
     resolved: ResolvedPlan
     zone: Zone
-    active_modes: set[str] = field(default_factory=set)
+    active_modes: dict[str, datetime.datetime] = field(default_factory=dict)
     scopes: dict[str, ScopeState] = field(default_factory=dict)
 
     def state_of(self, path: str) -> ScopeState:
@@ -243,14 +277,15 @@ class Arbiter:
         """
         return self.scopes.setdefault(path, ScopeState())
 
-    def activate(self, name: str) -> None:
+    def activate(self, name: str, now: datetime.datetime) -> None:
         """Mark a mode scenario as claiming its scope.
 
         Args:
             name: The scenario's name.
+            now: When it was activated.
 
         """
-        self.active_modes.add(name)
+        self.active_modes[name] = now
 
     def release(self, name: str) -> None:
         """Give a mode scenario's scope back.
@@ -259,13 +294,19 @@ class Arbiter:
             name: The scenario's name.
 
         """
-        self.active_modes.discard(name)
-        # Its rules' holds go with it. A dormant mode's hold is skipped while
-        # it sleeps, but left in place it would be honoured the moment the
-        # mode woke again -- days later, with no motion at all.
+        _ = self.active_modes.pop(name, None)
         for state in self.scopes.values():
+            # Its rules' holds go with it. A dormant mode's hold is skipped
+            # while it sleeps, but left in place it would be honoured the
+            # moment the mode woke again -- days later, with no motion at all.
             if state.hold is not None and state.hold.scenario == name:
                 state.hold = None
+            # A hand change made while the mode held the scope was about the
+            # mode -- dimming during the film -- so releasing it is the
+            # trigger that ends the yield, and the curve underneath takes the
+            # scope back rather than waiting for its next step.
+            if state.owner == name:
+                state.yielded_at = None
 
     def _is_eligible(self, scenario: Scenario) -> bool:
         """Whether a scenario may drive its scope at all right now.
@@ -351,9 +392,10 @@ class Arbiter:
                 target=rule.set.resolved(),
                 ramp=defaults.catchup_ramp if catching_up else ramp,
                 source=hold.source,
+                since=hold.placed_at,
             )
 
-        target, ramp = self._target_of(scenario, now, catching_up=catching_up)
+        target, ramp, step_at = self._target_of(scenario, now, catching_up=catching_up)
         if target is None:
             return None
         if (
@@ -374,11 +416,12 @@ class Arbiter:
             target=target,
             ramp=ramp,
             source=scenario.name,
+            since=_latest(step_at, self.active_modes.get(scenario.name)),
         )
 
     def _target_of(
         self, scenario: Scenario, now: datetime.datetime, *, catching_up: bool
-    ) -> tuple[Action | None, float]:
+    ) -> tuple[Action | None, float, datetime.datetime | None]:
         """Evaluate what one scenario's curve or flat state wants right now.
 
         The two modes ask genuinely different questions. Scheduling wants the
@@ -394,28 +437,31 @@ class Arbiter:
             catching_up: Which of the two questions to answer.
 
         Returns:
-            The target and ramp. The target is None when the scenario makes no
-            claim -- its day curve has not reached a step yet, or it has none.
+            The target, the ramp, and when the step behind them started. The
+            target is None when the scenario makes no claim -- its day curve
+            has not reached a step yet, or it has none. The start is None when
+            no step is behind the claim.
 
         """
         defaults = self.resolved.plan.defaults
-        if scenario.step:
+        plan = self.resolved.plan
+        step = current_step(plan, scenario, now, self.zone) if scenario.step else None
+        if step is not None:
             if catching_up:
-                target = target_at(self.resolved.plan, scenario, now, self.zone)
+                target = target_at(plan, scenario, now, self.zone)
                 if target is not None:
-                    return target, defaults.catchup_ramp
+                    return target, defaults.catchup_ramp, step.at
             else:
-                step = current_step(self.resolved.plan, scenario, now, self.zone)
-                if step is not None:
-                    remaining = (step.ends_at - now).total_seconds()
-                    return step.action, max(0.0, remaining)
+                remaining = (step.ends_at - now).total_seconds()
+                return step.action, max(0.0, remaining), step.at
         if scenario.set is not None:
             ramp = scenario.ramp if scenario.ramp is not None else defaults.ramp
             return (
                 scenario.set.resolved(),
                 defaults.catchup_ramp if catching_up else ramp,
+                None,
             )
-        return None, defaults.ramp
+        return None, defaults.ramp, None
 
     def fire(self, key: str, now: datetime.datetime) -> list[str]:
         """Apply a trigger to every scenario listening for it.
@@ -441,7 +487,7 @@ class Arbiter:
             if not scenario.enabled:
                 continue
             if scenario.activate_on is not None and str(scenario.activate_on) == key:
-                self.activate(scenario.name)
+                self.activate(scenario.name, now)
                 outcomes.append(f"activated {scenario.name!r}")
             if scenario.release_on is not None and str(scenario.release_on) == key:
                 self.release(scenario.name)
@@ -487,9 +533,13 @@ class Arbiter:
                 until = None
             else:
                 until = now + datetime.timedelta(seconds=rule.hold)
-            state.hold = Hold(scenario=scenario.name, rule=rule, until=until)
-            # A trigger is one of the things a yielded scope rejoins at.
-            self.resume(binding.path)
+            # Not resuming a yielded scope here. Whether this hold ends the
+            # yield is decided where the claims are ranked: a hold that wins
+            # the scope begins after the hand change and takes it back, one
+            # outranked by an active mode changes nothing about it.
+            state.hold = Hold(
+                scenario=scenario.name, rule=rule, placed_at=now, until=until
+            )
 
     def ended(self, key: str, now: datetime.datetime) -> list[str]:
         """Start the clock on every hold whose trigger just stopped.
@@ -508,7 +558,12 @@ class Arbiter:
             if hold is None or str(hold.rule.when) != key or hold.rule.hold is None:
                 continue
             until = now + datetime.timedelta(seconds=hold.rule.hold)
-            state.hold = Hold(scenario=hold.scenario, rule=hold.rule, until=until)
+            state.hold = Hold(
+                scenario=hold.scenario,
+                rule=hold.rule,
+                placed_at=hold.placed_at,
+                until=until,
+            )
             outcomes.append(f"{path}: hold runs until {until.isoformat()}")
         return outcomes
 
@@ -555,30 +610,42 @@ class Arbiter:
         self.state_of(fade.scope).fade = fade
 
     def note_foreign_change(
-        self, path: str, brightness: float | None, at: datetime.datetime
+        self,
+        path: str,
+        brightness: float | None,
+        at: datetime.datetime,
+        *,
+        on: bool | None = None,
     ) -> bool:
-        """Judge an unattributed change and yield the scope if it was a human.
+        """Judge a reported change, and stand back from the scope if a human made it.
+
+        Under ``on_manual_change = "reassert"`` the scope is not yielded, but
+        the fade is still forgotten: whatever the runner believed about the
+        light -- including that it is on -- is no longer true, and the next
+        write has to carry ``on`` again rather than drop it as redundant.
 
         Args:
             path: The scope's write path.
             brightness: The brightness the bridge reported, if any.
             at: When it was reported.
+            on: The power state the bridge reported, if any.
 
         Returns:
-            True when the scope was handed over, False when the report was
+            True when the report was someone else's work, False when it was
             this runner's own fade progressing.
 
         """
         state = self.state_of(path)
-        if state.fade is not None and state.fade.explains(brightness, at):
+        if state.fade is not None and state.fade.explains(brightness, at, on=on):
             return False
-        state.yielded = True
         state.fade = None
+        if self.resolved.plan.defaults.on_manual_change == "reassert":
+            return True
+        state.yielded_at = at
         # A hold the human overrode is moot. Left in place, the scope would
         # rejoin at its next step by re-asserting a stale motion rule rather
         # than the schedule.
         state.hold = None
-        state.resume_at = self.next_step_for(path, at)
         return True
 
     def next_step_for(
@@ -608,15 +675,13 @@ class Arbiter:
         return min(upcoming) if upcoming else None
 
     def resume(self, path: str) -> None:
-        """Take a scope back, at its next scheduled step or a trigger.
+        """Take a yielded scope back.
 
         Args:
             path: The scope's write path.
 
         """
-        state = self.state_of(path)
-        state.yielded = False
-        state.resume_at = None
+        self.state_of(path).yielded_at = None
 
     def is_yielded(self, path: str) -> bool:
         """Whether a scope is currently left to whoever took it over.
@@ -628,4 +693,4 @@ class Arbiter:
             True while the plan is standing back.
 
         """
-        return self.state_of(path).yielded
+        return self.state_of(path).yielded_at is not None

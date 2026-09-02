@@ -18,38 +18,25 @@ Triggers -- motion, buttons, door contacts, and signals the application fires
 -- all go through one path. A rule that fires holds its scope for a while and
 then hands it back to whatever curve was underneath, without a snap.
 
+The scheduling arithmetic, the executor and the arbiter stay reachable as
+:mod:`huepy.plans.timeline`, :mod:`huepy.plans.executor` and
+:mod:`huepy.plans.arbiter`; what this package exports is the supported
+surface.
+
 Typical usage example:
 
     from huepy import Hue
     from huepy.plans import PlanRunner, load_plans
 
     plan = load_plans("./plans")
-    async with Hue(state=True) as hue, PlanRunner(hue, plan) as runner:
-        await runner.run()
+    async with Hue(state=True) as hue:
+        async with PlanRunner(hue, plan, changes=hue.state) as runner:
+            await runner.run()
 """
 
-from huepy.plans.arbiter import Arbiter, Claim, Fade, Hold, ScopeState
-from huepy.plans.executor import (
-    MAX_TRANSITION_SECONDS,
-    Segment,
-    plan_segments,
-    run_fade,
-)
-from huepy.plans.fields import (
-    ClockAnchor,
-    ScopeKind,
-    Selector,
-    SunAnchor,
-    SunEvent,
-    TriggerKind,
-    format_duration,
-    parse_anchor,
-    parse_duration,
-    parse_selector,
-    parse_trigger,
-)
+from huepy.plans.fields import SunEvent
 from huepy.plans.loader import load_plan, load_plans
-from huepy.plans.protocol import PlanClient
+from huepy.plans.protocol import ChangeSource, PlanClient
 from huepy.plans.resolve import Binding, ResolvedPlan, TriggerBinding, resolve
 from huepy.plans.runner import PlanRunner
 from huepy.plans.schema import (
@@ -61,30 +48,21 @@ from huepy.plans.schema import (
     Scenario,
     Step,
 )
-from huepy.plans.sun import solar_event, solar_noon
+from huepy.plans.sun import solar_event
 from huepy.plans.timeline import (
     Waypoint,
     current_step,
-    in_window,
-    interpolate,
     next_transition,
-    resolve_anchor,
     target_at,
-    waypoints_around,
     waypoints_for_day,
     zone_of,
 )
 
 __all__ = [
-    "MAX_TRANSITION_SECONDS",
     "Action",
-    "Arbiter",
     "Binding",
-    "Claim",
-    "ClockAnchor",
+    "ChangeSource",
     "Defaults",
-    "Fade",
-    "Hold",
     "Location",
     "Plan",
     "PlanClient",
@@ -92,35 +70,17 @@ __all__ = [
     "ResolvedPlan",
     "Rule",
     "Scenario",
-    "ScopeKind",
-    "ScopeState",
-    "Segment",
-    "Selector",
     "Step",
-    "SunAnchor",
     "SunEvent",
     "TriggerBinding",
-    "TriggerKind",
     "Waypoint",
     "current_step",
-    "format_duration",
-    "in_window",
-    "interpolate",
     "load_plan",
     "load_plans",
     "next_transition",
-    "parse_anchor",
-    "parse_duration",
-    "parse_selector",
-    "parse_trigger",
-    "plan_segments",
     "resolve",
-    "resolve_anchor",
-    "run_fade",
     "solar_event",
-    "solar_noon",
     "target_at",
-    "waypoints_around",
     "waypoints_for_day",
     "zone_of",
 ]

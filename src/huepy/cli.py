@@ -1,15 +1,8 @@
 """Command line entry point for huepy.
 
-Four verbs, and three of them never write to a bridge. That is deliberate: the
-thing most likely to be wrong about a plan is the plan, and finding out should
-not cost anyone a room full of lights changing colour.
-
-* ``huepy plan check`` parses the files and says what is malformed.
-* ``huepy plan explain`` prints the day the plan describes, with every solar
-  anchor resolved and every request it would send. Read-only.
-* ``huepy plan validate`` also resolves names against the bridge, so a
-  misspelled room is caught before the daemon ever runs.
-* ``huepy plan run`` executes the plan until interrupted.
+Five verbs, and only ``run`` writes to a bridge. That is deliberate: the thing
+most likely to be wrong about a plan is the plan, and finding out should not
+cost anyone a room full of lights changing colour.
 
 Typical usage example:
 
@@ -32,11 +25,23 @@ from huepy.plans.fields import Selector, TriggerKind, format_duration
 from huepy.plans.loader import load_plans
 from huepy.plans.resolve import Binding, resolve
 from huepy.plans.runner import PlanRunner
-from huepy.plans.schema import Plan, Rule, Scenario
-from huepy.plans.timeline import Zone, waypoints_for_day, zone_of
+from huepy.plans.schema import Action, Plan, Rule, Scenario
+from huepy.plans.timeline import Zone, combine, waypoints_for_day, zone_of
 
 EXIT_OK = 0
 EXIT_FAILED = 1
+
+DESCRIPTION = """\
+Declarative light plans for a Hue bridge.
+
+  plan check     parse the plan files without touching a bridge
+  plan explain   print the day the plan describes; read-only
+  plan validate  also resolve every name against the bridge
+  plan run       execute the plan until interrupted
+  plan schema    print the plan format as JSON Schema
+
+Only `run` writes to a bridge, and only `validate` and `run` need one.
+"""
 
 
 def _placeholder(name: str) -> Binding:
@@ -66,7 +71,7 @@ def _explain(plan: Plan, when: datetime.datetime) -> None:
     """
     zone = zone_of(plan.location)
     local = when.astimezone(zone)
-    print(f"Plan for {local.date()} ({zone})")
+    print(f"Plan for {local.date()} ({zone if zone is not None else 'host zone'})")
     if plan.location is not None:
         print(
             f"  location: {plan.location.latitude:.4f}, {plan.location.longitude:.4f}"
@@ -129,7 +134,11 @@ def _explain_steps(
     found = waypoints_for_day(plan, scenario, day, zone)
     if not found and scenario.step:
         print("  no steps today")
-    previous = None
+    # The day's first step fades from yesterday's last, exactly as the runner
+    # would chain it; without that start a long first step would be costed as
+    # one request when two would really go out.
+    earlier = waypoints_for_day(plan, scenario, day - datetime.timedelta(days=1), zone)
+    previous = earlier[-1].action if earlier else None
     for waypoint in found:
         # Chained exactly the way the runner would chain it: each step fades
         # from the one before, so the request count printed here is the count
@@ -174,7 +183,7 @@ def _hold_of(rule: Rule, scenario: Scenario, plan: Plan) -> str:
     return "until the next step" if scheduled else "until released"
 
 
-def _describe(action: object) -> str:
+def _describe(action: Action) -> str:
     """Render an action as the few fields it actually sets.
 
     Args:
@@ -184,14 +193,10 @@ def _describe(action: object) -> str:
         A compact description.
 
     """
-    parts: list[str] = []
-    for field in ("on", "brightness", "mirek", "xy", "rgb", "hex_color", "kelvin"):
-        value = getattr(action, field, None)
-        if value is None:
-            continue
-        parts.append(
-            f"{field}={value:.0f}" if field == "brightness" else f"{field}={value}"
-        )
+    parts = [
+        f"{field}={value:.0f}" if field == "brightness" else f"{field}={value}"
+        for field, value in action.model_dump(exclude_none=True).items()
+    ]
     return " ".join(parts) or "nothing"
 
 
@@ -275,17 +280,39 @@ def _explain_command(args: argparse.Namespace) -> int:
         A process exit code.
 
     """
+    plan = load_plans(args.path)
     try:
-        when = (
-            datetime.datetime.fromisoformat(args.at).astimezone()
-            if args.at
-            else datetime.datetime.now().astimezone()
-        )
+        when = _parse_at(args.at, zone_of(plan.location))
     except ValueError as error:
         msg = f"--at {args.at!r} is not an ISO timestamp: {error}"
         raise PlanError(msg) from error
-    _explain(load_plans(args.path), when)
+    _explain(plan, when)
     return EXIT_OK
+
+
+def _parse_at(text: str | None, zone: Zone) -> datetime.datetime:
+    """Read the instant ``--at`` names, in the plan's own clock.
+
+    Args:
+        text: The argument as given, or None for now.
+        zone: The plan's zone, or None for the host's own.
+
+    Returns:
+        An aware instant.
+
+    Raises:
+        ValueError: If the text is not an ISO timestamp.
+
+    """
+    if text is None:
+        return datetime.datetime.now(datetime.UTC).astimezone()
+    parsed = datetime.datetime.fromisoformat(text)
+    if parsed.tzinfo is not None:
+        return parsed
+    # A bare clock time means the plan's clock, not the host's. Read in the
+    # host's zone, `--at 2026-09-01` for a plan in Los Angeles described
+    # 31 August from anywhere east of it.
+    return combine(parsed.date(), parsed.time(), zone)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -295,7 +322,11 @@ def _build_parser() -> argparse.ArgumentParser:
         The configured parser.
 
     """
-    parser = argparse.ArgumentParser(prog="huepy", description=__doc__)
+    parser = argparse.ArgumentParser(
+        prog="huepy",
+        description=DESCRIPTION,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     _ = parser.add_argument(
         "-v", "--verbose", action="store_true", help="log what the runner is doing"
     )

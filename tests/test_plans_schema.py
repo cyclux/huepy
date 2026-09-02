@@ -12,7 +12,7 @@ from pydantic import ValidationError
 
 from huepy.models.group import WeekDay
 from huepy.plans.fields import SunAnchor, SunEvent
-from huepy.plans.schema import Action, Plan, Rule, Scenario, Step
+from huepy.plans.schema import Action, Location, Plan, Rule, Scenario, Step
 
 
 def scenario(**overrides):
@@ -242,4 +242,30 @@ class TestRuleHold:
         with pytest.raises(ValidationError, match="hold"):
             _ = Rule.model_validate(
                 {"when": "motion:Hall sensor", "hold": "0s", "set": {"brightness": 1}}
+            )
+
+
+class TestLocation:
+    def test_an_unknown_timezone_is_rejected_at_load(self):
+        # Otherwise `huepy plan check` passes and `run` crashes on the first
+        # clock step with a ZoneInfoNotFoundError traceback.
+        with pytest.raises(ValidationError, match="timezone"):
+            _ = Location(latitude=48.1, longitude=11.5, timezone="Mars/Olympus")
+
+    def test_a_known_timezone_is_kept_as_written(self):
+        location = Location(latitude=48.1, longitude=11.5, timezone="Europe/Berlin")
+        assert location.timezone == "Europe/Berlin"
+
+
+class TestDays:
+    def test_an_empty_days_list_is_rejected(self):
+        # `days = []` would make the scenario never run: a typo, not a wish.
+        with pytest.raises(ValidationError, match="days"):
+            _ = Scenario.model_validate(
+                {
+                    "name": "x",
+                    "scope": ["room:X"],
+                    "days": [],
+                    "step": [{"at": "10:00", "set": {"brightness": 1}}],
+                }
             )

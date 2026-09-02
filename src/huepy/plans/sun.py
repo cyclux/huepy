@@ -27,8 +27,6 @@ import math
 from huepy.plans.fields import SunEvent
 
 MINUTES_PER_DAY = 1440
-MINUTES_PER_HOUR = 60
-DEGREES_PER_HOUR = 15.0
 
 # Degrees below the zenith at which each event is declared. The 90.833 for
 # sunrise and sunset is not 90: it adds the ~0.567 degrees of atmospheric

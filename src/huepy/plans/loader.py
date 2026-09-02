@@ -20,7 +20,7 @@ Typical usage example:
 
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from pydantic import ValidationError
 
@@ -120,6 +120,38 @@ def load_plan(path: str | Path) -> Plan:
     return _validate(_read_toml(resolved), resolved)
 
 
+def _claim_names(entries: list[object], path: Path, named: dict[str, Path]) -> None:
+    """Record which file declares each scenario name, refusing a repeat.
+
+    Duplicate names are a plan-level error too, but the merged plan has no
+    file to blame; only here can the message name both files.
+
+    Args:
+        entries: One file's ``[[scenario]]`` tables, still unvalidated.
+        path: The file they came from.
+        named: Names already seen, and where. Updated in place.
+
+    Raises:
+        PlanError: If a name was already declared, in this file or another.
+
+    """
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        name = cast("dict[str, Any]", entry).get("name")
+        if not isinstance(name, str):
+            continue
+        if name in named:
+            earlier = named[name]
+            msg = (
+                f"declares scenario {name!r} twice"
+                if earlier == path
+                else f"declares scenario {name!r}, but {earlier.name} already does"
+            )
+            raise PlanError(msg, path)
+        named[name] = path
+
+
 def _merge(documents: list[tuple[Path, dict[str, Any]]]) -> dict[str, Any]:
     """Merge several plan documents into one.
 
@@ -136,13 +168,14 @@ def _merge(documents: list[tuple[Path, dict[str, Any]]]) -> dict[str, Any]:
         One merged document.
 
     Raises:
-        PlanError: If two files declare the same singleton section, or
-            disagree about the format version.
+        PlanError: If two files declare the same singleton section, disagree
+            about the format version, or both declare a scenario of one name.
 
     """
     merged: dict[str, Any] = {"scenario": []}
     owners: dict[str, Path] = {}
     version_owner: Path | None = None
+    named: dict[str, Path] = {}
 
     for path, document in documents:
         for section in _SINGLETON_SECTIONS:
@@ -171,6 +204,7 @@ def _merge(documents: list[tuple[Path, dict[str, Any]]]) -> dict[str, Any]:
         if not isinstance(scenarios, list):
             msg = "'scenario' must be a list of [[scenario]] tables"
             raise PlanError(msg, path)
+        _claim_names(cast("list[object]", scenarios), path, named)
         merged["scenario"].extend(scenarios)
 
         unknown = set(document) - {"version", "scenario", *_SINGLETON_SECTIONS}

@@ -30,7 +30,11 @@ def show_schedule(plan: Plan) -> None:
     for scenario in plan.scenario:
         for waypoint in waypoints_for_day(plan, scenario, today, zone):
             when = waypoint.at.strftime("%H:%M")
-            print(f"  {when}  {scenario.name}: {waypoint.action.brightness}%")
+            state = ", ".join(
+                f"{key}={value}"
+                for key, value in waypoint.action.model_dump(exclude_none=True).items()
+            )
+            print(f"  {when}  {scenario.name}: {state}")
 
 
 async def main() -> None:
