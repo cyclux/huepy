@@ -270,6 +270,28 @@ class TestFadeAttribution:
             ramp=6000.0,
         )
 
+    def make_catch_up(self, at):
+        return Fade(
+            scope=GROUP_PATH,
+            start=Action(brightness=30),
+            target=Action(brightness=90),
+            started_at=at,
+            ramp=3.0,
+        )
+
+    def test_a_report_lagging_a_fast_fade_is_the_fade(self, clock):
+        # Measured during a three-second catch-up: 58 reported 2.1 s in,
+        # where the line says 75; 80 reported 3.1 s in, where it says 90.
+        # Each describes the bulb a second or so earlier.
+        fade = self.make_catch_up(clock.now)
+        assert fade.explains(58.0, at=clock.now + datetime.timedelta(seconds=2.1))
+        assert fade.explains(80.0, at=clock.now + datetime.timedelta(seconds=3.1))
+
+    def test_a_report_off_the_whole_stretch_is_a_human(self, clock):
+        fade = self.make_catch_up(clock.now)
+        assert not fade.explains(20.0, at=clock.now + datetime.timedelta(seconds=2.1))
+        assert not fade.explains(40.0, at=clock.now + datetime.timedelta(seconds=3.1))
+
     def test_a_long_fade_still_recognises_a_human(self, clock):
         # The state layer's own window would mask this for the whole 100
         # minutes, so the fade is checked against its own arithmetic instead.

@@ -52,6 +52,15 @@ from huepy.plans.timeline import (
     target_at,
 )
 
+REPORT_LAG_SECONDS = 2.0
+"""How old a bulb's progress report may be by the time it is judged.
+
+Measured: 2.1 s into a three-second fade from 30 to 90 a bulb reported 58
+where the line says 75, and 3.1 s in it reported 80 where the line says 90 --
+each a second or so behind, on the bridge's reporting cadence. A report is
+judged against the stretch of the fade it may describe, not one instant.
+"""
+
 BRIGHTNESS_TOLERANCE = 8.0
 """Percentage points a report may sit from a running fade and still be ours.
 
@@ -301,7 +310,17 @@ class Fade:
         unknown_start = self.start is None or self.start.brightness is None
         if unknown_start and at < self.ends_at():
             return True
-        return abs(brightness - expected.brightness) <= BRIGHTNESS_TOLERANCE
+        # A report describes the bulb as it was up to REPORT_LAG_SECONDS ago,
+        # so anywhere between then and now on the fade's line is the fade.
+        # During a forty-second fade that is a point or two; during a three
+        # second catch-up it is most of the ramp, and judging against "now"
+        # alone yielded a room to its own catch-up twice in two seconds.
+        lag = datetime.timedelta(seconds=REPORT_LAG_SECONDS)
+        earlier = self.expected_at(at - lag).brightness
+        if earlier is None:
+            earlier = expected.brightness
+        low, high = sorted((earlier, expected.brightness))
+        return low - BRIGHTNESS_TOLERANCE <= brightness <= high + BRIGHTNESS_TOLERANCE
 
 
 @dataclass(frozen=True, slots=True)

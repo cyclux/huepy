@@ -362,6 +362,14 @@ to replay and nothing that can get out of sync with reality.
 This is the reason `timeline.py` must stay pure and clock-injected. It is also
 why a whole simulated day runs in microseconds in `tests/test_plans_runner.py`.
 
+The catch-up that follows is a three-second fade, and that is where the
+bridge's reporting lag stopped being negligible: 2.1 s in, a bulb reported
+58 where the line said 75; 3.1 s in, 80 where it said 90. Each described the
+bulb a second or so earlier. `Fade.explains()` now judges a report against
+the stretch of the fade it may describe -- from `REPORT_LAG_SECONDS` ago to
+now -- rather than one instant. On a forty-second fade that stretch is a
+point or two wide; on a catch-up it is most of the ramp.
+
 A late wake is a catch-up too. Suspended across a step with SIGSTOP, the
 daemon woke 45 seconds on and applied the missed step with what was left of
 its ramp -- nothing -- a snap to 90%. The loop now measures how far past its
@@ -419,3 +427,4 @@ integration probe establishing whether a third-party app key can POST one.
 | A `grouped_light` report is never judged; a member light's still is | `TestGroupReports` |
 | A fade-out's own on-and-dimming and off-at-zero reports are the fade, a straggler within the grace too; a fade-in from off is judged from dark; untouched members' progress after a hand change is not a second hand change, a switch is | `TestFadeOut`, `TestProgressAfterHandChange`, `TestLapsedFade` |
 | A wake more than `LATE_WAKE_SECONDS` late is a catch-up, not a snap; an on-time wake ticks | `TestLateWake` |
+| A report lagging a fast fade by a second is the fade; one off the whole stretch is a human | `TestFadeAttribution` |
