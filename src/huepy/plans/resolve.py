@@ -404,6 +404,46 @@ def _triggers_of(scenario: Scenario) -> list[Selector]:
     return found
 
 
+def _overlaps(scopes: dict[str, tuple[Binding, ...]]) -> list[str]:
+    """Warn about two differently written scopes that move the same light.
+
+    A room is written through its ``grouped_light`` and a light through
+    itself. When a plan drives a light both ways, each write moves the bulb
+    behind the other scope's back: the state layer marks the echo as this
+    client's own, so the other scope never learns its light moved, and the
+    last write wins. Nothing here can reconcile that; the plan author can,
+    by driving the light one way.
+
+    Args:
+        scopes: The bound scopes, per scenario.
+
+    Returns:
+        One warning per pair of write paths that share a light.
+
+    """
+    covering: dict[str, tuple[str, str]] = {}
+    warned: set[tuple[str, str]] = set()
+    found: list[str] = []
+    for bindings in scopes.values():
+        for binding in bindings:
+            for light in binding.light_ids:
+                earlier = covering.setdefault(
+                    light, (binding.path, str(binding.selector))
+                )
+                if earlier[0] == binding.path:
+                    continue
+                pair = tuple(sorted((earlier[1], str(binding.selector))))
+                if pair in warned:
+                    continue
+                warned.add(pair)
+                found.append(
+                    f"{pair[0]} and {pair[1]} both drive a light. A write to "
+                    f"one is invisible to the other's arithmetic, and the last "
+                    f"write wins; drive it one way"
+                )
+    return found
+
+
 def bind(resources: list[AnyResource], plan: Plan) -> ResolvedPlan:
     """Bind every name in a plan against one snapshot.
 
@@ -452,6 +492,7 @@ def bind(resources: list[AnyResource], plan: Plan) -> ResolvedPlan:
         msg = f"could not resolve {count} {noun} against this bridge:\n{body}"
         raise PlanError(msg)
 
+    warnings.extend(_overlaps(scopes))
     return ResolvedPlan(
         plan=plan, scopes=scopes, triggers=triggers, warnings=tuple(warnings)
     )

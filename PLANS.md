@@ -273,6 +273,15 @@ were listening to one button, and the app's action is indistinguishable from
 a person's. `validate` now warns when an enabled `behavior_instance` lists a
 trigger's device or services among its dependees; the fix is in the app.
 
+A plan that drove a colour bulb as `light:` and its room as `room:` at once
+ran without incident and without either scope knowing what the other did:
+the state layer marks a group write's echo on each member as this client's
+own, so `runner._observe()` skips it for every scope, and the `light:` scope
+went on believing a brightness the room had long since changed. The last
+write wins, and nothing in the arbiter can reconcile two of its own scopes
+moving one bulb. `validate` warns about the overlap; the plan author drives
+the light one way.
+
 The corollary that was missed once: `Change.origin == "self"` *is* that time
 window, so the runner must not use it as proof either. Driven through a real
 `HueState`, a brightness of 95 reported thirty minutes into a fade expecting 73

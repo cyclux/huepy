@@ -174,6 +174,51 @@ class TestResolveTriggers:
         )
         assert resolved.warnings == (warning,)
 
+    async def test_a_light_driven_as_itself_and_through_its_room_is_a_warning(
+        self, bridge
+    ):
+        plan = Plan.model_validate(
+            {
+                "version": 1,
+                "scenario": [
+                    {
+                        "name": "room",
+                        "scope": ["room:Living Room"],
+                        "set": {"on": True},
+                    },
+                    {
+                        "name": "lamp",
+                        "scope": ["light:Corner Lamp"],
+                        "priority": 10,
+                        "set": {"brightness": 30},
+                    },
+                ],
+            }
+        )
+        resolved = await resolve(bridge, plan)
+        assert resolved.warnings == (
+            "light:Corner Lamp and room:Living Room both drive a light. A write "
+            "to one is invisible to the other's arithmetic, and the last write "
+            "wins; drive it one way",
+        )
+
+    async def test_two_scenarios_on_one_room_do_not_overlap(self, bridge):
+        plan = Plan.model_validate(
+            {
+                "version": 1,
+                "scenario": [
+                    {"name": "a", "scope": ["room:Living Room"], "set": {"on": True}},
+                    {
+                        "name": "b",
+                        "scope": ["room:Living Room"],
+                        "priority": 5,
+                        "set": {"on": False},
+                    },
+                ],
+            }
+        )
+        assert (await resolve(bridge, plan)).warnings == ()
+
     async def test_an_app_automation_on_the_same_dimmer_is_a_warning(self, hue, http):
         dimmer = {
             "id": "dev-dimmer",
