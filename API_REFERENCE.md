@@ -1209,10 +1209,13 @@ back, lands in the right place, and carries on fading.
 
 By default a scope someone changes by hand is yielded: the runner stops
 asserting it and takes it back at the first step, trigger or mode that begins
-after the change. A switch-off counts, and the next write carries `on` again.
-Because this layer issues fades lasting up to a hundred minutes, a running fade
-is checked against its own arithmetic rather than a time window — movement
-consistent with the ramp is ours, a jump or a power change is a human. With
+after the change. A switch-off counts, and the next step's `on` is no longer
+dropped as redundant — a step that sets no `on` still sends none, so give the
+step that should wake a room `on = true`. Because this layer issues fades
+lasting up to a hundred minutes, a running fade is checked against its own
+arithmetic rather than a time window — movement consistent with the ramp is
+ours; a jump, or a power state the fade did not ask for, is a human. The fade
+that follows a hand change starts from where the human left the light. With
 `on_manual_change = "reassert"` the scope is never yielded, but the runner still
 notices the change and puts the light back.
 

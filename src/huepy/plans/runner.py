@@ -303,8 +303,13 @@ class PlanRunner:
             return
         brightness = _reported_brightness(change)
         on = _reported_on(change)
+        # The runner's clock, not the report's own timestamp: the instant a
+        # yield began is compared against hold placements and mode
+        # activations, which come from this clock, and a trigger arriving
+        # within bridge-clock skew of the hand change must not lose to it.
+        now = self._clock()
         for path in self._scope_of.get(change.resource_id, ()):
-            if not self.arbiter.note_foreign_change(path, brightness, change.at, on=on):
+            if not self.arbiter.note_foreign_change(path, brightness, now, on=on):
                 continue
             # Stop the rest of a chained fade. Without this, the second half of
             # a three-hour sunset would still land an hour after someone turned
@@ -481,7 +486,11 @@ class PlanRunner:
                 self.arbiter.resume(path)
                 logger.info("%s: taking the scope back", claim.binding.name)
 
-            if state.owner == claim.source and not self._target_changed(claim):
+            if (
+                state.owner is not None
+                and state.owner.source == claim.source
+                and not self._target_changed(claim)
+            ):
                 continue
             if await self._drive_safely(claim, now, ramp=claim.ramp):
                 written += 1
@@ -554,8 +563,12 @@ class PlanRunner:
 
         """
         path = claim.binding.path
-        previous = self.arbiter.state_of(path).fade
-        start = previous.expected_at(now) if previous is not None else None
+        state = self.arbiter.state_of(path)
+        # From the running fade if there is one, else from where a human
+        # last left the light. Without a start, a long ramp cannot be chained
+        # and the fade has no brightness expectation to judge reports by.
+        previous = state.fade
+        start = previous.expected_at(now) if previous is not None else state.reported
 
         segments = plan_segments(
             claim.binding,
@@ -581,7 +594,7 @@ class PlanRunner:
                     ramp=ramp,
                 )
             )
-            self.arbiter.state_of(path).owner = claim.source
+            state.owner = claim
             return False
 
         self.arbiter.note_fade(
@@ -598,13 +611,19 @@ class PlanRunner:
         # Only now. A rejected write leaves the previous owner in place, so the
         # retry next tick still looks like the hand-over it is and keeps the
         # no-snap floor rather than believing this scenario already had it.
-        self.arbiter.state_of(path).owner = claim.source
+        state.owner = claim
 
         # Re-check after the await: `_observe` runs on the state layer's own
         # dispatch task and may have handed this scope to a human while the
         # first segment was in flight. Scheduling the tail regardless would
         # land the second half of a sunset on a light someone just turned up.
-        if len(segments) > 1 and not self.arbiter.is_yielded(path):
+        # Also re-checked: closing. A tail scheduled after close() cleared the
+        # fade table would never be cancelled and would outlive the runner.
+        if (
+            len(segments) > 1
+            and not self.arbiter.is_yielded(path)
+            and not self._closing.is_set()
+        ):
             task = asyncio.create_task(
                 self._chain(path, segments[1:]), name=f"fade:{path}"
             )
@@ -654,7 +673,8 @@ class PlanRunner:
         expiry = self.arbiter.next_expiry(now)
         if expiry is not None:
             upcoming.append(expiry)
-        if any(scenario.days is not None for scenario in self.plan.scenario):
+        gated = (s for s in self.plan.scenario if s.enabled and s.days is not None)
+        if any(gated):
             # `days` gates by the local calendar date, so a scenario can start
             # or stop claiming its scope at midnight with no step to wake for.
             tomorrow = in_zone(now, self._zone).date() + datetime.timedelta(days=1)
@@ -677,6 +697,10 @@ class PlanRunner:
         """
         if await self.catch_up():
             await self._sleep(self.plan.defaults.catchup_ramp)
+            if self._closing.is_set():
+                # close() returned while this was asleep; a tick now would
+                # write after the caller believes the runner has stopped.
+                return
         _ = await self.tick()
 
     async def run(self) -> None:

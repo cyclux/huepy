@@ -141,11 +141,19 @@ class Fade:
             as ours -- which means a change of colour alone, with the
             brightness left where the fade expects it, is not detected.
 
+            A fade whose starting brightness is unknown has no brightness
+            expectation until it lands, so while it runs only the power state
+            is judged. Judging against the target instead made the bulb's own
+            progress reports look like a human, once per step, for ever.
+
         """
         expected = self.expected_at(at)
         if on is not None and on != (expected.on if expected.on is not None else True):
             return False
         if brightness is None or expected.brightness is None:
+            return True
+        unknown_start = self.start is None or self.start.brightness is None
+        if unknown_start and at < self.ends_at():
             return True
         return abs(brightness - expected.brightness) <= BRIGHTNESS_TOLERANCE
 
@@ -191,33 +199,6 @@ class Hold:
         return self.until is not None and now >= self.until
 
 
-@dataclass(slots=True)
-class ScopeState:
-    """What the runner remembers about one scope.
-
-    Attributes:
-        fade: The transition currently running, if any.
-        owner: The source of the claim that last drove it: a scenario name,
-            or ``scenario/trigger`` for a rule hold. Comparing sources rather
-            than scenario names is what makes a hold lapsing back into the same
-            scenario's day curve look like the hand-over it is.
-        yielded_at: When someone took the scope over by hand, while the plan
-            is standing back; None otherwise. The plan takes the scope back at
-            the first step, hold or mode that *begins after* this instant --
-            the human wins now, the plan wins later -- which is why the
-            instant is kept rather than a precomputed resume time: on a day
-            when nothing covering the scope runs there is no next step to
-            precompute, and the scope must still come back when one arrives.
-        hold: The rule currently holding this scope, if one fired.
-
-    """
-
-    fade: Fade | None = None
-    owner: str | None = None
-    yielded_at: datetime.datetime | None = None
-    hold: Hold | None = None
-
-
 @dataclass(frozen=True, slots=True)
 class Claim:
     """One scenario's answer for one scope at one instant.
@@ -245,6 +226,39 @@ class Claim:
     ramp: float
     source: str
     since: datetime.datetime | None
+
+
+@dataclass(slots=True)
+class ScopeState:
+    """What the runner remembers about one scope.
+
+    Attributes:
+        fade: The transition currently running, if any.
+        owner: The claim that last drove it. Its ``source`` is what tells
+            "the same thing, still in force" from a hand-over -- comparing
+            sources rather than scenario names is what makes a hold lapsing
+            back into the same scenario's day curve look like the hand-over it
+            is -- and its ``scenario`` is what a mode's release looks for.
+        reported: The state the bridge last reported for this scope when the
+            report was not ours -- where a human left the light. A fade that
+            starts after a hand change starts from here, so its progress can
+            be judged and a long ramp can still be chained.
+        yielded_at: When someone took the scope over by hand, while the plan
+            is standing back; None otherwise. The plan takes the scope back at
+            the first step, hold or mode that *begins after* this instant --
+            the human wins now, the plan wins later -- which is why the
+            instant is kept rather than a precomputed resume time: on a day
+            when nothing covering the scope runs there is no next step to
+            precompute, and the scope must still come back when one arrives.
+        hold: The rule currently holding this scope, if one fired.
+
+    """
+
+    fade: Fade | None = None
+    owner: Claim | None = None
+    reported: Action | None = None
+    yielded_at: datetime.datetime | None = None
+    hold: Hold | None = None
 
 
 @dataclass(slots=True)
@@ -305,7 +319,7 @@ class Arbiter:
             # mode -- dimming during the film -- so releasing it is the
             # trigger that ends the yield, and the curve underneath takes the
             # scope back rather than waiting for its next step.
-            if state.owner == name:
+            if state.owner is not None and state.owner.scenario.name == name:
                 state.yielded_at = None
 
     def _is_eligible(self, scenario: Scenario) -> bool:
@@ -401,7 +415,8 @@ class Arbiter:
         if (
             scenario.step
             and not catching_up
-            and state.owner not in (None, scenario.name)
+            and state.owner is not None
+            and state.owner.source != scenario.name
         ):
             # The scope is coming back to its day curve from a mode or a rule
             # hold. "The remaining ramp" is the right length mid-fade, but it
@@ -604,9 +619,8 @@ class Arbiter:
             fade: The fade that went out.
 
         """
-        # Deliberately not touching `owner`: it holds a claim source, and
-        # `fade.scope` is a write path. Setting it here once made tick()'s
-        # ownership check compare two different things.
+        # Deliberately not touching `owner`: it holds the claim that drove the
+        # scope, and a fade knows nothing about who asked for it.
         self.state_of(fade.scope).fade = fade
 
     def note_foreign_change(
@@ -639,6 +653,9 @@ class Arbiter:
         if state.fade is not None and state.fade.explains(brightness, at, on=on):
             return False
         state.fade = None
+        if on is not None or brightness is not None:
+            # Where the human left it is where the next fade starts from.
+            state.reported = Action(on=on, brightness=brightness)
         if self.resolved.plan.defaults.on_manual_change == "reassert":
             return True
         state.yielded_at = at

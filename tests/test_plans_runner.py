@@ -13,6 +13,7 @@ from typing import Any, Literal
 
 import pytest
 
+from huepy.client.http import SSEFrame
 from huepy.exceptions import HueAPIError, PlanError
 from huepy.models import parse_resource
 from huepy.plans.arbiter import BRIGHTNESS_TOLERANCE, Fade
@@ -20,7 +21,7 @@ from huepy.plans.runner import PlanRunner
 from huepy.plans.schema import Action, Plan
 from huepy.state.records import Change, ChangeKind, Resync, ResyncReason
 
-from .conftest import envelope
+from .conftest import StateHttp, envelope
 
 BERLIN = zoneinfo.ZoneInfo("Europe/Berlin")
 GROUPED_LIGHT = "gl-living"
@@ -222,6 +223,7 @@ class TestOverride:
     async def test_a_foreign_change_yields_the_scope(self, bridge, http, clock):
         runner = await make_runner(bridge, clock)
         await runner.catch_up()
+        clock.advance(seconds=10)
 
         # Someone hits the wall switch: a brightness nowhere near the fade.
         handed_over = runner.arbiter.note_foreign_change(
@@ -462,6 +464,7 @@ class TestObservation:
         changes = FakeChanges()
         runner = await watched_runner(bridge, clock, changes, DAY_PLAN)
         await runner.catch_up()
+        clock.advance(seconds=10)
 
         # Reported on the member light, though the write went to the group.
         changes.report(LIGHT, 95.0, clock.now)
@@ -477,6 +480,7 @@ class TestObservation:
         changes = FakeChanges()
         runner = await watched_runner(bridge, clock, changes, DAY_PLAN)
         await runner.catch_up()
+        clock.advance(seconds=10)
 
         changes.report(LIGHT, 95.0, clock.now, origin="self")
         assert runner.arbiter.is_yielded(GROUP_PATH)
@@ -695,6 +699,7 @@ class TestSharedLights:
         changes = FakeChanges()
         runner = await watched_runner(hue, clock, changes, plan)
         await runner.catch_up()
+        clock.advance(seconds=10)
 
         changes.report(LIGHT, 95.0, clock.now)
         light_path = f"/clip/v2/resource/light/{LIGHT}"
@@ -1020,6 +1025,7 @@ class TestRules:
         # new reason to act, and a sensor firing is one.
         changes = FakeChanges()
         runner = await rule_runner(sensor_bridge, clock, changes)
+        clock.advance(seconds=10)
         changes.report(LIGHT, 95.0, clock.now)
         assert runner.arbiter.is_yielded(GROUP_PATH)
         http.calls.clear()
@@ -1430,3 +1436,252 @@ class TestRestart:
         runner = await make_runner(bridge, clock, WEEKEND_ONLY_PLAN)
         clock.now = datetime.datetime(2026, 9, 4, 23, 50, tzinfo=BERLIN)
         assert runner._seconds_until_next(clock.now) == pytest.approx(600.0)
+
+
+RAMPED_ON_PLAN = {
+    "version": 1,
+    "defaults": {"catchup_ramp": "5s"},
+    "scenario": [
+        {
+            "name": "day",
+            "scope": ["room:Living Room"],
+            "step": [
+                {"at": "08:00", "set": {"on": True, "brightness": 80}},
+                {"at": "12:00", "ramp": "1h", "set": {"on": True, "brightness": 100}},
+            ],
+        }
+    ],
+}
+
+
+class TestProgressAfterHandChange:
+    async def test_the_fade_after_a_yield_starts_where_the_human_left_it(
+        self, bridge, http, clock
+    ):
+        # Yield to 10 at 08:30. The 09:00 step resumes the scope and fades to
+        # 100 over an hour: at 09:15 the bulb reports 32, which is the fade
+        # progressing from 10. Judged from the target instead, that report
+        # would re-yield the scope -- and clear the start for the next step,
+        # so every step after the first hand change would do the same.
+        changes = FakeChanges()
+        runner = await watched_runner(bridge, clock, changes, DAY_PLAN)
+        await runner.catch_up()
+        clock.now = datetime.datetime(2026, 9, 1, 8, 30, tzinfo=BERLIN)
+        changes.report(LIGHT, 10.0, clock.now)
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+
+        clock.now = datetime.datetime(2026, 9, 1, 9, 0, tzinfo=BERLIN)
+        assert await runner.tick() == 1
+        clock.now = datetime.datetime(2026, 9, 1, 9, 15, tzinfo=BERLIN)
+        changes.report(LIGHT, 32.0, clock.now)
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+
+    async def test_reassert_does_not_fight_its_own_progress(self, bridge, http, clock):
+        # One re-drive after the hand change, then silence: the bulb's
+        # progress towards the re-driven target is ours, not five more PUTs.
+        changes = FakeChanges()
+        plan = DAY_PLAN | {
+            "defaults": {"catchup_ramp": "5s", "on_manual_change": "reassert"}
+        }
+        runner = await watched_runner(bridge, clock, changes, plan)
+        await runner.catch_up()
+        clock.now = datetime.datetime(2026, 9, 1, 9, 0, tzinfo=BERLIN)
+        await runner.tick()
+        clock.advance(minutes=5)
+        changes.report(LIGHT, 10.0, clock.now)
+        http.calls.clear()
+        assert await runner.tick() == 1
+
+        for brightness in (18.0, 26.0, 34.0, 42.0, 50.0):
+            clock.advance(minutes=5)
+            changes.report(LIGHT, brightness, clock.now)
+            assert await runner.tick() == 0
+        assert len(http.writes) == 1
+
+    async def test_a_fade_from_a_switch_off_judges_only_the_power_state(
+        self, bridge, http, clock
+    ):
+        # After a switch-off the runner knows the light is off and nothing
+        # else, so the fade that follows has no brightness to be judged
+        # against until it lands. A second switch-off is still seen.
+        changes = FakeChanges()
+        clock.now = datetime.datetime(2026, 9, 1, 9, 0, tzinfo=BERLIN)
+        runner = await watched_runner(bridge, clock, changes, RAMPED_ON_PLAN)
+        await runner.catch_up()
+        clock.advance(hours=1)
+        changes.report(LIGHT, None, clock.now, delta={"on": {"on": False}})
+        clock.now = datetime.datetime(2026, 9, 1, 12, 0, tzinfo=BERLIN)
+        assert await runner.tick() == 1
+        assert http.writes[-1][2]["on"] == {"on": True}
+
+        clock.advance(minutes=15)
+        changes.report(LIGHT, 50.0, clock.now)
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+        changes.report(LIGHT, None, clock.now, delta={"on": {"on": False}})
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+
+
+class TestReleaseAfterRuleHold:
+    async def test_releasing_a_mode_that_held_through_its_rule_ends_the_yield(
+        self, sensor_bridge, http, clock
+    ):
+        # The scope's owner is the rule hold, `movie/motion:...`, not the
+        # mode's bare name; the release still has to find it.
+        changes = FakeChanges()
+        plan = copy.deepcopy(RULE_PLAN)
+        plan["scenario"][1]["activate_on"] = "signal:movie_started"
+        plan["scenario"][1]["release_on"] = "signal:movie_ended"
+        plan["scenario"][1]["rule"][0]["hold"] = "6h"
+        runner = await rule_runner(sensor_bridge, clock, changes, plan)
+        runner.fire("movie_started")
+        changes.deliver(motion(clock.now))
+        await runner.tick()
+        clock.advance(minutes=1)
+        changes.report(LIGHT, 95.0, clock.now)
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+        http.calls.clear()
+
+        clock.advance(minutes=1)
+        runner.fire("movie_ended")
+        assert await runner.tick() == 1
+        assert http.writes[0][2]["dimming"]["brightness"] == 80
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+
+
+class TestCloseDuringSettle:
+    async def test_close_during_the_catch_up_wait_writes_nothing_more(
+        self, bridge, http, clock
+    ):
+        # The wait after catch-up is a plain sleep in production. A close()
+        # that lands inside it must not be followed by a tick that writes
+        # after the caller was told the runner had stopped.
+        clock.now = datetime.datetime(2026, 9, 1, 9, 30, tzinfo=BERLIN)
+        gate = asyncio.Event()
+
+        async def gated_sleep(_seconds):
+            await gate.wait()
+
+        runner = PlanRunner(
+            bridge, Plan.model_validate(DAY_PLAN), clock=clock, sleep=gated_sleep
+        )
+        await runner.start()
+        task = asyncio.create_task(runner.run())
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert len(http.writes) == 1
+
+        await runner.close()
+        gate.set()
+        await asyncio.wait_for(task, timeout=1.0)
+        assert len(http.writes) == 1
+
+
+LONG_FADE_PLAN = {
+    "version": 1,
+    "defaults": {"catchup_ramp": "5s"},
+    "scenario": [
+        {
+            "name": "day",
+            "scope": ["room:Living Room"],
+            "step": [
+                {"at": "08:00", "set": {"brightness": 100}},
+                {"at": "09:00", "ramp": "100m", "set": {"brightness": 20}},
+            ],
+        }
+    ],
+}
+
+
+def lit_resources(brightness):
+    """Build the runner's bridge, with the lamp carrying a real state to fold."""
+    room, lamp = bridge_resources()
+    return [room, lamp | {"on": {"on": True}, "dimming": {"brightness": brightness}}]
+
+
+def light_frame(brightness, event_id):
+    return SSEFrame(
+        event_id=event_id,
+        received_at=datetime.datetime.now(datetime.UTC),
+        events=[
+            {
+                "id": f"event-{event_id}",
+                "type": "update",
+                "creationtime": "2026-09-01T09:30:00Z",
+                "data": [
+                    {
+                        "id": LIGHT,
+                        "type": "light",
+                        "dimming": {"brightness": brightness},
+                    }
+                ],
+            }
+        ],
+    )
+
+
+class TestWithRealState:
+    """Through a real HueState, not a fake: the attribution it applies is the point.
+
+    The state layer marks every report on a light as ``origin="self"`` while a
+    fade this client issued is running, plus a grace period. For the runner's
+    hundred-minute fades that window would mask a wall switch for the whole
+    ramp, so these pin what actually reaches the runner and what it does with
+    it. A change to ``HueState._matching_command`` shows up here.
+    """
+
+    async def mid_fade(self, hue, clock):
+        http = StateHttp([lit_resources(100)])
+        hue._http = http
+        clock.now = datetime.datetime(2026, 9, 1, 8, 30, tzinfo=BERLIN)
+        state = hue.state
+        await state.__aenter__()
+        runner = PlanRunner(
+            hue,
+            Plan.model_validate(LONG_FADE_PLAN),
+            changes=state,
+            clock=clock,
+            sleep=noop_sleep,
+        )
+        await runner.start()
+        await runner.catch_up()
+        clock.now = datetime.datetime(2026, 9, 1, 9, 0, tzinfo=BERLIN)
+        await runner.tick()
+        return http, state, runner
+
+    async def deliver(self, http, state, frame):
+        delivered = asyncio.Event()
+        with state.on_change(lambda _change: delivered.set()):
+            await http.connections[0].put(frame)
+            await asyncio.wait_for(delivered.wait(), timeout=1.0)
+
+    async def test_a_wall_switch_mid_fade_is_seen_despite_the_window(self, hue, clock):
+        http, state, runner = await self.mid_fade(hue, clock)
+        try:
+            # Thirty minutes into 100 -> 20 over 100 minutes: expected 76.
+            clock.advance(minutes=30)
+            await self.deliver(http, state, light_frame(95.0, "1:1"))
+            assert runner.arbiter.is_yielded(GROUP_PATH)
+        finally:
+            await runner.close()
+            await state.__aexit__(None, None, None)
+
+    async def test_progress_consistent_with_the_fade_is_ours(self, hue, clock):
+        http, state, runner = await self.mid_fade(hue, clock)
+        try:
+            clock.advance(minutes=30)
+            await self.deliver(http, state, light_frame(76.0, "1:1"))
+            assert not runner.arbiter.is_yielded(GROUP_PATH)
+        finally:
+            await runner.close()
+            await state.__aexit__(None, None, None)
+
+    async def test_the_echo_of_our_own_target_is_ours(self, hue, clock):
+        # The bridge reports a transition's target the moment it accepts the
+        # write. Against the fade's expectation at that instant it is a jump.
+        http, state, runner = await self.mid_fade(hue, clock)
+        try:
+            await self.deliver(http, state, light_frame(20.0, "1:1"))
+            assert not runner.arbiter.is_yielded(GROUP_PATH)
+        finally:
+            await runner.close()
+            await state.__aexit__(None, None, None)

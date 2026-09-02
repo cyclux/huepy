@@ -148,9 +148,10 @@ maths, or the executor.
   add a second dispatch. What a kind *means* lives in `runner._edge()`.
 - **Handing a scope back never snaps.** The return to a day curve is floored at
   `catchup_ramp`; a mode keeps its author's ramp. `Claim.source` vs
-  `ScopeState.owner` is what tells a hand-over from a claim still in force, and
-  `Claim.since` vs `ScopeState.yielded_at` is what ends a yield -- never a
-  precomputed resume time.
+  `ScopeState.owner.source` is what tells a hand-over from a claim still in
+  force, and `Claim.since` vs `ScopeState.yielded_at` is what ends a yield --
+  never a precomputed resume time. A hand change is remembered in
+  `ScopeState.reported` and is where the next fade starts.
 - `plans/` depends on the `PlanClient` Protocol in `plans/protocol.py`, never on
   `client/base.py`. `src/huepy/cli.py` is the composition root: the one module
   outside `client/` that binds a plan to a concrete `Hue`.

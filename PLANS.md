@@ -222,6 +222,17 @@ room stayed dark. Forgetting the fade is what makes the next write carry it
 again — under `reassert` as much as under `yield`, which is why a reassert plan
 still subscribes to changes.
 
+Forgetting the fade must not mean forgetting where the light *is*. The first
+version of that fix cleared the fade and nothing else, so the next fade ran
+from `start=None`, `Fade.expected_at()` answered "the target" for the whole
+ramp, and the bulb's own progress reports — which the state layer used to hide
+— were judged as jumps: one false yield per step, for ever, or under `reassert`
+one PUT per progress report. `ScopeState.reported` now keeps the state the
+human left, the next fade starts from it, and a fade whose starting brightness
+is genuinely unknown (a bare switch-off) judges only the power state until it
+lands. `TestWithRealState` drives all of this through a real `HueState`, so a
+change to its attribution shows up in this suite.
+
 ## No durable state
 
 The runner writes nothing to disk and remembers nothing across restarts. On
@@ -263,6 +274,8 @@ integration probe establishing whether a third-party app key can POST one.
 | `origin="self"` is not proof; `command_echo` is; a switch-off yields and resets `on` | `TestObservation` |
 | A yield ends at the first later step, hold or mode; a losing hold does not end it | `TestYieldResume` |
 | A restart mid-fade lands, waits, then continues the ramp | `TestRestart` |
+| The fade after a hand change starts where the human left the light; reassert re-drives once | `TestProgressAfterHandChange` |
+| What the state layer's window actually delivers, and what the runner does with it | `TestWithRealState` |
 | Directory merge: singletons, versions, unknown keys, names across files | `tests/test_plans_loader.py` |
 | A host-local clock time survives a DST change | `TestZone` |
 | Body-level write rejections raise rather than stranding a scope | `TestWriteErrors` |
