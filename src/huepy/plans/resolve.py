@@ -320,12 +320,16 @@ def _triggers_of(scenario: Scenario) -> list[Selector]:
     return found
 
 
-async def resolve(client: PlanClient, plan: Plan) -> ResolvedPlan:
-    """Bind every name in a plan to a resource on this bridge.
+def bind(resources: list[AnyResource], plan: Plan) -> ResolvedPlan:
+    """Bind every name in a plan against one snapshot.
+
+    Pure: the snapshot is a parameter, so a plan can be bound against a
+    fixture, or against a snapshot the caller already holds, without a second
+    request.
 
     Args:
-        client: The client to resolve against. One snapshot is taken.
-        plan: The plan to resolve.
+        resources: Everything the aggregate endpoint returned.
+        plan: The plan to bind.
 
     Returns:
         The plan with every scope and trigger bound.
@@ -336,7 +340,7 @@ async def resolve(client: PlanClient, plan: Plan) -> ResolvedPlan:
             together, so one run of ``huepy plan validate`` finds them all.
 
     """
-    catalog = _index(await client.snapshot())
+    catalog = _index(resources)
 
     problems: list[str] = []
     scopes: dict[str, tuple[Binding, ...]] = {}
@@ -364,3 +368,20 @@ async def resolve(client: PlanClient, plan: Plan) -> ResolvedPlan:
         raise PlanError(msg)
 
     return ResolvedPlan(plan=plan, scopes=scopes, triggers=triggers)
+
+
+async def resolve(client: PlanClient, plan: Plan) -> ResolvedPlan:
+    """Bind every name in a plan to a resource on this bridge.
+
+    Args:
+        client: The client to resolve against. One snapshot is taken.
+        plan: The plan to resolve.
+
+    Returns:
+        The plan with every scope and trigger bound.
+
+    Raises:
+        PlanError: If any name does not resolve; see :func:`bind`.
+
+    """
+    return bind(await client.snapshot(), plan)

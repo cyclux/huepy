@@ -1288,7 +1288,7 @@ half-run a plan.
 | --- | --- |
 | `load_plans(path)`, `load_plan(path)` | Read a `.toml` file, or a directory of them, into a `Plan`. `PlanError` on anything wrong, naming the file and key. |
 | `Plan`, `Scenario`, `Step`, `Rule`, `Action`, `Defaults`, `Location` | The format, as frozen pydantic models. `Plan.model_json_schema()` is what `huepy plan schema` prints. |
-| `PlanRunner` | Runs a plan. `changes=` takes anything with `on_change` and `on_resync` — `hue.state` — and `clock=` / `sleep=` are injectable for tests. |
+| `PlanRunner` | Runs a plan. `changes=` takes anything with `on_change` and `on_resync` — `hue.state` — and `clock=` / `sleep=` are injectable for tests. `fire(name)` returns what the signal did, one phrase per scenario it reached, and `signals` is the set of names the plan listens for. |
 | `PlanClient`, `ChangeSource` | The two Protocols the runner depends on. `Hue` and `HueState` satisfy them. |
 | `resolve(client, plan)`, `ResolvedPlan`, `Binding`, `TriggerBinding` | Bind every name to a resource id in one snapshot, reporting every unknown name together. |
 | `waypoints_for_day(plan, scenario, day, zone)`, `Waypoint` | A scenario's day curve pinned to instants. Pure. |

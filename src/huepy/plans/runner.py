@@ -32,7 +32,7 @@ from huepy.plans.arbiter import Arbiter, Claim, Fade
 from huepy.plans.executor import Segment, plan_segments, send, send_chain
 from huepy.plans.fields import TriggerKind
 from huepy.plans.protocol import Cancellable, ChangeSource, PlanClient
-from huepy.plans.resolve import ResolvedPlan, TriggerBinding, resolve
+from huepy.plans.resolve import Binding, ResolvedPlan, TriggerBinding, resolve
 from huepy.plans.schema import Plan
 from huepy.plans.timeline import Zone, combine, in_zone, next_transition, zone_of
 from huepy.state.records import Change, Resync
@@ -216,6 +216,7 @@ class PlanRunner:
         self._subscription: Cancellable | None = None
         self._resync: Cancellable | None = None
         self._scope_of: dict[str, set[str]] = {}
+        self._binding_of: dict[str, Binding] = {}
         self._triggers_of: dict[str, list[TriggerBinding]] = {}
         self._fades: dict[str, asyncio.Task[None]] = {}
         self._wake: asyncio.Event = asyncio.Event()
@@ -263,12 +264,32 @@ class PlanRunner:
         """
         for bindings in resolved.scopes.values():
             for binding in bindings:
+                # Two scenarios on one room bind it twice; either spelling
+                # names the same path, so the first is as good as any.
+                _ = self._binding_of.setdefault(binding.path, binding)
                 ids = [binding.path.rsplit("/", 1)[-1], *binding.light_ids]
                 for resource_id in ids:
                     # A set, not a single path: one light can belong to both a
                     # `room:` scope and a `light:` scope, and overwriting here
                     # would leave one of them never noticing a manual change.
                     self._scope_of.setdefault(resource_id, set()).add(binding.path)
+
+    def _label(self, path: str) -> str:
+        """Name a scope the way the plan wrote it, for logs.
+
+        ``room:Living Room`` is unambiguous where a bare name is not -- a light
+        and the room it sits in can share one -- and the write path is
+        meaningless to anyone reading a log.
+
+        Args:
+            path: The scope's write path.
+
+        Returns:
+            The selector as written, or the path if it is not a scope.
+
+        """
+        binding = self._binding_of.get(path)
+        return str(binding.selector) if binding is not None else path
 
     def _index_triggers(self, resolved: ResolvedPlan) -> None:
         """Map every sensor service back to the triggers it can fire.
@@ -316,9 +337,9 @@ class PlanRunner:
             # the lights up by hand.
             self._cancel_fade(path)
             if self.arbiter.is_yielded(path):
-                logger.info("%s: changed by hand, standing back", path)
+                logger.info("%s: changed by hand, standing back", self._label(path))
             else:
-                logger.info("%s: changed by hand, re-asserting", path)
+                logger.info("%s: changed by hand, re-asserting", self._label(path))
                 self._wake.set()
 
     def _observe_trigger(self, change: Change, triggers: list[TriggerBinding]) -> None:
@@ -420,7 +441,28 @@ class PlanRunner:
             raise RuntimeError(msg)
         return self._arbiter
 
-    def fire(self, signal: str) -> None:
+    @property
+    def signals(self) -> frozenset[str]:
+        """The names the plan's ``signal:`` triggers listen for.
+
+        Returns:
+            Every name, without the ``signal:`` prefix, that :meth:`fire`
+            would do something with.
+
+        Raises:
+            RuntimeError: If the runner has not been started.
+
+        """
+        if self._resolved is None:
+            msg = "the runner has not been started; use `async with` or await start()"
+            raise RuntimeError(msg)
+        return frozenset(
+            trigger.selector.name
+            for trigger in self._resolved.triggers.values()
+            if trigger.is_signal
+        )
+
+    def fire(self, signal: str) -> tuple[str, ...]:
         """Fire an application signal.
 
         This is the hook for anything the bridge cannot know about -- a media
@@ -435,11 +477,22 @@ class PlanRunner:
             signal: The name as written in the plan, without the ``signal:``
                 prefix.
 
+        Returns:
+            What the signal did, one phrase per scenario it reached. Empty
+            when nothing in the plan listens for it.
+
         """
         key = f"signal:{signal}"
-        for outcome in self.arbiter.fire(key, self._clock()):
+        outcomes = tuple(self.arbiter.fire(key, self._clock()))
+        for outcome in outcomes:
             logger.info("%s: %s", key, outcome)
+        if not outcomes:
+            # A shut window still produces an outcome, so silence really does
+            # mean the name matches no trigger: most likely a typo in the
+            # caller, which is worth more than an INFO line.
+            logger.warning("%s: nothing in the plan listens for it", key)
         self._wake.set()
+        return outcomes
 
     async def catch_up(self) -> int:
         """Move every scope to where it should be right now.
@@ -490,7 +543,7 @@ class PlanRunner:
                 if claim.since is None or claim.since < state.yielded_at:
                     continue
                 self.arbiter.resume(path)
-                logger.info("%s: taking the scope back", claim.binding.name)
+                logger.info("%s: taking the scope back", claim.binding.selector)
 
             if (
                 state.owner is not None
@@ -525,7 +578,7 @@ class PlanRunner:
         try:
             return await self._drive(claim, now, ramp=ramp)
         except HueError:
-            logger.exception("%s: could not be driven", claim.binding.name)
+            logger.exception("%s: could not be driven", claim.binding.selector)
             # The refused write did not move the light, so where the previous
             # fade had taken it is still the best belief. Kept as the last
             # known state rather than as a fade, so the next tick retries
@@ -663,7 +716,7 @@ class PlanRunner:
         except asyncio.CancelledError:
             raise
         except HueError:
-            logger.exception("%s: the rest of a chained fade failed", path)
+            logger.exception("%s: the rest of a chained fade failed", self._label(path))
             state = self.arbiter.state_of(path)
             if state.fade is not None:
                 # Where the segments that did go out have taken the light, so

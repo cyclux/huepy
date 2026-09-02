@@ -25,7 +25,7 @@ from huepy.plans.fields import Selector, TriggerKind, format_duration
 from huepy.plans.loader import load_plans
 from huepy.plans.resolve import Binding, resolve
 from huepy.plans.runner import PlanRunner
-from huepy.plans.schema import Action, Plan, Rule, Scenario
+from huepy.plans.schema import Plan, Rule, Scenario
 from huepy.plans.timeline import Zone, combine, waypoints_for_day, zone_of
 
 EXIT_OK = 0
@@ -96,7 +96,7 @@ def _explain(plan: Plan, when: datetime.datetime) -> None:
                 else ""
             )
             hold = _hold_of(rule, scenario, plan)
-            print(f"  on {rule.when}{window}: {_describe(rule.set)}, {hold}")
+            print(f"  on {rule.when}{window}: {rule.set.describe()}, {hold}")
 
 
 def _explain_flat(scenario: Scenario, plan: Plan) -> None:
@@ -116,7 +116,7 @@ def _explain_flat(scenario: Scenario, plan: Plan) -> None:
         label = "when no step is in force"
     else:
         label = "always"
-    print(f"  {label}: {_describe(scenario.set)}  (ramp {format_duration(ramp)})")
+    print(f"  {label}: {scenario.set.describe()}  (ramp {format_duration(ramp)})")
 
 
 def _explain_steps(
@@ -155,7 +155,7 @@ def _explain_steps(
             f"{waypoint.at.strftime('%H:%M:%S')} -> "
             f"{waypoint.ends_at.strftime('%H:%M:%S')}"
         )
-        print(f"  {span}  {_describe(waypoint.action)}  ({requests})")
+        print(f"  {span}  {waypoint.action.describe()}  ({requests})")
 
 
 def _hold_of(rule: Rule, scenario: Scenario, plan: Plan) -> str:
@@ -181,23 +181,6 @@ def _hold_of(rule: Rule, scenario: Scenario, plan: Plan) -> str:
         for other in plan.scenario
     )
     return "until the next step" if scheduled else "until released"
-
-
-def _describe(action: Action) -> str:
-    """Render an action as the few fields it actually sets.
-
-    Args:
-        action: The action to render.
-
-    Returns:
-        A compact description.
-
-    """
-    parts = [
-        f"{field}={value:.0f}" if field == "brightness" else f"{field}={value}"
-        for field, value in action.model_dump(exclude_none=True).items()
-    ]
-    return " ".join(parts) or "nothing"
 
 
 async def _validate(path: str) -> int:

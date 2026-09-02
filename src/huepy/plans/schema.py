@@ -187,6 +187,23 @@ class Action(BaseModel):
             mirek=None if temperature is None else temperature["mirek"],
         )
 
+    def describe(self) -> str:
+        """Render this action as the few fields it actually sets.
+
+        Used wherever a target is shown to a person -- ``huepy plan explain``
+        and the runner's log -- so both spell it the same way. Brightness is
+        rounded to a whole percent, the resolution a plan author thinks in.
+
+        Returns:
+            A compact ``key=value`` listing.
+
+        """
+        parts = [
+            f"{field}={value:.0f}" if field == "brightness" else f"{field}={value}"
+            for field, value in self.model_dump(exclude_none=True).items()
+        ]
+        return " ".join(parts) or "nothing"
+
     def to_payload(self, *, transition: float | None = None) -> dict[str, Any]:
         """Compose this action into a bridge PUT body.
 

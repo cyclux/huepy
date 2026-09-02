@@ -8,6 +8,7 @@ requests that came out. A simulated day costs microseconds.
 import asyncio
 import copy
 import datetime
+import logging
 import zoneinfo
 from typing import Any, Literal
 
@@ -366,6 +367,30 @@ class TestPriority:
         runner.fire("movie_ended")
         assert await runner.tick() == 1
         assert http.writes[0][2]["dimming"]["brightness"] == 80
+
+
+class TestSignals:
+    async def test_signals_lists_what_the_plan_listens_for(self, bridge, clock):
+        runner = await make_runner(bridge, clock, PRIORITY_PLAN)
+        assert runner.signals == {"movie_started", "movie_ended"}
+
+    async def test_signals_before_starting_is_an_error(self, bridge, clock):
+        runner = PlanRunner(bridge, Plan.model_validate(PRIORITY_PLAN), clock=clock)
+        with pytest.raises(RuntimeError, match="not been started"):
+            _ = runner.signals
+
+    async def test_fire_reports_what_it_did(self, bridge, clock):
+        runner = await make_runner(bridge, clock, PRIORITY_PLAN)
+        assert runner.fire("movie_started") == ("activated 'movie'",)
+        assert runner.fire("movie_ended") == ("released 'movie'",)
+
+    async def test_fire_reports_nothing_for_a_signal_nobody_listens_for(
+        self, bridge, clock, caplog
+    ):
+        runner = await make_runner(bridge, clock, PRIORITY_PLAN)
+        with caplog.at_level(logging.WARNING, logger="huepy.plans.runner"):
+            assert runner.fire("doorbell") == ()
+        assert "signal:doorbell: nothing in the plan listens for it" in caplog.text
 
 
 class TestLifecycle:
