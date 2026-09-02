@@ -235,7 +235,9 @@ class TestOverride:
     async def test_a_yielded_scope_is_left_alone(self, bridge, http, clock):
         runner = await make_runner(bridge, clock)
         await runner.catch_up()
+        clock.advance(seconds=10)
         runner.arbiter.note_foreign_change(GROUP_PATH, 95.0, clock.now)
+        assert runner.arbiter.is_yielded(GROUP_PATH)
         http.calls.clear()
 
         clock.advance(minutes=10)
@@ -246,7 +248,9 @@ class TestOverride:
         # The human wins now; the plan wins later.
         runner = await make_runner(bridge, clock)
         await runner.catch_up()
+        clock.advance(seconds=10)
         runner.arbiter.note_foreign_change(GROUP_PATH, 95.0, clock.now)
+        assert runner.arbiter.is_yielded(GROUP_PATH)
         http.calls.clear()
 
         clock.now = datetime.datetime(2026, 9, 1, 9, 0, tzinfo=BERLIN)
@@ -1341,7 +1345,9 @@ class TestYieldResume:
         runner = await watched_runner(bridge, clock, changes, PRIORITY_PLAN)
         clock.advance(hours=1)
         await runner.catch_up()
+        clock.advance(seconds=10)
         changes.report(LIGHT, 95.0, clock.now)
+        assert runner.arbiter.is_yielded(GROUP_PATH)
         http.calls.clear()
 
         clock.advance(minutes=1)
@@ -1685,3 +1691,134 @@ class TestWithRealState:
         finally:
             await runner.close()
             await state.__aexit__(None, None, None)
+
+
+OFF_AT_NIGHT_PLAN = {
+    "version": 1,
+    "defaults": {"catchup_ramp": "5s"},
+    "scenario": [
+        {
+            "name": "day",
+            "scope": ["room:Living Room"],
+            "step": [
+                {"at": "08:00", "set": {"on": True, "brightness": 80}},
+                {"at": "23:00", "set": {"on": False}},
+            ],
+        }
+    ],
+}
+
+
+class ClosingClient:
+    """A client whose first write closes the runner from the inside."""
+
+    def __init__(self, hue, http):
+        self._hue = hue
+        self._http = http
+        self.runner: PlanRunner | None = None
+        self.sent = 0
+
+    @property
+    def http(self) -> Any:
+        return self
+
+    def __getattr__(self, name):
+        return getattr(self._http, name)
+
+    async def put(self, path, data):
+        self.sent += 1
+        if self.sent == 1:
+            assert self.runner is not None
+            await self.runner.close()
+        return await self._http.put(path, data)
+
+    async def snapshot(self):
+        return await self._hue.snapshot()
+
+
+class TestBeliefAfterFailure:
+    async def test_a_refused_write_retries_from_where_the_light_was(
+        self, hue, http, clock
+    ):
+        # The plan switched the room off at 23:00 and the bridge's echo was
+        # explained, so the last *foreign* report still says "on" from the
+        # morning before. When the next morning's write is refused, the retry
+        # must start from where the plan's own fade had left the light -- off
+        # -- and carry `on`, or the room stays dark for the whole step.
+        http.queue("/clip/v2/resource", envelope(*bridge_resources()))
+        changes = FakeChanges()
+        clock.now = datetime.datetime(2026, 9, 1, 7, 0, tzinfo=BERLIN)
+        client = BrokenClient(hue, http, fails={4})
+        runner = PlanRunner(
+            client,
+            Plan.model_validate(OFF_AT_NIGHT_PLAN),
+            changes=changes,
+            clock=clock,
+            sleep=noop_sleep,
+        )
+        await runner.start()
+        await runner.catch_up()
+        clock.advance(minutes=10)
+        changes.report(LIGHT, None, clock.now, delta={"on": {"on": True}})
+        clock.now = datetime.datetime(2026, 9, 1, 8, 0, tzinfo=BERLIN)
+        await runner.tick()
+        clock.now = datetime.datetime(2026, 9, 1, 23, 0, tzinfo=BERLIN)
+        await runner.tick()
+        assert http.writes[-1][2]["on"] == {"on": False}
+        changes.report(LIGHT, None, clock.now, delta={"on": {"on": False}})
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+
+        clock.now = datetime.datetime(2026, 9, 2, 8, 0, tzinfo=BERLIN)
+        assert await runner.tick() == 0
+        http.calls.clear()
+        assert await runner.tick() == 1
+        assert http.writes[0][2]["on"] == {"on": True}
+
+    async def test_a_failed_chain_tail_is_retried_as_a_chain(self, hue, http, clock):
+        # The retry knows where the light was when the tail failed, so it is
+        # chained again rather than degraded to one ceiling-length fade.
+        http.queue("/clip/v2/resource", envelope(*bridge_resources()))
+        client = BrokenClient(hue, http, fails={2})
+        runner = PlanRunner(
+            client,
+            Plan.model_validate(CHAINED_PLAN),
+            clock=clock,
+            sleep=noop_sleep,
+        )
+        await runner.start()
+        await runner.catch_up()
+        clock.now = datetime.datetime(2026, 9, 1, 22, 0, tzinfo=BERLIN)
+        await runner.tick()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert runner.arbiter.state_of(GROUP_PATH).fade is None
+        http.calls.clear()
+
+        assert await runner.tick() == 1
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert len(http.writes) == 2
+        assert http.writes[1][2]["dimming"]["brightness"] == 20
+
+
+class TestCloseMidPass:
+    async def test_close_during_one_scopes_write_stops_the_pass(self, hue, http, clock):
+        http.queue("/clip/v2/resource", envelope(*bridge_resources()))
+        plan = {
+            "version": 1,
+            "scenario": [
+                {
+                    "name": "room",
+                    "scope": ["room:Living Room", "light:Corner Lamp"],
+                    "step": [{"at": "07:00", "set": {"brightness": 50}}],
+                }
+            ],
+        }
+        client = ClosingClient(hue, http)
+        runner = PlanRunner(
+            client, Plan.model_validate(plan), clock=clock, sleep=noop_sleep
+        )
+        client.runner = runner
+        await runner.start()
+        assert await runner.catch_up() == 1
+        assert len(http.writes) == 1

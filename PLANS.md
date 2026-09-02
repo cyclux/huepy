@@ -229,9 +229,26 @@ ramp, and the bulb's own progress reports — which the state layer used to hide
 — were judged as jumps: one false yield per step, for ever, or under `reassert`
 one PUT per progress report. `ScopeState.reported` now keeps the state the
 human left, the next fade starts from it, and a fade whose starting brightness
-is genuinely unknown (a bare switch-off) judges only the power state until it
-lands. `TestWithRealState` drives all of this through a real `HueState`, so a
-change to its attribution shows up in this suite.
+is genuinely unknown judges only the power state until it lands. That is two
+deliberate blind windows for brightness, never for `on`: the cold-start
+catch-up (`catchup_ramp` seconds, `start=None`) and the fade after a bare
+switch-off. Carrying the pre-switch-off brightness into `reported` would close
+the second, but it assumes a bulb resumes a transition from its retained
+level, which has not been measured on this bridge; measure before assuming.
+
+`reported` is written by foreign reports only -- the plan's own echoes are
+skipped before the arbiter sees them -- so it goes stale while the plan drives
+the light. That bit once: the plan switched the room off at 23:00, the next
+morning's write was refused, and the retry started from the previous day's
+hand-on report, dropped `on` as redundant, and left the room dark for the
+step. A failed write therefore folds the fade it interrupted into `reported`
+(`Fade.expected_at(now)`, which carries the plan's own `on` target) before
+forgetting it; a failed chain tail does the same, so its retry chains again.
+`TestWithRealState` drives the window, the echo and the progress path through
+a real `HueState`, so a change to its attribution shows up in this suite; the
+hand-change-then-next-fade path is pinned on the fake in
+`TestProgressAfterHandChange`, and the failure paths in
+`TestBeliefAfterFailure`.
 
 ## No durable state
 
@@ -275,6 +292,7 @@ integration probe establishing whether a third-party app key can POST one.
 | A yield ends at the first later step, hold or mode; a losing hold does not end it | `TestYieldResume` |
 | A restart mid-fade lands, waits, then continues the ramp | `TestRestart` |
 | The fade after a hand change starts where the human left the light; reassert re-drives once | `TestProgressAfterHandChange` |
+| A refused write retries from where the fade had the light, `on` included; a failed tail re-chains | `TestBeliefAfterFailure` |
 | What the state layer's window actually delivers, and what the runner does with it | `TestWithRealState` |
 | Directory merge: singletons, versions, unknown keys, names across files | `tests/test_plans_loader.py` |
 | A host-local clock time survives a DST change | `TestZone` |

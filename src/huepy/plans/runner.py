@@ -455,6 +455,8 @@ class PlanRunner:
         now = self._clock()
         written = 0
         for claim in self.arbiter.claims(now, catching_up=True):
+            if self._closing.is_set():
+                break
             if self.arbiter.is_yielded(claim.binding.path):
                 continue
             if await self._drive_safely(claim, now, ramp=claim.ramp):
@@ -474,6 +476,10 @@ class PlanRunner:
         now = self._clock()
         written = 0
         for claim in self.arbiter.claims(now):
+            if self._closing.is_set():
+                # close() landed during another scope's write; finishing the
+                # pass would keep writing after the caller was told it stopped.
+                break
             path = claim.binding.path
             state = self.arbiter.state_of(path)
 
@@ -514,13 +520,22 @@ class PlanRunner:
             True when something was sent.
 
         """
+        state = self.arbiter.state_of(claim.binding.path)
+        before = state.fade
         try:
             return await self._drive(claim, now, ramp=ramp)
         except HueError:
             logger.exception("%s: could not be driven", claim.binding.name)
-            # Forget the fade, so the next tick tries again rather than
-            # believing this scope arrived.
-            self.arbiter.state_of(claim.binding.path).fade = None
+            # The refused write did not move the light, so where the previous
+            # fade had taken it is still the best belief. Kept as the last
+            # known state rather than as a fade, so the next tick retries
+            # instead of believing this scope arrived -- and retries from
+            # there, `on` included. Starting from the last *foreign* report
+            # instead once dropped `on` on a room the plan itself had
+            # switched off the night before.
+            if before is not None:
+                state.reported = before.expected_at(now)
+            state.fade = None
             return False
 
     def _target_changed(self, claim: Claim) -> bool:
@@ -649,7 +664,13 @@ class PlanRunner:
             raise
         except HueError:
             logger.exception("%s: the rest of a chained fade failed", path)
-            self.arbiter.state_of(path).fade = None
+            state = self.arbiter.state_of(path)
+            if state.fade is not None:
+                # Where the segments that did go out have taken the light, so
+                # the retry can be chained from there instead of degraded to
+                # one ceiling-length fade from nowhere.
+                state.reported = state.fade.expected_at(self._clock())
+            state.fade = None
         finally:
             if self._fades.get(path) is asyncio.current_task():
                 del self._fades[path]
