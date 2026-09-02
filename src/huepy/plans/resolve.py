@@ -158,6 +158,28 @@ class _Catalog:
     automated: dict[str, str]
 
 
+def _dependees_of(automation: BehaviorInstance) -> list[str]:
+    """List the resource ids an app automation says it depends on.
+
+    Args:
+        automation: The behaviour instance, as the bridge reported it.
+
+    Returns:
+        Every ``target.rid`` in its dependees; bridge JSON, so nothing about
+        the shape is assumed.
+
+    """
+    found: list[str] = []
+    for dependee in automation.dependees:
+        target = dependee.get("target")
+        if not isinstance(target, dict):
+            continue
+        rid = cast("dict[str, Any]", target).get("rid")
+        if isinstance(rid, str):
+            found.append(rid)
+    return found
+
+
 def _index(resources: list[AnyResource]) -> _Catalog:
     """Group a snapshot by kind and display name.
 
@@ -196,12 +218,8 @@ def _index(resources: list[AnyResource]) -> _Catalog:
             # The app's own automations list what they listen to. One on the
             # same dimmer as a rule acts on the same press, and what it does
             # to the lights arrives as a hand change that cancels the rule.
-            for dependee in resource.dependees:
-                target = dependee.get("target")
-                if isinstance(target, dict):
-                    rid = cast("dict[str, Any]", target).get("rid")
-                    if isinstance(rid, str):
-                        _ = automated.setdefault(rid, resource.name)
+            for rid in _dependees_of(resource):
+                _ = automated.setdefault(rid, resource.name)
     return _Catalog(
         rooms=rooms,
         zones=zones,

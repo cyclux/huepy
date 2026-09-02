@@ -196,12 +196,13 @@ class TestResolveTriggers:
         )
         plan = make_plan(rule=[{"when": "button:Dimmer", "set": {"on": True}}])
         resolved = await resolve(hue, plan)
-        assert resolved.warnings == (
+        warning = (
             "button:Dimmer: the Hue app's automation 'Dimmer Study' also listens "
             "to this device; what it does to lights this plan drives arrives as "
             "a hand change and cancels the rule. Disable it in the app to let "
-            "the rule win",
+            "the rule win"
         )
+        assert resolved.warnings == (warning,)
 
     async def test_a_disabled_app_automation_is_no_warning(self, hue, http):
         dimmer = {

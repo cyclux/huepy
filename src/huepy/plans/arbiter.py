@@ -259,19 +259,20 @@ class Fade:
         """
         expected = self.expected_at(at)
         expected_on = expected.on if expected.on is not None else True
-        if on is False and expected_on is False:
-            # Off as asked. Whatever brightness rides along is the reading of
-            # a dark bulb -- the bridge reports `on=False brightness=0` for
-            # each member some twenty seconds after a fade-out lands.
+        to_off = self.target.on is False
+        fading_out = to_off and at < self.ends_at()
+        # Off as asked. Whatever brightness rides along is the reading of a
+        # dark bulb: the bridge reports `on=False brightness=0` for each
+        # member some twenty seconds after a fade-out lands, or `dimming 0`
+        # alone when `on` did not change because the room was already off.
+        gone_dark = on is False or (
+            on is None and brightness is not None and brightness <= DARK
+        )
+        if to_off and gone_dark:
             return True
-        fading_out = self.target.on is False and at < self.ends_at()
         if on is not None and on != expected_on and not (fading_out and on is True):
             return False
         if brightness is None:
-            return True
-        if self.target.on is False and on is None and brightness <= DARK:
-            # The same dark bulb, reported without `on` because `on` did not
-            # change -- the room was already off when the fade-out was sent.
             return True
         if expected.brightness is None:
             # A fade-out dims on its way down, and the bridge reports the bulb
