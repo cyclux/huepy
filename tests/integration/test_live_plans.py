@@ -351,7 +351,9 @@ async def test_a_hand_brightness_jump_mid_fade_yields_and_a_progress_report_does
     The pre-hand assertion is a measurement of `BRIGHTNESS_TOLERANCE` against
     real bulbs: if a progress report lands outside it, the failure message
     lists what was judged, and that is a finding for PLANS.md, not a reason to
-    loosen the test.
+    loosen the test. It found one: the room's `grouped_light` reports the
+    average of its members' last readings, far off the ramp, and the runner
+    now judges light reports only (`probe_plans.py` measured it).
     """
     room = arbeitszimmer_restored
     light = (await dimmable_members(room))[0]

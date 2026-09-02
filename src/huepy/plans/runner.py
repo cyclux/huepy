@@ -64,6 +64,9 @@ and the long-press events all follow it and are ignored.
 CONTACT_OPENED = "no_contact"
 """The report state a ``contact:`` trigger fires on: the door or window opening."""
 
+LIGHT_TYPE = "light"
+"""The one resource type whose reports are judged as measurements of a scope."""
+
 type Clock = Callable[[], datetime.datetime]
 type Sleeper = Callable[[float], Awaitable[None]]
 type Edge = Literal["start", "end"]
@@ -136,6 +139,39 @@ def _reported_brightness(change: Change) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return float(value)
+
+
+def _brightness_text(value: float | None) -> str:
+    """Render a brightness for a log line.
+
+    Args:
+        value: The brightness, or None when there is none to show.
+
+    Returns:
+        ``"brightness=42"`` or ``"no brightness"``.
+
+    """
+    return "no brightness" if value is None else f"brightness={value:.0f}"
+
+
+def _describe_report(
+    resource_id: str, brightness: float | None, on: bool | None
+) -> str:
+    """Render a foreign report for a log line.
+
+    Args:
+        resource_id: The light or group that reported.
+        brightness: The brightness it reported, if any.
+        on: The power state it reported, if any.
+
+    Returns:
+        A short phrase naming what was reported and by which resource.
+
+    """
+    parts = [f"on={on}"] if on is not None else []
+    if brightness is not None:
+        parts.append(f"brightness={brightness:.0f}")
+    return f"{' '.join(parts) or 'a report'} from {resource_id[:8]}"
 
 
 def _reported_on(change: Change) -> bool | None:
@@ -445,6 +481,13 @@ class PlanRunner:
         if triggers is not None:
             self._observe_trigger(change, triggers)
             return
+        if change.resource_type != LIGHT_TYPE:
+            # A grouped_light's dimming is the average of its members' *last
+            # reports* -- during a fade a stale mix of targets and progress,
+            # measured 27 points off the ramp (tests/fixtures/plan_probe.json)
+            # -- so it is not a measurement of anything. The members report
+            # for themselves, and every one of them is indexed here.
+            return
         if change.observation == "command_echo":
             # The bridge repeating a transition's *target* back the moment it
             # accepts the write. Judged against the fade's expectation at that
@@ -462,22 +505,35 @@ class PlanRunner:
         # within bridge-clock skew of the hand change must not lose to it.
         now = self._clock()
         for path in self._scope_of.get(change.resource_id, ()):
+            report = _describe_report(change.resource_id, brightness, on)
+            fade = self.arbiter.state_of(path).fade
+            expected = fade.expected_at(now).brightness if fade is not None else None
             if not self.arbiter.note_foreign_change(path, brightness, now, on=on):
                 # One line per progress report the bridge sends during a fade.
                 # It is the override arithmetic's verdict, which is the thing
                 # to read when a light is yielded that should not have been.
                 logger.debug(
-                    "%s: report explained by the running fade", self._label(path)
+                    "%s: %s explained by the running fade (expected %s)",
+                    self._label(path),
+                    report,
+                    _brightness_text(expected),
                 )
                 continue
             # Stop the rest of a chained fade. Without this, the second half of
             # a three-hour sunset would still land an hour after someone turned
             # the lights up by hand.
             self._cancel_fade(path)
-            if self.arbiter.is_yielded(path):
-                logger.info("%s: changed by hand, standing back", self._label(path))
-            else:
-                logger.info("%s: changed by hand, re-asserting", self._label(path))
+            verdict = (
+                "standing back" if self.arbiter.is_yielded(path) else "re-asserting"
+            )
+            logger.info(
+                "%s: %s is not the running fade (expected %s); changed by hand, %s",
+                self._label(path),
+                report,
+                _brightness_text(expected),
+                verdict,
+            )
+            if not self.arbiter.is_yielded(path):
                 self._wake.set()
 
     def _observe_trigger(self, change: Change, triggers: list[TriggerBinding]) -> None:

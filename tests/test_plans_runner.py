@@ -2345,3 +2345,41 @@ class TestLevelEdge:
     )
     def test_above(self, previous, level, expected):
         assert _level_edge(previous, level, self.ABOVE) == expected
+
+
+class TestGroupReports:
+    async def test_a_grouped_light_report_is_not_judged(self, bridge, clock):
+        # The group's dimming is the average of its members' last reports:
+        # during a fade a stale mix of the target and each bulb's progress,
+        # measured 27 points off the ramp. Judged, it yielded a room nobody
+        # had touched. The member lights report for themselves.
+        changes = FakeChanges()
+        clock.now = datetime.datetime(2026, 9, 1, 9, 0, tzinfo=BERLIN)
+        runner = await watched_runner(bridge, clock, changes, DAY_PLAN)
+        await runner.catch_up()
+        await runner.tick()
+        clock.advance(minutes=10)
+
+        stale_average = Change(
+            kind=ChangeKind.UPDATE,
+            received_at=clock.now,
+            observed_at=clock.now,
+            resource_id=GROUPED_LIGHT,
+            resource_type="grouped_light",
+            before=None,
+            after=None,
+            delta={"dimming": {"brightness": 80.0}},
+        )
+        changes.deliver(stale_average)
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+        assert runner.arbiter.state_of(GROUP_PATH).reported is None
+
+    async def test_a_member_lights_report_still_is(self, bridge, clock):
+        changes = FakeChanges()
+        clock.now = datetime.datetime(2026, 9, 1, 9, 0, tzinfo=BERLIN)
+        runner = await watched_runner(bridge, clock, changes, DAY_PLAN)
+        await runner.catch_up()
+        await runner.tick()
+        clock.advance(minutes=10)
+        changes.report(LIGHT, 80.0, clock.now)
+        assert runner.arbiter.is_yielded(GROUP_PATH)

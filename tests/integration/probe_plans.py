@@ -51,6 +51,10 @@ SWITCH_ON_AT = 20
 SAMPLE_AT = (11, 21, 30, 61)
 """When to read the light back: once while off, then three times after switch-on."""
 CLASSIFY_TOLERANCE = 5.0
+GROUP_FADE_SECONDS = 40
+GROUP_FADE_FROM = 30.0
+GROUP_FADE_TO = 90.0
+"""The room fade the live yield test runs, so its progress reports can be measured."""
 LISTEN_MINUTES = 5
 WANTED_SENSORS = ("light_level", "motion", "button", "contact")
 PROGRESS_EVERY = 30
@@ -221,6 +225,84 @@ async def probe_resume_after_switch_off(hue: Hue) -> dict[str, Any]:
     }
 
 
+async def probe_progress_during_group_fade(hue: Hue) -> dict[str, Any]:
+    """Fade the whole room and record every progress report against the ramp.
+
+    The override arithmetic judges each report against the fade's own
+    interpolation, within ``BRIGHTNESS_TOLERANCE``. Whether real bulbs report
+    inside that band -- and on what cadence -- is what this measures.
+    """
+    room = await hue.rooms.get(PLAN_ROOM)
+    members = [light for light in await room.lights() if light.dimming is not None]
+    service = room.service_id(models.ResourceType.GROUPED_LIGHT)
+    watched = {light.id for light in members} | ({service} if service else set())
+    before = await room.capture()
+    reports: list[dict[str, Any]] = []
+    origin = monotonic()
+
+    async def collect() -> None:
+        async for frame in hue.http.subscribe_event_frames(max_retries=0):
+            for event in frame.events:
+                for item in cast("list[dict[str, Any]]", event.get("data", [])):
+                    dimming = item.get("dimming")
+                    if item.get("id") in watched and isinstance(dimming, dict):
+                        reports.append(
+                            {
+                                "at_seconds": monotonic() - origin,
+                                "resource": item.get("id"),
+                                "type": item.get("type"),
+                                "brightness": cast("dict[str, Any]", dimming).get(
+                                    "brightness"
+                                ),
+                            }
+                        )
+
+    collector = asyncio.create_task(collect())
+    try:
+        await asyncio.sleep(SUBSCRIBE_SETTLE_SECONDS)
+        _ = await room.set(on=True, brightness=GROUP_FADE_FROM, transition=1)
+        await asyncio.sleep(3)
+        reports.clear()
+        origin = monotonic()
+        _ = await room.set(brightness=GROUP_FADE_TO, transition=GROUP_FADE_SECONDS)
+        _say(f"room fade started: {GROUP_FADE_FROM:.0f} -> {GROUP_FADE_TO:.0f}")
+        await asyncio.sleep(GROUP_FADE_SECONDS + 5)
+    finally:
+        _ = collector.cancel()
+        await _run_cleanup(
+            lambda: asyncio.gather(collector, return_exceptions=True),
+            lambda: room.restore(before),
+        )
+
+    for report in reports:
+        fraction = min(cast("float", report["at_seconds"]), GROUP_FADE_SECONDS)
+        fraction /= GROUP_FADE_SECONDS
+        expected = GROUP_FADE_FROM + (GROUP_FADE_TO - GROUP_FADE_FROM) * fraction
+        report["expected"] = expected
+        brightness = report["brightness"]
+        report["deviation"] = (
+            None if brightness is None else cast("float", brightness) - expected
+        )
+        at = f"+{report['at_seconds']:5.1f}s"
+        where = f"{at} {report['type']:<13} {report['resource'][:8]}"
+        _say(f"{where} brightness={brightness} expected={expected:.1f}")
+    deviations = [
+        abs(cast("float", r["deviation"]))
+        for r in reports
+        if r["deviation"] is not None
+    ]
+    return {
+        "fade": {
+            "from": GROUP_FADE_FROM,
+            "to": GROUP_FADE_TO,
+            "seconds": GROUP_FADE_SECONDS,
+            "lights": len(members),
+        },
+        "reports": reports,
+        "max_deviation": max(deviations) if deviations else None,
+    }
+
+
 def _minimised(resource: dict[str, Any]) -> dict[str, Any]:
     """Keep only the fields the resource's model knows, as the scrubber does."""
     model = models.RESOURCE_MODELS.get(str(resource.get("type")))
@@ -276,6 +358,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     _ = parser.add_argument("--skip-resume", action="store_true")
     _ = parser.add_argument("--skip-passive", action="store_true")
+    _ = parser.add_argument("--skip-progress", action="store_true")
     _ = parser.add_argument("--listen-minutes", type=float, default=LISTEN_MINUTES)
     return parser.parse_args()
 
@@ -307,6 +390,10 @@ async def main() -> None:
             evidence["resume_after_switch_off"] = await probe_resume_after_switch_off(
                 hue
             )
+        if not args.skip_progress:
+            evidence[
+                "progress_during_group_fade"
+            ] = await probe_progress_during_group_fade(hue)
         if not args.skip_passive:
             evidence["passive_sensors"] = await probe_passive_sensors(
                 hue, max(0.1, cast("float", args.listen_minutes))

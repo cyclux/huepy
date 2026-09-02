@@ -41,9 +41,12 @@ This writes `plan_probe.json`. It fades one tunable-white light in that room
 from 20 to 100 over sixty seconds, switches it off at ten seconds and back on
 at twenty with no other field, samples the light at 11, 21, 30 and 61 seconds
 and records every event frame about it, then restores it. The recorded outcome
-is what the runner's override logic relies on. A second, passive section keeps
+is what the runner's override logic relies on. A second section fades the whole
+room from 30 to 90 over forty seconds and records every progress report from
+the member lights and the room's `grouped_light` against the linear ramp. A
+third, passive section keeps
 one minimised sensor resource of each kind from a snapshot and listens for the
 first event frame of each for up to `--listen-minutes` (default 5); it wants a
 sensor to see a change, so walk past one or press a dimmer while it runs.
-Either section can be skipped with `--skip-resume` / `--skip-passive`. No
-display name is written into the file.
+Any section can be skipped with `--skip-resume` / `--skip-progress` /
+`--skip-passive`. No display name is written into the file.

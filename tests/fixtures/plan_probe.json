@@ -7,7 +7,7 @@
         "button": {
           "button_report": {
             "event": "long_release",
-            "updated": "2020-01-01T00:00:00.008Z"
+            "updated": "2020-01-01T00:00:00.000Z"
           },
           "event_values": [
             "initial_press",
@@ -19,49 +19,49 @@
           "last_event": "long_release",
           "repeat_interval": 800
         },
-        "id": "resource-007",
+        "id": "resource-001",
         "id_v1": "/scrubbed/resource",
         "metadata": {
           "control_id": 2
         },
         "owner": {
-          "rid": "resource-008",
+          "rid": "resource-002",
           "rtype": "device"
         },
         "type": "button"
       },
       "light_level": {
         "enabled": true,
-        "id": "resource-009",
+        "id": "resource-003",
         "id_v1": "/scrubbed/resource",
         "light": {
           "light_level": 7002,
           "light_level_report": {
-            "changed": "2020-01-01T00:00:00.009Z",
+            "changed": "2020-01-01T00:00:00.001Z",
             "light_level": 7002
           },
           "light_level_valid": true
         },
         "owner": {
-          "rid": "resource-010",
+          "rid": "resource-004",
           "rtype": "device"
         },
         "type": "light_level"
       },
       "motion": {
         "enabled": true,
-        "id": "resource-011",
+        "id": "resource-005",
         "id_v1": "/scrubbed/resource",
         "motion": {
           "motion": false,
           "motion_report": {
-            "changed": "2020-01-01T00:00:00.010Z",
+            "changed": "2020-01-01T00:00:00.002Z",
             "motion": false
           },
           "motion_valid": true
         },
         "owner": {
-          "rid": "resource-010",
+          "rid": "resource-004",
           "rtype": "device"
         },
         "sensitivity": {
@@ -72,6 +72,137 @@
         "type": "motion"
       }
     }
+  },
+  "progress_during_group_fade": {
+    "fade": {
+      "from": 30.0,
+      "lights": 4,
+      "seconds": 40,
+      "to": 90.0
+    },
+    "max_deviation": 59.974529275499776,
+    "reports": [
+      {
+        "at_seconds": 0.09698048300015216,
+        "brightness": 90.12,
+        "deviation": 59.974529275499776,
+        "expected": 30.14547072450023,
+        "resource": "resource-012",
+        "type": "light"
+      },
+      {
+        "at_seconds": 0.09698171600030037,
+        "brightness": 90.12,
+        "deviation": 59.974527425999554,
+        "expected": 30.14547257400045,
+        "resource": "resource-013",
+        "type": "light"
+      },
+      {
+        "at_seconds": 0.09698206699977163,
+        "brightness": 90.12,
+        "deviation": 59.97452689950035,
+        "expected": 30.145473100499657,
+        "resource": "resource-014",
+        "type": "light"
+      },
+      {
+        "at_seconds": 0.09698228200068115,
+        "brightness": 90.12,
+        "deviation": 59.97452657699898,
+        "expected": 30.14547342300102,
+        "resource": "resource-015",
+        "type": "light"
+      },
+      {
+        "at_seconds": 1.107603377000487,
+        "brightness": 90.12,
+        "deviation": 58.458594934499274,
+        "expected": 31.66140506550073,
+        "resource": "resource-016",
+        "type": "grouped_light"
+      },
+      {
+        "at_seconds": 14.88378482600092,
+        "brightness": 52.17,
+        "deviation": -0.15567723900137764,
+        "expected": 52.32567723900138,
+        "resource": "resource-014",
+        "type": "light"
+      },
+      {
+        "at_seconds": 15.897073702000853,
+        "brightness": 80.63,
+        "deviation": 26.784389446998716,
+        "expected": 53.84561055300128,
+        "resource": "resource-016",
+        "type": "grouped_light"
+      },
+      {
+        "at_seconds": 20.32930874700105,
+        "brightness": 60.47,
+        "deviation": -0.023963120501576896,
+        "expected": 60.493963120501576,
+        "resource": "resource-013",
+        "type": "light"
+      },
+      {
+        "at_seconds": 21.340585625999665,
+        "brightness": 73.22,
+        "deviation": 11.2091215610005,
+        "expected": 62.0108784389995,
+        "resource": "resource-016",
+        "type": "grouped_light"
+      },
+      {
+        "at_seconds": 22.349712377999822,
+        "brightness": 62.06,
+        "deviation": -1.4645685669997306,
+        "expected": 63.52456856699973,
+        "resource": "resource-015",
+        "type": "light"
+      },
+      {
+        "at_seconds": 22.34971350900014,
+        "brightness": 66.21,
+        "deviation": 2.685429736499785,
+        "expected": 63.52457026350021,
+        "resource": "resource-016",
+        "type": "grouped_light"
+      },
+      {
+        "at_seconds": 33.94864104699991,
+        "brightness": 81.03,
+        "deviation": 0.10703842950013609,
+        "expected": 80.92296157049987,
+        "resource": "resource-014",
+        "type": "light"
+      },
+      {
+        "at_seconds": 34.96185783799956,
+        "brightness": 73.42,
+        "deviation": -9.022786756999338,
+        "expected": 82.44278675699934,
+        "resource": "resource-016",
+        "type": "grouped_light"
+      },
+      {
+        "at_seconds": 42.612811930001044,
+        "brightness": 90.12,
+        "deviation": 0.12000000000000455,
+        "expected": 90.0,
+        "resource": "resource-013",
+        "type": "light"
+      },
+      {
+        "at_seconds": 43.62328809199971,
+        "brightness": 80.83,
+        "deviation": -9.170000000000002,
+        "expected": 90.0,
+        "resource": "resource-016",
+        "type": "grouped_light"
+      }
+    ]
   },
   "resume_after_switch_off": {
     "expected_if_uninterrupted": {
@@ -94,16 +225,16 @@
           "event_id": "1700000000:0",
           "events": [
             {
-              "creationtime": "2020-01-01T00:00:00.001Z",
+              "creationtime": "2020-01-01T00:00:00.003Z",
               "data": [
                 {
-                  "id": "resource-001",
+                  "id": "resource-006",
                   "id_v1": "/scrubbed/resource",
                   "on": {
                     "on": true
                   },
                   "owner": {
-                    "rid": "resource-002",
+                    "rid": "resource-007",
                     "rtype": "device"
                   },
                   "service_id": 0,
@@ -113,21 +244,21 @@
                   "dimming": {
                     "brightness": 20.16
                   },
-                  "id": "resource-001",
+                  "id": "resource-006",
                   "id_v1": "/scrubbed/resource",
                   "owner": {
-                    "rid": "resource-002",
+                    "rid": "resource-007",
                     "rtype": "device"
                   },
                   "service_id": 0,
                   "type": "light"
                 }
               ],
-              "id": "resource-003",
+              "id": "resource-008",
               "type": "update"
             }
           ],
-          "received_at": "2020-01-01T00:00:00.000Z"
+          "received_at": "2020-01-01T00:00:00.004Z"
         }
       },
       {
@@ -136,27 +267,27 @@
           "event_id": "1700000002:0",
           "events": [
             {
-              "creationtime": "2020-01-01T00:00:00.003Z",
+              "creationtime": "2020-01-01T00:00:00.005Z",
               "data": [
                 {
                   "dimming": {
                     "brightness": 100.0
                   },
-                  "id": "resource-001",
+                  "id": "resource-006",
                   "id_v1": "/scrubbed/resource",
                   "owner": {
-                    "rid": "resource-002",
+                    "rid": "resource-007",
                     "rtype": "device"
                   },
                   "service_id": 0,
                   "type": "light"
                 }
               ],
-              "id": "resource-004",
+              "id": "resource-009",
               "type": "update"
             }
           ],
-          "received_at": "2020-01-01T00:00:00.002Z"
+          "received_at": "2020-01-01T00:00:00.006Z"
         }
       },
       {
@@ -165,27 +296,27 @@
           "event_id": "1700000012:0",
           "events": [
             {
-              "creationtime": "2020-01-01T00:00:00.005Z",
+              "creationtime": "2020-01-01T00:00:00.007Z",
               "data": [
                 {
-                  "id": "resource-001",
+                  "id": "resource-006",
                   "id_v1": "/scrubbed/resource",
                   "on": {
                     "on": false
                   },
                   "owner": {
-                    "rid": "resource-002",
+                    "rid": "resource-007",
                     "rtype": "device"
                   },
                   "service_id": 0,
                   "type": "light"
                 }
               ],
-              "id": "resource-005",
+              "id": "resource-010",
               "type": "update"
             }
           ],
-          "received_at": "2020-01-01T00:00:00.004Z"
+          "received_at": "2020-01-01T00:00:00.008Z"
         }
       },
       {
@@ -194,27 +325,27 @@
           "event_id": "1700000022:0",
           "events": [
             {
-              "creationtime": "2020-01-01T00:00:00.007Z",
+              "creationtime": "2020-01-01T00:00:00.009Z",
               "data": [
                 {
-                  "id": "resource-001",
+                  "id": "resource-006",
                   "id_v1": "/scrubbed/resource",
                   "on": {
                     "on": true
                   },
                   "owner": {
-                    "rid": "resource-002",
+                    "rid": "resource-007",
                     "rtype": "device"
                   },
                   "service_id": 0,
                   "type": "light"
                 }
               ],
-              "id": "resource-006",
+              "id": "resource-011",
               "type": "update"
             }
           ],
-          "received_at": "2020-01-01T00:00:00.006Z"
+          "received_at": "2020-01-01T00:00:00.010Z"
         }
       }
     ],

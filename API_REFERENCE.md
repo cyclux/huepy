@@ -1217,7 +1217,9 @@ dropped as redundant — a step that sets no `on` still sends none, so give the
 step that should wake a room `on = true`. Because this layer issues fades
 lasting up to a hundred minutes, a running fade is checked against its own
 arithmetic rather than a time window — movement consistent with the ramp is
-ours; a jump, or a power state the fade did not ask for, is a human. The fade
+ours; a jump, or a power state the fade did not ask for, is a human. Only a
+light's own reports are judged: a room's `grouped_light` reports the average
+of its members' last readings, which mid-fade is not a measurement. The fade
 that follows a hand change starts from where the human left the light. One
 window is blind to brightness, though never to a power change: the
 `catchup_ramp` seconds after a cold start. A switch-off leaves the bridge's

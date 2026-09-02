@@ -28,6 +28,7 @@ portal mirror in `docs/hue-dev-docs/` or this repo's own bridge fixtures.
 | `grouped_light` accepts 6,000,000 ms too | `tests/integration/test_live_plans.py` (opt-in, live) | A room's chained fade is the same shape as a light's |
 | A light's `dimming.brightness` is a transition's *target* from the moment the write is accepted, and a bare switch-off leaves it there; switched back on with no other field, it reports the target again | `tests/fixtures/plan_probe.json`, asserted at `test_plan_probe_measures_a_transition_across_switch_off` | The fade after a switch-off starts from the interrupted fade's target. Only a cold start is blind to brightness |
 | For that bulb the stream carried the target once and no progress report in sixty seconds | same fixture | A missing progress report is normal; the override arithmetic must not expect one |
+| During a 40 s room fade each bulb's own progress reports track the linear ramp within 2 points, one report every 15-20 s; the `grouped_light` reports the average of its members' *last* reports, up to 27 points off the ramp | `tests/fixtures/plan_probe.json`, asserted at `test_plan_probe_measures_progress_reports_during_a_room_fade` | Only `light` reports are judged; a group's report is not a measurement, and its members are all indexed |
 
 The duration ceiling is **measured, not documented** — the API reference gives
 no bound at all. It was probed on a BSB002 at CLIP 1.78.0, and independently
@@ -239,7 +240,13 @@ power state the fade did not ask for — a fade to a brightness is a fade on a
 light that is on. The tolerance is deliberately generous — the bridge reports
 progress on the device's cadence, and a false "that was a human" costs one
 skipped step, while a false "that was us" ignores someone reaching for the
-switch.
+switch. Measured on a room of four, each bulb's own reports sit within two
+points of the ramp, one every fifteen to twenty seconds, and a colour bulb may
+send none at all. The room's `grouped_light` reports something else entirely:
+the average of its members' last reports, a stale mix of the target and each
+bulb's progress that sat twenty-seven points off the ramp and yielded a room
+nobody had touched. `runner._observe()` therefore judges `light` reports only.
+Every member of a room or zone scope is indexed, so nothing is lost.
 
 The corollary that was missed once: `Change.origin == "self"` *is* that time
 window, so the runner must not use it as proof either. Driven through a real
@@ -361,3 +368,4 @@ integration probe establishing whether a third-party app key can POST one.
 | What a bare switch-off leaves as the light's brightness; a real `light_level` resource shape | `tests/test_real_fixtures.py::test_plan_probe_*` |
 | A switch-off keeps the running segment's target, or the off step's starting level; a jump during the fade that follows is seen; a report naming only `on` keeps the brightness; a dimming report during an on-only fade is a human | `TestSwitchOffMemory` |
 | A refused write leaves the previous fade in force, so a switch-off after it remembers what the bridge holds; a refused first segment and a failed tail both retry as a chain | `TestBeliefAfterFailure` |
+| A `grouped_light` report is never judged; a member light's still is | `TestGroupReports` |

@@ -175,6 +175,35 @@ def test_plan_probe_measures_a_transition_across_switch_off() -> None:
     assert dimming == pytest.approx([20.0, 100.0], abs=0.5)
 
 
+def test_plan_probe_measures_progress_reports_during_a_room_fade() -> None:
+    evidence = cast("dict[str, Any]", _load("plan_probe.json"))
+    section = cast("dict[str, Any]", evidence["progress_during_group_fade"])
+    assert section["fade"] == {"from": 30.0, "to": 90.0, "seconds": 40, "lights": 4}
+    reports = cast("list[dict[str, Any]]", section["reports"])
+    # Past the echoes of the target, which the first frames of every fade
+    # carry, each bulb's own progress reports track the linear ramp closely
+    # -- well inside BRIGHTNESS_TOLERANCE.
+    lights = [
+        r
+        for r in reports
+        if r["type"] == "light" and cast("float", r["at_seconds"]) > 2.0
+    ]
+    assert lights, "no progress report from any bulb"
+    assert all(abs(cast("float", r["deviation"])) <= 2.0 for r in lights), lights
+    # The group's dimming is the average of its members' last reports: a
+    # stale mix of the target and each bulb's progress, far off the ramp.
+    group = [
+        r
+        for r in reports
+        if r["type"] == "grouped_light" and cast("float", r["at_seconds"]) > 2.0
+    ]
+    assert group, "no report from the grouped_light"
+    assert max(abs(cast("float", r["deviation"])) for r in group) > 8.0
+    assert section["max_deviation"] == pytest.approx(
+        max(abs(cast("float", r["deviation"])) for r in reports)
+    )
+
+
 def test_plan_probe_records_sensor_representatives_and_frames() -> None:
     evidence = cast("dict[str, Any]", _load("plan_probe.json"))
     passive = cast("dict[str, Any]", evidence["passive_sensors"])
