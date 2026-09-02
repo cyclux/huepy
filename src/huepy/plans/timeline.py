@@ -156,6 +156,37 @@ def resolve_anchor(
     return in_zone(event + datetime.timedelta(seconds=anchor.offset), zone)
 
 
+def _arrival(
+    until: TimeAnchor,
+    at: datetime.datetime,
+    day: datetime.date,
+    zone: Zone,
+    location: Location | None,
+) -> datetime.datetime | None:
+    """Pin a step's ``until`` to the first instant of that anchor after it starts.
+
+    ``at = "22:30"`` with ``until = "01:00"`` means one in the morning of the
+    next day; so does ``until = "sunrise"``. A solar ``until`` that does not
+    occur on either day drops the step, like a solar ``at``.
+
+    Args:
+        until: The arrival anchor.
+        at: When the fade starts.
+        day: The local day the step belongs to.
+        zone: The plan's timezone.
+        location: Where the plan runs, for a solar anchor.
+
+    Returns:
+        The instant the fade must arrive by, or None when the anchor does
+        not occur.
+
+    """
+    end = resolve_anchor(until, day, zone, location)
+    if end is not None and end > at:
+        return end
+    return resolve_anchor(until, day + datetime.timedelta(days=1), zone, location)
+
+
 def waypoints_for_day(
     plan: Plan,
     scenario: Scenario,
@@ -183,7 +214,13 @@ def waypoints_for_day(
         at = resolve_anchor(step.at, day, zone, plan.location)
         if at is None:
             continue
-        ramp = step.ramp if step.ramp is not None else plan.defaults.ramp
+        if step.until is not None:
+            end = _arrival(step.until, at, day, zone, plan.location)
+            if end is None:
+                continue
+            ramp = (end - at).total_seconds()
+        else:
+            ramp = step.ramp if step.ramp is not None else plan.defaults.ramp
         found.append(
             Waypoint(
                 at=at,

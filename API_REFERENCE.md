@@ -1163,6 +1163,7 @@ set = { brightness = 60, kelvin = 2700 }
 | --- | --- | --- |
 | `at` | `[[scenario.step]]` | `"07:30"`, `"sunrise"`, `"sunset+30m"`, `"sunrise-1h15m"`, `"dawn"`, `"dusk"`. |
 | `ramp` | step, rule, scenario | How long the fade takes: `"90s"`, `"45m"`, `"2h"`, `"1h15m"`. |
+| `until` | `[[scenario.step]]` | Instead of `ramp`: when the fade must have arrived, as a second anchor. `at = "sunset+1h30m"` with `until = "01:00"` dims from a floating start to a fixed end, wrapping midnight. |
 | `set` | step, rule, scenario | Target state. The keys are exactly `build_light_payload()`'s: `on`, `brightness`, `xy`, `mirek`, `rgb`, `hex_color`, `kelvin`. |
 | `scope` | `[[scenario]]` | What it drives: `light:Name`, `room:Name`, `zone:Name`. |
 | `priority` | `[[scenario]]` | Higher wins when several scenarios cover one scope. |

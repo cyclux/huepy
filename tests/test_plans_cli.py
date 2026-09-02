@@ -219,6 +219,22 @@ set = { on = true, brightness = 15 }
 """
 
 
+class TestExplainUntil:
+    def test_a_step_with_until_shows_its_arrival(self, tmp_path, capsys):
+        path = tmp_path / "until.toml"
+        _ = path.write_text(
+            PLAN.replace(
+                'at = "sunset+30m"\nramp = "3h"',
+                'at = "sunset+30m"\nuntil = "01:00"',
+            )
+        )
+        assert (
+            main(["plan", "explain", str(path), "--at", "2026-09-01T12:00"]) == EXIT_OK
+        )
+        out = capsys.readouterr().out
+        assert "-> 01:00:00  brightness=20" in out
+
+
 class TestExplainLevels:
     def test_a_level_rule_prints_its_threshold_and_release(self, tmp_path, capsys):
         path = tmp_path / "dusk.toml"

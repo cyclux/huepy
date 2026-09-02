@@ -122,7 +122,7 @@ early all winter — and `[location]` is optional, so this is the default path.
 `combine()` / `in_zone()` resolve it per instant against the system rules. Any
 new code that reaches for a `tzinfo` must go through those two helpers.
 
-## Seven decisions worth remembering
+## Eight decisions worth remembering
 
 ### Every trigger is one path
 
@@ -213,6 +213,17 @@ second camp: a two-hour sunset is two PUTs and then silence, not eighty.
 waypoints, writes a room through its `grouped_light` rather than per bulb, and
 drops `on` when the scope is already on. It also drops a payload that would
 carry nothing but `dynamics`, which is what a redundant `on` leaves behind.
+
+### A fade can name its arrival instead of its length
+
+"Start dimming an hour and a half after sunset, be at the night light by one
+in the morning" is a floating start with a fixed end, and no fixed `ramp`
+expresses it: the length changes with the sunset. A step therefore says
+`until` instead of `ramp`, and the ramp is whatever lies between the two
+anchors, wrapping past midnight when `until` falls earlier in the day than
+`at`. Either anchor may be solar. The runner sees nothing new -- a waypoint
+still has a start and a ramp -- so chaining, catch-up and `explain` all work
+unchanged, and a five-hour dusk simply chains.
 
 ### Interpolation is for catching up, not for scheduling
 

@@ -249,6 +249,38 @@ def level_rule(**keys):
     return {"when": "light_level:Hall sensor", "set": {"brightness": 1}} | keys
 
 
+class TestStepUntil:
+    def test_until_and_ramp_together_are_rejected(self):
+        with pytest.raises(ValidationError, match="one way"):
+            _ = Step.model_validate(
+                {
+                    "at": "22:30",
+                    "ramp": "1h",
+                    "until": "01:00",
+                    "set": {"brightness": 1},
+                }
+            )
+
+    def test_until_alone_is_fine(self):
+        step = Step.model_validate(
+            {"at": "22:30", "until": "01:00", "set": {"brightness": 1}}
+        )
+        assert step.ramp is None
+        assert str(step.until) == "01:00"
+
+    def test_a_solar_until_needs_a_location(self):
+        plan = {
+            "version": 1,
+            "scenario": [
+                scenario(
+                    step=[{"at": "22:30", "until": "sunrise", "set": {"brightness": 1}}]
+                )
+            ],
+        }
+        with pytest.raises(ValidationError, match="needs a \\[location\\]"):
+            _ = Plan.model_validate(plan)
+
+
 class TestLevelThreshold:
     def test_a_light_level_rule_needs_a_threshold(self):
         with pytest.raises(ValidationError, match="'below' or 'above'"):

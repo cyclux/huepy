@@ -132,6 +132,69 @@ class TestTargetAt:
         assert target.brightness == 90
 
 
+UNTIL_PLAN = {
+    "version": 1,
+    "location": {"latitude": 48.137, "longitude": 11.575, "timezone": "Europe/Berlin"},
+    "scenario": [
+        {
+            "name": "evening",
+            "scope": ["room:Living Room"],
+            "step": [
+                {"at": "sunset+1h30m", "ramp": "30m", "set": {"brightness": 56}},
+                {"at": "22:30", "until": "01:00", "set": {"brightness": 1}},
+            ],
+        }
+    ],
+}
+
+
+class TestUntil:
+    def waypoints(self, plan_dict, day=datetime.date(2026, 9, 1)):
+        plan = Plan.model_validate(plan_dict)
+        return waypoints_for_day(plan, plan.scenario[0], day, BERLIN)
+
+    def test_until_past_midnight_lands_the_next_morning(self):
+        found = self.waypoints(UNTIL_PLAN)
+        dim = found[-1]
+        assert dim.at == at(22, 30)
+        assert dim.ends_at == at(1, 0, day=2)
+        assert dim.ramp == 2.5 * 3600
+
+    def test_until_later_the_same_day_is_the_plain_difference(self):
+        plan = {
+            "version": 1,
+            "scenario": [
+                {
+                    "name": "s",
+                    "scope": ["room:Living Room"],
+                    "step": [
+                        {"at": "09:00", "until": "09:45", "set": {"brightness": 1}}
+                    ],
+                }
+            ],
+        }
+        found = self.waypoints(plan)
+        assert found[0].ramp == 45 * 60
+
+    def test_a_solar_until_is_pinned_like_a_solar_at(self):
+        plan = {
+            "version": 1,
+            "location": UNTIL_PLAN["location"],
+            "scenario": [
+                {
+                    "name": "s",
+                    "scope": ["room:Living Room"],
+                    "step": [
+                        {"at": "22:00", "until": "sunrise", "set": {"brightness": 1}}
+                    ],
+                }
+            ],
+        }
+        found = self.waypoints(plan)
+        assert found[0].ends_at.date() == datetime.date(2026, 9, 2)
+        assert datetime.time(6, 0) < found[0].ends_at.time() < datetime.time(7, 0)
+
+
 class TestNextTransition:
     def test_points_at_the_next_anchor(self, plan, scenario):
         assert next_transition(plan, scenario, at(8, 0), BERLIN) == at(9, 0)

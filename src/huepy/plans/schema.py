@@ -237,10 +237,16 @@ class Step(BaseModel):
     The fade *starts* at ``at`` and completes ``ramp`` later. ``at = "sunset"``
     with ``ramp = "2h"`` therefore begins dimming as the sun goes down and
     settles two hours after, which is how someone writing that line reads it.
+    A fade that must *arrive* at a fixed time from a floating start -- dim
+    from an hour after sunset until one in the morning -- says ``until``
+    instead of ``ramp``, and the ramp is whatever lies between.
 
     Attributes:
         at: When the fade begins.
         ramp: How long it takes. Falls back to the plan's default.
+        until: When it must have arrived, as a second anchor. Wraps past
+            midnight when it falls earlier in the day than ``at``. Exclusive
+            with ``ramp``.
         set: Where it ends up.
 
     """
@@ -249,7 +255,27 @@ class Step(BaseModel):
 
     at: Anchor
     ramp: Duration | None = None
+    until: Anchor | None = None
     set: Action
+
+    @model_validator(mode="after")
+    def _one_length(self) -> Self:
+        """Reject a step that says how long it lasts two ways.
+
+        Returns:
+            The validated step.
+
+        Raises:
+            ValueError: If both ``ramp`` and ``until`` are given.
+
+        """
+        if self.ramp is not None and self.until is not None:
+            msg = (
+                f"the step at {self.at} gives both 'ramp' and 'until'; say when "
+                f"the fade ends one way"
+            )
+            raise ValueError(msg)
+        return self
 
 
 type Side = Literal["below", "above"]
@@ -450,6 +476,7 @@ class Scenario(BaseModel):
 
         """
         anchors: list[ClockAnchor | SunAnchor] = [step.at for step in self.step]
+        anchors.extend(step.until for step in self.step if step.until is not None)
         for rule in self.rule:
             if rule.between is not None:
                 anchors.extend(rule.between)
