@@ -165,6 +165,14 @@ State is never updated optimistically. A locally issued transition appears in
 target echo is marked `observation="command_echo"`; later bridge reports are
 marked `"reported"`.
 
+The echo is compared against what the *light* will do with the command, not
+the command as written: a colour temperature outside a bulb's `mirek_schema`
+is clamped by the bridge and echoed clamped, so `_as_the_light_would()` clamps
+the expectation the same way before `_compatible()` runs. Measured on a
+BSB002: a room asked for 455 mirek, bulbs ending at 454 echoed 454, the echo
+was published as `"reported"`, and the plan runner yielded the room to its
+own write.
+
 ## Measured bridge behaviour
 
 These observations came from one BSB002 bridge running CLIP API 1.78.0. They

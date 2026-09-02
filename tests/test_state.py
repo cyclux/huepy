@@ -973,3 +973,64 @@ class TestWriteMatchTolerance:
         target = {"color": {"xy": {"x": 0.5, "y": 0.4}}}
         assert _compatible(target, {"color": {"xy": {"x": 0.5, "y": 0.4}}})
         assert not _compatible(target, {"color": {"xy": {"x": 0.9, "y": 0.4}}})
+
+
+class TestClampedEchoes:
+    async def test_a_colour_temperature_the_bulb_clamps_is_still_an_echo(self, hue):
+        # A room asked for 455 mirek; this bulb ends at 454 and echoes 454.
+        # Measured on a BSB002: without the clamp the echo failed to match,
+        # and the plan runner yielded the room to its own write.
+        resource = light(10)
+        resource["color_temperature"] = {
+            "mirek": 300,
+            "mirek_valid": True,
+            "mirek_schema": {"mirek_minimum": 153, "mirek_maximum": 454},
+        }
+        http = StateHttp([[resource]])
+        hue._http = http
+        async with hue.state as state:
+            stream = state.changes()
+            await state.lights.get("Desk").set(mirek=455, brightness=15, transition=2)
+            await http.connections[0].put(
+                event_frame(
+                    "update",
+                    {
+                        "id": "light-1",
+                        "type": "light",
+                        "dimming": {"brightness": 15},
+                        "color_temperature": {"mirek": 454, "mirek_valid": True},
+                    },
+                )
+            )
+            change = await asyncio.wait_for(anext(stream), 1)
+            assert isinstance(change, Change)
+            assert change.observation == "command_echo"
+            await stream.aclose()
+
+    async def test_a_colour_temperature_off_by_more_than_the_clamp_is_not(self, hue):
+        resource = light(10)
+        resource["color_temperature"] = {
+            "mirek": 300,
+            "mirek_valid": True,
+            "mirek_schema": {"mirek_minimum": 153, "mirek_maximum": 454},
+        }
+        http = StateHttp([[resource]])
+        hue._http = http
+        async with hue.state as state:
+            stream = state.changes()
+            await state.lights.get("Desk").set(mirek=455, brightness=15, transition=2)
+            await http.connections[0].put(
+                event_frame(
+                    "update",
+                    {
+                        "id": "light-1",
+                        "type": "light",
+                        "dimming": {"brightness": 15},
+                        "color_temperature": {"mirek": 400, "mirek_valid": True},
+                    },
+                )
+            )
+            change = await asyncio.wait_for(anext(stream), 1)
+            assert isinstance(change, Change)
+            assert change.observation == "reported"
+            await stream.aclose()

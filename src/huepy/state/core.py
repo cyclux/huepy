@@ -1416,7 +1416,8 @@ class HueState:
         for command in candidates:
             if change.received_at < command.write.sent_at:
                 continue
-            if _compatible(command.target, change.delta):
+            expected = self._as_the_light_would(command.target, change.resource_id)
+            if _compatible(expected, change.delta):
                 if (
                     command.transition_ends_at is not None
                     and change.resource_id not in command.echoed_resources
@@ -1434,6 +1435,50 @@ class HueState:
             if command is not None:
                 return command, "reported"
         return None, "reported"
+
+    def _as_the_light_would(
+        self, target: dict[str, Any], resource_id: str
+    ) -> dict[str, Any]:
+        """Clamp a command's colour temperature to what the reporting light can do.
+
+        Measured: a room was asked for 455 mirek, a bulb whose range ends at
+        454 echoed 454, the echo failed to match, and the plan runner yielded
+        the room to its own write. The bridge clamps silently, so the
+        expectation has to be clamped the same way.
+
+        Args:
+            target: The command's payload, minus dynamics.
+            resource_id: The light that reported.
+
+        Returns:
+            The target with ``color_temperature.mirek`` inside the light's
+            ``mirek_schema``; the target itself when nothing needs clamping.
+
+        """
+        temperature = target.get("color_temperature")
+        if not isinstance(temperature, dict):
+            return target
+        asked = cast("dict[str, Any]", temperature).get("mirek")
+        light = self.lights.by_id(resource_id)
+        schema = (
+            light.color_temperature.mirek_schema
+            if light is not None and light.color_temperature is not None
+            else None
+        )
+        if (
+            isinstance(asked, bool)
+            or not isinstance(asked, (int, float))
+            or schema is None
+        ):
+            return target
+        clamped = float(asked)
+        if schema.mirek_minimum is not None:
+            clamped = max(clamped, schema.mirek_minimum)
+        if schema.mirek_maximum is not None:
+            clamped = min(clamped, schema.mirek_maximum)
+        if clamped == asked:
+            return target
+        return {**target, "color_temperature": {**temperature, "mirek": clamped}}
 
     def _prune_commands(self, now: datetime) -> None:
         active_ids = {fade.command_id for fade in self._fades.values()}

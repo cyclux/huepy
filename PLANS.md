@@ -282,6 +282,14 @@ write wins, and nothing in the arbiter can reconcile two of its own scopes
 moving one bulb. `validate` warns about the overlap; the plan author drives
 the light one way.
 
+A mode asking for 2200 K -- 455 mirek, one past what these bulbs do --
+yielded the room to its own write: the bulbs echoed the clamped 454, the
+state layer's echo match failed on the colour temperature, and the runner
+judged the echo against its interpolation. The fix is the state layer's
+(`HueState._as_the_light_would()` clamps the expectation to the reporting
+light's `mirek_schema`), because the bridge clamps silently and any client
+comparing its own command against the echo hits it.
+
 The corollary that was missed once: `Change.origin == "self"` *is* that time
 window, so the runner must not use it as proof either. Driven through a real
 `HueState`, a brightness of 95 reported thirty minutes into a fade expecting 73
