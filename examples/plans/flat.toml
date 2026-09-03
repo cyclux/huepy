@@ -19,7 +19,10 @@ ramp = "30m"
 on_manual_change = "yield"
 
 # The base day curve. Nothing else claims the living room, so this drives it
-# from waking up to going to bed.
+# from waking up to going to bed. It is a whole day on purpose: the last step
+# holds until the first, and a bulb keeps the level and colour written to it
+# while off, so a curve that only described the evening would bring the night
+# light back with the first switch-on the next morning.
 [[scenario]]
 name = "living-room-day"
 scope = ["room:Living Room"]

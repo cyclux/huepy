@@ -1,6 +1,6 @@
 """Measure what the plan runner still assumes about a bulb, and capture sensor frames.
 
-Two probes, both opt-in and both against the room named by ``PLAN_ROOM``::
+Four probes, all opt-in and all against the room named by ``PLAN_ROOM``::
 
     HUEPY_INTEGRATION=1 uv run python -m tests.integration.probe_plans
 
@@ -9,6 +9,13 @@ it off part-way, switches it back on with no other field, and samples where the
 brightness goes from there. The runner's override logic treats the fade after a
 bare switch-off as blind to brightness because nothing had measured whether a
 bulb resumes an interrupted transition; this is that measurement.
+
+``write_while_off`` switches one light off, writes it a brightness and a
+colour temperature with no ``on``, and switches it back on with no other field,
+the way a dimmer does. A day curve whose steps set no ``on`` shapes rooms that
+are off through exactly this write, so whether the bulb keeps it is what
+decides if a morning step can undo the night light in a room nobody has
+switched on yet.
 
 ``passive_sensors`` writes nothing. It keeps one minimised representative of
 each sensor type from a snapshot and then listens for the first event frame of
@@ -29,7 +36,7 @@ from pathlib import Path
 from time import monotonic
 from typing import Any, Literal, cast
 
-from huepy import Hue, models
+from huepy import Hue, HueError, models
 from huepy.client.protocol import SSEFrame
 
 from .capture_phase0 import (
@@ -52,6 +59,11 @@ SWITCH_ON_AT = 20
 SAMPLE_AT = (11, 21, 30, 61)
 """When to read the light back: once while off, then three times after switch-on."""
 CLASSIFY_TOLERANCE = 5.0
+OFF_WRITE_LIGHT = "Arbeitszimmer Fenster"
+"""The member to write to while off; the fade probe's light if it is absent."""
+OFF_WRITE_BRIGHTNESS = 100.0
+OFF_WRITE_MIREK = 366
+"""Hue's "Bright" preset, the value a day step would store."""
 GROUP_FADE_SECONDS = 40
 GROUP_FADE_FROM = 30.0
 GROUP_FADE_TO = 90.0
@@ -62,6 +74,7 @@ PROGRESS_EVERY = 30
 OUTPUT_FILE = Path(OUTPUT, "plan_probe.json")
 
 type Outcome = Literal["frozen", "target", "continued", "resumed", "unclassified"]
+type OffWriteOutcome = Literal["stored", "ignored", "refused", "unclassified"]
 
 
 def expected_brightness(at_seconds: float) -> float:
@@ -111,6 +124,37 @@ def classify_resume(samples: list[dict[str, Any]]) -> Outcome:
     if _near(first, retained) and first < middle < last and last >= finished:
         return "resumed"
     return "unclassified"
+
+
+def classify_off_write(
+    written: bool, samples: dict[str, dict[str, Any]]
+) -> OffWriteOutcome:
+    """Say what a bulb did with a brightness and colour written while it was off.
+
+    Args:
+        written: Whether the bridge accepted the write at all.
+        samples: The light read back after the write (``after_write_off``) and
+            after the bare switch-on (``after_bare_on``).
+
+    Returns:
+        ``"refused"`` when the bridge rejected the write; ``"stored"`` when
+        the bulb came on at the written values; ``"ignored"`` when it came on
+        at something else; ``"unclassified"`` when a sample is missing.
+
+    """
+    if not written:
+        return "refused"
+    lit = samples.get("after_bare_on")
+    if lit is None or lit.get("brightness") is None or lit.get("mirek") is None:
+        return "unclassified"
+    if lit["on"] is not True:
+        return "unclassified"
+    if (
+        _near(cast("float", lit["brightness"]), OFF_WRITE_BRIGHTNESS)
+        and lit["mirek"] == OFF_WRITE_MIREK
+    ):
+        return "stored"
+    return "ignored"
 
 
 def _say(message: str) -> None:
@@ -222,6 +266,61 @@ async def probe_resume_after_switch_off(hue: Hue) -> dict[str, Any]:
         },
         "samples": samples,
         "frames": frames,
+        "outcome": outcome,
+    }
+
+
+def _light_sample(light: models.Light) -> dict[str, Any]:
+    return {"on": light.is_on, "brightness": light.brightness, "mirek": light.mirek}
+
+
+async def probe_write_while_off(hue: Hue) -> dict[str, Any]:
+    """Write a level and colour to an off bulb, then switch it on bare."""
+    room = await hue.rooms.get(PLAN_ROOM)
+    members = [
+        light
+        for light in await room.lights()
+        if light.dimming is not None and light.color_temperature is not None
+    ]
+    if not members:
+        msg = f"{PLAN_ROOM!r} has no tunable-white light to probe"
+        raise RuntimeError(msg)
+    light = next((m for m in members if m.name == OFF_WRITE_LIGHT), members[0])
+    before = light.capture()
+    samples: dict[str, dict[str, Any]] = {}
+    written = False
+    refusal: str | None = None
+    try:
+        _ = await light.set(on=False)
+        await asyncio.sleep(SUBSCRIBE_SETTLE_SECONDS)
+        samples["while_off"] = _light_sample(await light.refresh())
+        _say(f"switched off: {samples['while_off']}")
+        try:
+            _ = await light.set(brightness=OFF_WRITE_BRIGHTNESS, mirek=OFF_WRITE_MIREK)
+        except HueError as exc:
+            refusal = str(exc)
+            _say(f"write while off refused: {refusal}")
+        else:
+            written = True
+            _say(f"wrote brightness={OFF_WRITE_BRIGHTNESS:.0f} mirek={OFF_WRITE_MIREK}")
+        await asyncio.sleep(SUBSCRIBE_SETTLE_SECONDS)
+        samples["after_write_off"] = _light_sample(await light.refresh())
+        _say(f"read back while off: {samples['after_write_off']}")
+        _ = await light.set(on=True)
+        await asyncio.sleep(SUBSCRIBE_SETTLE_SECONDS)
+        samples["after_bare_on"] = _light_sample(await light.refresh())
+        _say(f"switched on, no other field: {samples['after_bare_on']}")
+    finally:
+        await _run_cleanup(lambda: _restore_light(hue, before))
+
+    outcome = classify_off_write(written, samples)
+    _say(f"outcome: {outcome}")
+    return {
+        "light": light.id,
+        "write": {"brightness": OFF_WRITE_BRIGHTNESS, "mirek": OFF_WRITE_MIREK},
+        "written": written,
+        "refusal": refusal,
+        "samples": samples,
         "outcome": outcome,
     }
 
@@ -360,6 +459,7 @@ def parse_args() -> argparse.Namespace:
     _ = parser.add_argument("--skip-resume", action="store_true")
     _ = parser.add_argument("--skip-passive", action="store_true")
     _ = parser.add_argument("--skip-progress", action="store_true")
+    _ = parser.add_argument("--skip-off-write", action="store_true")
     _ = parser.add_argument("--listen-minutes", type=float, default=LISTEN_MINUTES)
     return parser.parse_args()
 
@@ -394,6 +494,8 @@ async def main() -> None:
             fresh[
                 "progress_during_group_fade"
             ] = await probe_progress_during_group_fade(hue)
+        if not args.skip_off_write:
+            fresh["write_while_off"] = await probe_write_while_off(hue)
         if not args.skip_passive:
             fresh["passive_sensors"] = await probe_passive_sensors(
                 hue, max(0.1, cast("float", args.listen_minutes))

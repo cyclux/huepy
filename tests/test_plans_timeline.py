@@ -149,9 +149,10 @@ UNTIL_PLAN = {
 
 
 class TestUntil:
-    def waypoints(self, plan_dict, day=datetime.date(2026, 9, 1)):
+    def waypoints(self, plan_dict, day: datetime.date | None = None):
         plan = Plan.model_validate(plan_dict)
-        return waypoints_for_day(plan, plan.scenario[0], day, BERLIN)
+        when = datetime.date(2026, 9, 1) if day is None else day
+        return waypoints_for_day(plan, plan.scenario[0], when, BERLIN)
 
     def test_until_past_midnight_lands_the_next_morning(self):
         found = self.waypoints(UNTIL_PLAN)

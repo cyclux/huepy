@@ -1191,6 +1191,14 @@ rule can be fired by a signal. The one exception is `light_level:`, which
 needs a threshold and so only makes sense on a rule. Every rule naming one
 sensor must agree on its threshold.
 
+A scenario's steps describe a whole day: the last step stays in force until
+the first step comes round again, so a curve that ends at a night light is
+still claiming the night light at noon. That matters even for rooms that are
+off. A step that sets no `on` never switches a room on, but the bridge keeps
+the level and colour it writes to a dark bulb, and that is what the next bare
+`on` from a dimmer lights it with. Give every curve a morning step, `on` or
+not, so the day look is stored before anyone reaches for the switch.
+
 ### A fade is one request, not a tick loop
 
 The bridge runs a transition of up to 6,000 seconds from a single PUT, so a

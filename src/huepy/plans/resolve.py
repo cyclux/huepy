@@ -432,15 +432,16 @@ def _overlaps(scopes: dict[str, tuple[Binding, ...]]) -> list[str]:
                 )
                 if earlier[0] == binding.path:
                     continue
-                pair = tuple(sorted((earlier[1], str(binding.selector))))
-                if pair in warned:
+                first, second = sorted((earlier[1], str(binding.selector)))
+                if (first, second) in warned:
                     continue
-                warned.add(pair)
-                found.append(
-                    f"{pair[0]} and {pair[1]} both drive a light. A write to "
-                    f"one is invisible to the other's arithmetic, and the last "
-                    f"write wins; drive it one way"
+                warned.add((first, second))
+                message = (
+                    f"{first} and {second} both drive a light. A write to one is "
+                    "invisible to the other's arithmetic, and the last write wins; "
+                    "drive it one way"
                 )
+                found.append(message)
     return found
 
 

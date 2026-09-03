@@ -11,7 +11,7 @@ from huepy import models
 from huepy.models.event import HueEvent
 
 from .integration.capture_phase0 import Scrubber, _run_cleanup
-from .integration.probe_plans import classify_resume
+from .integration.probe_plans import classify_off_write, classify_resume
 
 FIXTURES = Path(__file__).parent / "fixtures"
 UUID = re.compile(
@@ -173,6 +173,27 @@ def test_plan_probe_measures_a_transition_across_switch_off() -> None:
     # Two dimming frames in the whole minute: the echo of the baseline and the
     # echo of the target. This bulb pushed no progress report at all.
     assert dimming == pytest.approx([20.0, 100.0], abs=0.5)
+
+
+def test_plan_probe_measures_a_write_to_an_off_bulb() -> None:
+    evidence = cast("dict[str, Any]", _load("plan_probe.json"))
+    section = cast("dict[str, Any]", evidence["write_while_off"])
+    assert section["write"] == {"brightness": 100.0, "mirek": 366}
+    assert section["written"] is True
+    assert section["refusal"] is None
+
+    samples = cast("dict[str, dict[str, Any]]", section["samples"])
+    assert samples["while_off"]["on"] is False
+    assert samples["after_write_off"]["on"] is False
+    # The bulb was already at 100 when switched off, so the colour temperature
+    # is the field that proves the write was kept: 156 before, 366 read back
+    # while still off, and 366 again when a bare `on` lit it.
+    assert samples["while_off"]["mirek"] != 366
+    assert samples["after_write_off"]["mirek"] == 366
+    assert samples["after_bare_on"] == {"on": True, "brightness": 100.0, "mirek": 366}
+    assert classify_off_write(True, samples) == section["outcome"] == "stored"
+    assert classify_off_write(False, samples) == "refused"
+    assert classify_off_write(True, {}) == "unclassified"
 
 
 def test_plan_probe_measures_progress_reports_during_a_room_fade() -> None:

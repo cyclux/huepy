@@ -197,9 +197,11 @@ class TestResolveTriggers:
         )
         resolved = await resolve(bridge, plan)
         assert resolved.warnings == (
-            "light:Corner Lamp and room:Living Room both drive a light. A write "
-            "to one is invisible to the other's arithmetic, and the last write "
-            "wins; drive it one way",
+            (
+                "light:Corner Lamp and room:Living Room both drive a light. A write "
+                "to one is invisible to the other's arithmetic, and the last write "
+                "wins; drive it one way"
+            ),
         )
 
     async def test_two_scenarios_on_one_room_do_not_overlap(self, bridge):

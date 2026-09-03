@@ -181,7 +181,7 @@ async def hand(opt_in: None) -> AsyncIterator[Hue]:
 
 
 async def dimmable_members(room: models.Room) -> list[models.Light]:
-    """The room's real, dimmable lights: what a test reads back and touches by hand."""
+    """List the room's real, dimmable lights: what a test reads back and touches."""
     members = [
         light
         for light in await room.lights()

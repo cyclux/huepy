@@ -419,5 +419,32 @@
         "on": true
       }
     ]
+  },
+  "write_while_off": {
+    "light": "resource-001",
+    "outcome": "stored",
+    "refusal": null,
+    "samples": {
+      "after_bare_on": {
+        "brightness": 100.0,
+        "mirek": 366,
+        "on": true
+      },
+      "after_write_off": {
+        "brightness": 100.0,
+        "mirek": 366,
+        "on": false
+      },
+      "while_off": {
+        "brightness": 100.0,
+        "mirek": 156,
+        "on": false
+      }
+    },
+    "write": {
+      "brightness": 100.0,
+      "mirek": 366
+    },
+    "written": true
   }
 }
