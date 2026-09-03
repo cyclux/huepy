@@ -1194,10 +1194,13 @@ sensor must agree on its threshold.
 A scenario's steps describe a whole day: the last step stays in force until
 the first step comes round again, so a curve that ends at a night light is
 still claiming the night light at noon. That matters even for rooms that are
-off. A step that sets no `on` never switches a room on, but the bridge keeps
-the level and colour it writes to a dark bulb, and that is what the next bare
-`on` from a dimmer lights it with. Give every curve a morning step, `on` or
-not, so the day look is stored before anyone reaches for the switch.
+off. A step that sets no `on` never switches a light on, but a dark bulb keeps
+the level and colour written to it, and that is what the next bare `on` from
+a dimmer lights it with. Give every curve a morning step, `on` or not, so the
+day look is stored before anyone reaches for the switch. That write has to
+reach the bulb itself: through a room's `grouped_light` it is applied only to
+members that are on, so a curve meant to shape dark rooms lists them as
+`light:` scopes rather than `room:`.
 
 ### A fade is one request, not a tick loop
 

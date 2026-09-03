@@ -48,10 +48,11 @@ third section switches one
 tunable-white light off, writes it a brightness and a colour temperature with
 no `on`, and switches it back on with no other field, the way a dimmer does;
 whether the bulb comes on at the written values is what lets a day curve's
-morning step undo the night light in a room nobody has switched on. A fourth,
-passive section keeps
+morning step undo the night light in a room nobody has switched on. A fourth
+section asks the same of the room, written through its `grouped_light`. A
+fifth, passive section keeps
 one minimised sensor resource of each kind from a snapshot and listens for the
 first event frame of each for up to `--listen-minutes` (default 5); it wants a
 sensor to see a change, so walk past one or press a dimmer while it runs.
 Any section can be skipped with `--skip-resume` / `--skip-progress` /
-`--skip-off-write` / `--skip-passive`. No display name is written into the file.
+`--skip-off-write` / `--skip-group-off-write` / `--skip-passive`. No display name is written into the file.

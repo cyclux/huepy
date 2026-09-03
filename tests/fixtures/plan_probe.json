@@ -1,4 +1,74 @@
 {
+  "group_write_while_off": {
+    "grouped_light": "resource-002",
+    "outcome": "ignored",
+    "samples": {
+      "after_bare_on": [
+        {
+          "brightness": 100.0,
+          "light": "resource-003",
+          "mirek": 250,
+          "on": true
+        },
+        {
+          "brightness": 100.0,
+          "light": "resource-004",
+          "mirek": 250,
+          "on": true
+        },
+        {
+          "brightness": 100.0,
+          "light": "resource-001",
+          "mirek": 250,
+          "on": true
+        }
+      ],
+      "after_write_off": [
+        {
+          "brightness": 100.0,
+          "light": "resource-003",
+          "mirek": 250,
+          "on": false
+        },
+        {
+          "brightness": 100.0,
+          "light": "resource-004",
+          "mirek": 250,
+          "on": false
+        },
+        {
+          "brightness": 100.0,
+          "light": "resource-001",
+          "mirek": 250,
+          "on": false
+        }
+      ],
+      "while_off": [
+        {
+          "brightness": 100.0,
+          "light": "resource-003",
+          "mirek": 250,
+          "on": false
+        },
+        {
+          "brightness": 100.0,
+          "light": "resource-004",
+          "mirek": 250,
+          "on": false
+        },
+        {
+          "brightness": 100.0,
+          "light": "resource-001",
+          "mirek": 250,
+          "on": false
+        }
+      ]
+    },
+    "write": {
+      "brightness": 100.0,
+      "mirek": 366
+    }
+  },
   "passive_sensors": {
     "frames": {
       "light_level": {
@@ -437,7 +507,7 @@
       },
       "while_off": {
         "brightness": 100.0,
-        "mirek": 156,
+        "mirek": 250,
         "on": false
       }
     },

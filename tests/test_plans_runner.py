@@ -74,6 +74,7 @@ async def blocking_sleep(_seconds):
 
 ON_PLAN = {
     "version": 1,
+    "location": {"latitude": 48.137, "longitude": 11.575, "timezone": "Europe/Berlin"},
     "defaults": {"catchup_ramp": "5s"},
     "scenario": [
         {
@@ -89,6 +90,7 @@ ON_PLAN = {
 
 CHAINED_PLAN = {
     "version": 1,
+    "location": {"latitude": 48.137, "longitude": 11.575, "timezone": "Europe/Berlin"},
     "scenario": [
         {
             "name": "long",
@@ -341,6 +343,7 @@ class TestFadeAttribution:
 
 PRIORITY_PLAN = {
     "version": 1,
+    "location": {"latitude": 48.137, "longitude": 11.575, "timezone": "Europe/Berlin"},
     "scenario": [
         {
             "name": "base",
@@ -743,6 +746,11 @@ class TestSharedLights:
         http.queue("/clip/v2/resource", envelope(*bridge_resources()))
         plan = {
             "version": 1,
+            "location": {
+                "latitude": 48.137,
+                "longitude": 11.575,
+                "timezone": "Europe/Berlin",
+            },
             "scenario": [
                 {
                     "name": "room",
@@ -903,6 +911,7 @@ def light_level(at, lux, *, valid=True):
 
 RULE_PLAN: dict[str, Any] = {
     "version": 1,
+    "location": {"latitude": 48.137, "longitude": 11.575, "timezone": "Europe/Berlin"},
     "defaults": {"catchup_ramp": "5s"},
     "scenario": [
         {
@@ -1440,6 +1449,7 @@ class TestRuleRaces:
 
 WEEKEND_ONLY_PLAN = {
     "version": 1,
+    "location": {"latitude": 48.137, "longitude": 11.575, "timezone": "Europe/Berlin"},
     "scenario": [
         {
             "name": "weekend",
@@ -1576,6 +1586,7 @@ class TestRestart:
 
 RAMPED_ON_PLAN = {
     "version": 1,
+    "location": {"latitude": 48.137, "longitude": 11.575, "timezone": "Europe/Berlin"},
     "defaults": {"catchup_ramp": "5s"},
     "scenario": [
         {
@@ -1727,6 +1738,7 @@ class TestCloseDuringSettle:
 
 LONG_FADE_PLAN = {
     "version": 1,
+    "location": {"latitude": 48.137, "longitude": 11.575, "timezone": "Europe/Berlin"},
     "defaults": {"catchup_ramp": "5s"},
     "scenario": [
         {
@@ -1838,6 +1850,7 @@ class TestWithRealState:
 
 OFF_AT_NIGHT_PLAN = {
     "version": 1,
+    "location": {"latitude": 48.137, "longitude": 11.575, "timezone": "Europe/Berlin"},
     "defaults": {"catchup_ramp": "5s"},
     "scenario": [
         {
@@ -2011,6 +2024,11 @@ class TestCloseMidPass:
         http.queue("/clip/v2/resource", envelope(*bridge_resources()))
         plan = {
             "version": 1,
+            "location": {
+                "latitude": 48.137,
+                "longitude": 11.575,
+                "timezone": "Europe/Berlin",
+            },
             "scenario": [
                 {
                     "name": "room",
@@ -2124,6 +2142,11 @@ class TestSwitchOffMemory:
         # since; the level the off step started from is what the bridge holds.
         plan = {
             "version": 1,
+            "location": {
+                "latitude": 48.137,
+                "longitude": 11.575,
+                "timezone": "Europe/Berlin",
+            },
             "defaults": {"catchup_ramp": "5s"},
             "scenario": [
                 {
@@ -2161,6 +2184,11 @@ class TestSwitchOffMemory:
         # a dimming report with; waving one through left the dial unremembered.
         plan = {
             "version": 1,
+            "location": {
+                "latitude": 48.137,
+                "longitude": 11.575,
+                "timezone": "Europe/Berlin",
+            },
             "defaults": {"catchup_ramp": "5s"},
             "scenario": [
                 {
@@ -2427,6 +2455,7 @@ class TestGroupReports:
 
 OFF_WITH_RAMP_PLAN = {
     "version": 1,
+    "location": {"latitude": 48.137, "longitude": 11.575, "timezone": "Europe/Berlin"},
     "defaults": {"catchup_ramp": "5s"},
     "scenario": [
         {

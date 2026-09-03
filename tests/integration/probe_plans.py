@@ -17,6 +17,11 @@ are off through exactly this write, so whether the bulb keeps it is what
 decides if a morning step can undo the night light in a room nobody has
 switched on yet.
 
+``group_write_while_off`` asks the same question of the room: the runner
+writes a room through its ``grouped_light``, and whether that write lights an
+off room, stores in its dark bulbs, or passes them by is what a day curve's
+morning step does to a room nobody has switched on.
+
 ``passive_sensors`` writes nothing. It keeps one minimised representative of
 each sensor type from a snapshot and then listens for the first event frame of
 each, so a ``light_level`` trigger can be checked against a real delta.
@@ -38,6 +43,7 @@ from typing import Any, Literal, cast
 
 from huepy import Hue, HueError, models
 from huepy.client.protocol import SSEFrame
+from huepy.models.common import RESOURCE_ROOT
 
 from .capture_phase0 import (
     OPT_IN_ENV,
@@ -47,7 +53,7 @@ from .capture_phase0 import (
     _restore_light,
     _run_cleanup,
 )
-from .conftest import PLAN_ROOM
+from .conftest import PLAN_ROOM, PLAN_ROOM_IGNORED
 
 PROBE_LIGHT = "Arbeitszimmer Mitte"
 """The tunable-white member to fade; the first dimmable member if it is absent."""
@@ -64,6 +70,8 @@ OFF_WRITE_LIGHT = "Arbeitszimmer Fenster"
 OFF_WRITE_BRIGHTNESS = 100.0
 OFF_WRITE_MIREK = 366
 """Hue's "Bright" preset, the value a day step would store."""
+OFF_WRITE_BASELINE_MIREK = 250
+"""Written before the switch-off so the read-back can only be the probe's own write."""
 GROUP_FADE_SECONDS = 40
 GROUP_FADE_FROM = 30.0
 GROUP_FADE_TO = 90.0
@@ -75,6 +83,7 @@ OUTPUT_FILE = Path(OUTPUT, "plan_probe.json")
 
 type Outcome = Literal["frozen", "target", "continued", "resumed", "unclassified"]
 type OffWriteOutcome = Literal["stored", "ignored", "refused", "unclassified"]
+type GroupWriteOutcome = Literal["switched_on", "stored", "ignored", "unclassified"]
 
 
 def expected_brightness(at_seconds: float) -> float:
@@ -147,12 +156,41 @@ def classify_off_write(
     lit = samples.get("after_bare_on")
     if lit is None or lit.get("brightness") is None or lit.get("mirek") is None:
         return "unclassified"
-    if lit["on"] is not True:
+    dark = samples.get("while_off")
+    if lit["on"] is not True or dark is None or dark.get("mirek") == OFF_WRITE_MIREK:
         return "unclassified"
     if (
         _near(cast("float", lit["brightness"]), OFF_WRITE_BRIGHTNESS)
         and lit["mirek"] == OFF_WRITE_MIREK
     ):
+        return "stored"
+    return "ignored"
+
+
+def classify_group_write(samples: dict[str, list[dict[str, Any]]]) -> GroupWriteOutcome:
+    """Say what a room's dark bulbs did with a level and colour written to the room.
+
+    Args:
+        samples: Each member read back after the room write (``after_write_off``)
+            and after the bare room switch-on (``after_bare_on``).
+
+    Returns:
+        ``"switched_on"`` when the write alone lit a member; ``"stored"`` when
+        they stayed off and came on at the written colour; ``"ignored"`` when
+        they came on at something else; ``"unclassified"`` when a sample is
+        missing.
+
+    """
+    written = samples.get("after_write_off")
+    lit = samples.get("after_bare_on")
+    if not written or not lit:
+        return "unclassified"
+    if any(member["on"] is True for member in written):
+        return "switched_on"
+    dark = samples.get("while_off", [])
+    if any(member["mirek"] == OFF_WRITE_MIREK for member in dark):
+        return "unclassified"
+    if all(member["mirek"] == OFF_WRITE_MIREK for member in lit if member["mirek"]):
         return "stored"
     return "ignored"
 
@@ -291,6 +329,8 @@ async def probe_write_while_off(hue: Hue) -> dict[str, Any]:
     written = False
     refusal: str | None = None
     try:
+        _ = await light.set(on=True, mirek=OFF_WRITE_BASELINE_MIREK)
+        await asyncio.sleep(SUBSCRIBE_SETTLE_SECONDS)
         _ = await light.set(on=False)
         await asyncio.sleep(SUBSCRIBE_SETTLE_SECONDS)
         samples["while_off"] = _light_sample(await light.refresh())
@@ -320,6 +360,60 @@ async def probe_write_while_off(hue: Hue) -> dict[str, Any]:
         "write": {"brightness": OFF_WRITE_BRIGHTNESS, "mirek": OFF_WRITE_MIREK},
         "written": written,
         "refusal": refusal,
+        "samples": samples,
+        "outcome": outcome,
+    }
+
+
+async def _member_samples(room: models.Room) -> list[dict[str, Any]]:
+    return [
+        {"light": light.id, **_light_sample(light)}
+        for light in await room.lights()
+        if light.name not in PLAN_ROOM_IGNORED and light.color_temperature is not None
+    ]
+
+
+async def probe_group_write_while_off(hue: Hue) -> dict[str, Any]:
+    """Write a level and colour to a dark room's grouped_light, then switch it on."""
+    room = await hue.rooms.get(PLAN_ROOM)
+    service = room.service_id(models.ResourceType.GROUPED_LIGHT)
+    if service is None:
+        msg = f"{PLAN_ROOM!r} has no grouped_light service"
+        raise RuntimeError(msg)
+    path = f"{RESOURCE_ROOT}/grouped_light/{service}"
+    before = await room.capture()
+    samples: dict[str, list[dict[str, Any]]] = {}
+    try:
+        baseline = {
+            "on": {"on": True},
+            "color_temperature": {"mirek": OFF_WRITE_BASELINE_MIREK},
+        }
+        _ = await hue.http.put(path, baseline)
+        await asyncio.sleep(SUBSCRIBE_SETTLE_SECONDS)
+        _ = await hue.http.put(path, {"on": {"on": False}})
+        await asyncio.sleep(SUBSCRIBE_SETTLE_SECONDS)
+        samples["while_off"] = await _member_samples(room)
+        _say(f"room switched off: {samples['while_off']}")
+        payload = {
+            "dimming": {"brightness": OFF_WRITE_BRIGHTNESS},
+            "color_temperature": {"mirek": OFF_WRITE_MIREK},
+        }
+        _ = await hue.http.put(path, payload)
+        await asyncio.sleep(SUBSCRIBE_SETTLE_SECONDS)
+        samples["after_write_off"] = await _member_samples(room)
+        _say(f"room read back: {samples['after_write_off']}")
+        _ = await hue.http.put(path, {"on": {"on": True}})
+        await asyncio.sleep(SUBSCRIBE_SETTLE_SECONDS)
+        samples["after_bare_on"] = await _member_samples(room)
+        _say(f"room switched on, no other field: {samples['after_bare_on']}")
+    finally:
+        await _run_cleanup(lambda: room.restore(before))
+
+    outcome = classify_group_write(samples)
+    _say(f"outcome: {outcome}")
+    return {
+        "grouped_light": service,
+        "write": {"brightness": OFF_WRITE_BRIGHTNESS, "mirek": OFF_WRITE_MIREK},
         "samples": samples,
         "outcome": outcome,
     }
@@ -460,6 +554,7 @@ def parse_args() -> argparse.Namespace:
     _ = parser.add_argument("--skip-passive", action="store_true")
     _ = parser.add_argument("--skip-progress", action="store_true")
     _ = parser.add_argument("--skip-off-write", action="store_true")
+    _ = parser.add_argument("--skip-group-off-write", action="store_true")
     _ = parser.add_argument("--listen-minutes", type=float, default=LISTEN_MINUTES)
     return parser.parse_args()
 
@@ -496,6 +591,8 @@ async def main() -> None:
             ] = await probe_progress_during_group_fade(hue)
         if not args.skip_off_write:
             fresh["write_while_off"] = await probe_write_while_off(hue)
+        if not args.skip_group_off_write:
+            fresh["group_write_while_off"] = await probe_group_write_while_off(hue)
         if not args.skip_passive:
             fresh["passive_sensors"] = await probe_passive_sensors(
                 hue, max(0.1, cast("float", args.listen_minutes))

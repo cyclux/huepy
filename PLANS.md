@@ -29,6 +29,7 @@ portal mirror in `docs/hue-dev-docs/` or this repo's own bridge fixtures.
 | A light's `dimming.brightness` is a transition's *target* from the moment the write is accepted, and a bare switch-off leaves it there; switched back on with no other field, it reports the target again | `tests/fixtures/plan_probe.json`, asserted at `test_plan_probe_measures_a_transition_across_switch_off` | The fade after a switch-off starts from the interrupted fade's target. Only a cold start is blind to brightness |
 | For that bulb the stream carried the target once and no progress report in sixty seconds | same fixture | A missing progress report is normal; the override arithmetic must not expect one |
 | A brightness and colour temperature written to an *off* bulb with no `on` are accepted, read back while it is still off, and are what a bare `on` lights it with | `tests/fixtures/plan_probe.json`, asserted at `test_plan_probe_measures_a_write_to_an_off_bulb` | A step that sets no `on` shapes a dark room's next switch-on. That is how a morning step undoes the night light, and how a curve that stops at the night light leaves it in every bulb for the morning |
+| The same write through a room's `grouped_light` passes its dark members by: they read the old colour while off and come on at it | `tests/fixtures/plan_probe.json`, asserted at `test_plan_probe_measures_a_room_write_to_dark_bulbs` | A curve that must shape rooms nobody has switched on is written to `light:` scopes, not `room:`. The executor does not fan a room write out to its dark members; whether it should is an open decision |
 | During a 40 s room fade each bulb's own progress reports track the linear ramp within 2 points, one report every 15-20 s; the `grouped_light` reports the average of its members' *last* reports, up to 27 points off the ramp | `tests/fixtures/plan_probe.json`, asserted at `test_plan_probe_measures_progress_reports_during_a_room_fade` | Only `light` reports are judged; a group's report is not a measurement, and its members are all indexed |
 | A `light_level` event's delta carries `light.light_level_report.light_level` and the deprecated `light.light_level`, equal, with `light_level_valid` | same fixture, `test_plan_probe_records_sensor_representatives_and_frames` | `runner._reported_level()` reads the report and falls back to the field; both are real |
 
@@ -121,8 +122,11 @@ every hand change as it should. But a bulb keeps the level and colour written
 to it while off (the `write_while_off` probe), and the night light's 454 mirek
 was what every dimmer's `on` brought back the next morning. The remedy was
 not in the runner: a `sunrise` step with no `on` restores the day look to a
-dark room without switching it on, and gives the day a `Claim.since` after
-which a room yielded overnight is taken back.
+dark bulb without switching it on, and gives the day a `Claim.since` after
+which a room yielded overnight is taken back. With one catch, measured the
+same afternoon: written through a room's `grouped_light` that write reaches
+only the lit members, so the flat's plans list their bulbs as `light:` scopes
+instead of naming the room.
 
 ### There is no such thing as "the local timezone" as a value
 

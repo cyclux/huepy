@@ -11,7 +11,11 @@ from huepy import models
 from huepy.models.event import HueEvent
 
 from .integration.capture_phase0 import Scrubber, _run_cleanup
-from .integration.probe_plans import classify_off_write, classify_resume
+from .integration.probe_plans import (
+    classify_group_write,
+    classify_off_write,
+    classify_resume,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 UUID = re.compile(
@@ -194,6 +198,25 @@ def test_plan_probe_measures_a_write_to_an_off_bulb() -> None:
     assert classify_off_write(True, samples) == section["outcome"] == "stored"
     assert classify_off_write(False, samples) == "refused"
     assert classify_off_write(True, {}) == "unclassified"
+
+
+def test_plan_probe_measures_a_room_write_to_dark_bulbs() -> None:
+    evidence = cast("dict[str, Any]", _load("plan_probe.json"))
+    section = cast("dict[str, Any]", evidence["group_write_while_off"])
+    assert section["write"] == {"brightness": 100.0, "mirek": 366}
+
+    samples = cast("dict[str, list[dict[str, Any]]]", section["samples"])
+    assert len(samples["while_off"]) >= 2
+    assert all(m["on"] is False and m["mirek"] == 250 for m in samples["while_off"])
+    # The same write that a single light keeps is passed by when it goes
+    # through the room's grouped_light: the dark members still read the
+    # baseline, and they come on at it. A day curve that must shape rooms
+    # nobody has switched on has to be written to the lights.
+    dark = samples["after_write_off"]
+    assert all(m["on"] is False and m["mirek"] == 250 for m in dark)
+    assert all(m["on"] is True and m["mirek"] == 250 for m in samples["after_bare_on"])
+    assert classify_group_write(samples) == section["outcome"] == "ignored"
+    assert classify_group_write({}) == "unclassified"
 
 
 def test_plan_probe_measures_progress_reports_during_a_room_fade() -> None:

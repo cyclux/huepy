@@ -7,6 +7,7 @@ and the polar days where a solar anchor simply does not happen.
 """
 
 import datetime
+import time
 import zoneinfo
 
 import pytest
@@ -402,7 +403,10 @@ class TestZone:
         # fire every clock step an hour early all winter.
         assert zone_of(None) is None
 
-    def test_a_host_local_clock_time_survives_a_dst_change(self):
+    def test_a_host_local_clock_time_survives_a_dst_change(self, monkeypatch):
+        # CI runs in UTC, which has no DST to survive: pin a host zone that does.
+        monkeypatch.setenv("TZ", "Europe/Berlin")
+        time.tzset()
         summer = combine(datetime.date(2026, 9, 1), datetime.time(7, 0), None)
         winter = combine(datetime.date(2026, 11, 1), datetime.time(7, 0), None)
         assert summer.hour == 7
