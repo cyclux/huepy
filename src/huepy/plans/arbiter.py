@@ -38,6 +38,7 @@ Typical usage example:
 import datetime
 import math
 from dataclasses import dataclass, field
+from typing import Literal
 
 from huepy.plans.executor import segment_count
 from huepy.plans.fields import TriggerKind
@@ -89,6 +90,48 @@ only when it is nearly dark like that; a bare ``on`` is a switch.
 
 TIMED_FROM_END = frozenset({TriggerKind.MOTION, TriggerKind.LIGHT_LEVEL})
 """The trigger kinds that last: a hold on one is timed from when it ends."""
+
+
+type Verdict = Literal["fade", "off", "on", "hand"]
+"""What a report from a light turned out to be.
+
+``"fade"`` is this runner's own transition progressing. ``"off"`` and
+``"on"`` are power changes -- a wall switch, a motion sensor timing out, a
+smart plug -- which move the light but not the plan. ``"hand"`` is someone at
+the dial, the one thing a plan stands back from.
+"""
+
+
+def _explained(
+    state: "ScopeState",
+    brightness: float | None,
+    at: datetime.datetime,
+    *,
+    on: bool | None,
+) -> bool:
+    """Whether a report is a fade this runner issued, progressing.
+
+    Args:
+        state: The scope's state, with the running or interrupted fade.
+        brightness: The brightness the bridge reported, if any.
+        at: When it was reported.
+        on: The power state the bridge reported, if any.
+
+    Returns:
+        True when the running fade explains the report, or -- for a bare
+        dimming report after a hand change -- the fade that hand change
+        interrupted does: a member the human did not touch, still fading as
+        the bridge was told to, is not a second hand change. Only a bare
+        dimming report qualifies there: one that names ``on`` is a switch,
+        and forgetting a switch is how a later step comes to drop ``on`` and
+        leave a room dark.
+
+    """
+    fade = state.fade
+    if fade is not None:
+        return fade.explains(brightness, at, on=on)
+    lapsed = state.lapsed
+    return lapsed is not None and on is None and lapsed.explains(brightness, at)
 
 
 def _remember(
@@ -423,6 +466,12 @@ class ScopeState:
             when nothing covering the scope runs there is no next step to
             precompute, and the scope must still come back when one arrives.
         hold: The rule currently holding this scope, if one fired.
+        dark: Whether the last power report said the light is off and no
+            fade has switched it on since. The fade a switch-off cut short
+            stays on record -- the plan's position on the scope, and what a
+            still-lit member is following -- so this is what tells the next
+            write to carry ``on`` again, and a switch-on from a report the
+            fade would otherwise call its own.
 
     """
 
@@ -432,6 +481,7 @@ class ScopeState:
     reported: Action | None = None
     yielded_at: datetime.datetime | None = None
     hold: Hold | None = None
+    dark: bool = False
 
 
 @dataclass(slots=True)
@@ -798,6 +848,8 @@ class Arbiter:
         state = self.state_of(fade.scope)
         state.fade = fade
         state.lapsed = None
+        if fade.target.on is True:
+            state.dark = False
 
     def note_foreign_change(
         self,
@@ -806,13 +858,26 @@ class Arbiter:
         at: datetime.datetime,
         *,
         on: bool | None = None,
-    ) -> bool:
+    ) -> Verdict:
         """Judge a reported change, and stand back from the scope if a human made it.
 
-        Under ``on_manual_change = "reassert"`` the scope is not yielded, but
-        the fade is still forgotten: whatever the runner believed about the
-        light -- including that it is on -- is no longer true, and the next
-        write has to carry ``on`` again rather than drop it as redundant.
+        A power change is not a hand change. A switch-off leaves the plan
+        where it is and the light dark: nothing is written until the next
+        step, and that write carries ``on`` again if the step asks for it.
+        A switch-on ends any yield and hands the scope to the runner to put
+        back where the curve has got to -- unless the plan itself wants the
+        light off just then, in which case the switch-on contradicts the
+        plan and is judged like a dial change. The motion sensor that
+        switched a bathroom off eight times an evening is why: each
+        switch-off used to yield the scope, and the hour-long fade it cut
+        short was never finished, so every switch-on brought back the colour
+        the fade had reached at the switch-off.
+
+        Under ``on_manual_change = "reassert"`` a dial change does not yield,
+        but the fade is still forgotten: whatever the runner believed about
+        the light -- including that it is on -- is no longer true, and the
+        next write has to carry ``on`` again rather than drop it as redundant.
+        The same holds after a power change, for the same reason.
 
         Args:
             path: The scope's write path.
@@ -821,41 +886,88 @@ class Arbiter:
             on: The power state the bridge reported, if any.
 
         Returns:
-            True when the report was someone else's work, False when it was
-            this runner's own fade progressing.
+            What the report was: see :data:`Verdict`.
 
         """
         state = self.state_of(path)
         fade = state.fade
-        if fade is not None and fade.explains(brightness, at, on=on):
-            return False
-        lapsed = state.lapsed
-        if (
-            fade is None
-            and lapsed is not None
-            and on is None
-            and lapsed.explains(brightness, at)
-        ):
-            # A member the human did not touch, still fading as the bridge was
-            # told to. Not a second hand change. Only a bare dimming report
-            # qualifies: one that names `on` is a switch, and forgetting a
-            # switch is how a later step comes to drop `on` and leave a room
-            # dark.
-            return False
+        if on is True and state.dark and not self._wants_off(path, at):
+            # The fade on record asked for `on` before the switch-off, so it
+            # would explain this; but the light was dark a moment ago.
+            return self._switched_on(state, at, brightness=brightness)
+        if _explained(state, brightness, at, on=on):
+            return "fade"
+        if on is False:
+            # The fade stays on record: it is the plan's position on the scope
+            # and what a still-lit member is following, and keeping it is what
+            # leaves the loop idle -- nothing to send to a dark light. The
+            # brightness a switch-off carries is the bridge reading a dark
+            # bulb, often 0, not a level anyone set; what the bridge holds is
+            # the interrupted fade's target, and that is what comes back.
+            state.dark = True
+            state.reported = _remember(state, fade, at, on=False, brightness=None)
+            return "off"
         if fade is not None:
             state.lapsed = fade
         state.fade = None
+        if on is True and not self._wants_off(path, at):
+            return self._switched_on(state, at, brightness=brightness)
         if on is not None or brightness is not None:
             # Where the human left it is where the next fade starts from.
             state.reported = _remember(state, fade, at, on=on, brightness=brightness)
-        if self.resolved.plan.defaults.on_manual_change == "reassert":
-            return True
-        state.yielded_at = at
-        # A hold the human overrode is moot. Left in place, the scope would
-        # rejoin at its next step by re-asserting a stale motion rule rather
-        # than the schedule.
-        state.hold = None
-        return True
+        if self.resolved.plan.defaults.on_manual_change != "reassert":
+            state.yielded_at = at
+            # A hold the human overrode is moot. Left in place, the scope
+            # would rejoin at its next step by re-asserting a stale motion
+            # rule rather than the schedule.
+            state.hold = None
+        return "hand"
+
+    @staticmethod
+    def _switched_on(
+        state: ScopeState, at: datetime.datetime, *, brightness: float | None
+    ) -> Verdict:
+        """Hand a switched-on scope back to the plan.
+
+        The fade on record is forgotten: the light is at what the bridge
+        held for it, not where the fade would be, and the runner's rejoin
+        starts from there. A yield ends here too -- the plan is what a
+        switched-on light shows.
+
+        Args:
+            state: The scope's state.
+            at: When the switch-on was reported.
+            brightness: The level the report named, if any -- the bridge's
+                ``last_on`` recall says what it restored.
+
+        Returns:
+            ``"on"``.
+
+        """
+        fade = state.fade
+        if fade is not None:
+            state.lapsed = fade
+        state.fade = None
+        state.dark = False
+        state.reported = _remember(state, fade, at, on=True, brightness=brightness)
+        state.yielded_at = None
+        return "on"
+
+    def _wants_off(self, path: str, now: datetime.datetime) -> bool:
+        """Whether the plan asks for this scope to be off right now.
+
+        Args:
+            path: The scope's write path.
+            now: The instant to evaluate.
+
+        Returns:
+            True when the claim in force on the scope has ``on = false``.
+
+        """
+        return any(
+            claim.binding.path == path and claim.target.on is False
+            for claim in self.claims(now)
+        )
 
     def next_step_for(
         self, path: str, now: datetime.datetime

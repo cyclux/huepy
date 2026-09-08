@@ -1225,9 +1225,18 @@ a sunset comes back, lands in the right place, and carries on fading.
 
 By default a scope someone changes by hand is yielded: the runner stops
 asserting it and takes it back at the first step, trigger or mode that begins
-after the change. A switch-off counts, and the next step's `on` is no longer
-dropped as redundant — a step that sets no `on` still sends none, so give the
-step that should wake a room `on = true`. Because this layer issues fades
+after the change, or when the light is switched on again, whichever comes
+first. A switch is not a hand change. A light switched off — at a wall
+switch, by a motion sensor timing out, at a smart plug — stays dark and the
+plan goes on without it: nothing is written to it until the next step, and
+that write carries `on` if the step asks for it (a step that sets no `on`
+still sends none, so give the step that should wake a room `on = true`). A
+light switched on comes back as if it had never been off: the runner moves it
+to where the curve is at that moment over `catchup_ramp`, then hands it the
+rest of the step, the way a restart does. The one switch-on that still counts
+as a hand change is one against a step or rule that says `on = false`;
+putting that light "back on the plan" would switch it off again. Because this
+layer issues fades
 lasting up to a hundred minutes, a running fade is checked against its own
 arithmetic rather than a time window — movement consistent with the ramp is
 ours; a jump, or a power state the fade did not ask for, is a human. Only a
@@ -1287,8 +1296,8 @@ curve's remaining ramp or `defaults.catchup_ramp`, whichever is longer. A mode
 or a flat state keeps the ramp its author wrote.
 
 A scope someone changed by hand rejoins at the next trigger as well as at the
-next step, and a hand change during a hold drops the hold, so the plan rejoins
-with its schedule rather than a stale rule.
+next step, and at the next switch-on; a hand change during a hold drops the
+hold, so the plan rejoins with its schedule rather than a stale rule.
 
 ### Signals
 

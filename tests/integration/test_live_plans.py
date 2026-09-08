@@ -309,7 +309,9 @@ async def test_a_hand_switch_off_mid_fade_is_seen_through_the_window(
     A member light switched off through another client, while this client's
     forty-second fade is running, arrives as `origin="self"` -- the window
     covers the whole fade -- with `observation="reported"`. That is exactly
-    what PLANS.md says the runner must judge for itself, and here it does.
+    what PLANS.md says the runner must judge for itself, and here it does:
+    the scope is marked dark, not yielded, the fade stays on record, and
+    nothing more is written to the dark light.
     """
     room = arbeitszimmer_restored
     light = (await dimmable_members(room))[0]
@@ -337,8 +339,11 @@ async def test_a_hand_switch_off_mid_fade_is_seen_through_the_window(
             assert change.origin == "self", "the window still covers the fade"
             assert change.observation == "reported"
 
-            await wait_until(lambda: runner.arbiter.is_yielded(path), what="the yield")
-            assert runner.arbiter.state_of(path).fade is None
+            await wait_until(
+                lambda: runner.arbiter.state_of(path).dark, what="the dark mark"
+            )
+            assert not runner.arbiter.is_yielded(path)
+            assert runner.arbiter.state_of(path).fade is not None
             assert await runner.tick() == 0
             assert len([c for c in calls if c.method == "PUT"]) == 1
         finally:

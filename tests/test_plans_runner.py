@@ -559,14 +559,15 @@ class TestObservation:
         )
         assert not runner.arbiter.is_yielded(GROUP_PATH)
 
-    async def test_a_switch_off_by_hand_yields_the_scope(self, bridge, clock):
-        # The most common manual action carries no brightness at all.
+    async def test_a_switch_off_by_hand_does_not_yield_the_scope(self, bridge, clock):
+        # The most common manual action carries no brightness at all, and it
+        # is not a hand change: the plan goes on, the light stays dark.
         changes = FakeChanges()
         runner = await watched_runner(bridge, clock, changes, DAY_PLAN)
         await runner.catch_up()
 
         changes.report(LIGHT, None, clock.now, delta={"on": {"on": False}})
-        assert runner.arbiter.is_yielded(GROUP_PATH)
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
 
     async def test_a_switch_off_is_not_forgotten_by_the_next_step(
         self, bridge, http, clock
@@ -607,7 +608,8 @@ class TestObservation:
     async def test_reassert_re_drives_after_a_hand_change(self, bridge, http, clock):
         # Not yielding is not the same as not looking. A reassert plan still
         # has to notice the light moved, forget what it believed, and put the
-        # light back -- with `on`, since a switch-off is the likely cause.
+        # light back. A switch-off is not a hand change under reassert
+        # either: the light stays dark, and nothing is sent to it.
         changes = FakeChanges()
         plan = ON_PLAN | {
             "defaults": {"catchup_ramp": "5s", "on_manual_change": "reassert"}
@@ -616,11 +618,15 @@ class TestObservation:
         runner = await watched_runner(bridge, clock, changes, plan)
         await runner.catch_up()
         http.calls.clear()
+        clock.advance(seconds=10)
 
-        changes.report(LIGHT, None, clock.now, delta={"on": {"on": False}})
+        changes.report(LIGHT, 50.0, clock.now)
         assert not runner.arbiter.is_yielded(GROUP_PATH)
         assert await runner.tick() == 1
-        assert http.writes[0][2]["on"] == {"on": True}
+        assert http.writes[0][2]["dimming"]["brightness"] == 80
+
+        changes.report(LIGHT, None, clock.now, delta={"on": {"on": False}})
+        assert await runner.tick() == 0
 
     async def test_close_unsubscribes_from_both_streams(self, bridge, clock):
         changes = FakeChanges()
@@ -1662,14 +1668,17 @@ class TestProgressAfterHandChange:
         # A switch-off leaves the bridge holding the interrupted fade's
         # target, but a light a fade switches back on ramps up from dark
         # (the daemon soak in PLANS.md): fifteen minutes into an hour from
-        # 0 to 100 the fade expects 25. A second switch-off is still seen.
+        # 0 to 100 the fade expects 25. A second switch-off is remembered.
         changes = FakeChanges()
         runner = await self.fade_in_after_a_switch_off(bridge, clock, changes)
         assert http.writes[-1][2]["on"] == {"on": True}
         changes.report(LIGHT, 25.0, clock.now)
         assert not runner.arbiter.is_yielded(GROUP_PATH)
         changes.report(LIGHT, None, clock.now, delta={"on": {"on": False}})
-        assert runner.arbiter.is_yielded(GROUP_PATH)
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+        assert runner.arbiter.state_of(GROUP_PATH).reported == Action(
+            on=False, brightness=100.0
+        )
 
     async def test_a_report_on_the_held_line_after_a_fade_in_is_a_human(
         self, bridge, http, clock
@@ -2063,7 +2072,7 @@ class TestSwitchOffMemory:
         await runner.tick()
         clock.advance(minutes=30)
         changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": False}}))
-        assert runner.arbiter.is_yielded(GROUP_PATH)
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
         return runner
 
     async def test_a_switch_off_keeps_the_interrupted_fades_target(self, bridge, clock):
@@ -2220,6 +2229,167 @@ class TestSwitchOffMemory:
         changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": True}}))
         reported = runner.arbiter.state_of(GROUP_PATH).reported
         assert reported == Action(on=True, brightness=50.0)
+
+
+class TestPowerIsNotAHandChange:
+    """A switch, from a sensor or a hand, does not move the plan.
+
+    The bathroom's motion sensor switched the room off eight times an evening,
+    each one yielded the scope, and a one-hour fade never finished: the colour
+    it had reached at the switch-off was what every switch-on brought back.
+    A power change now leaves the plan where it is, and a switch-on puts the
+    light back where the curve has got to, as if it had never been off.
+    """
+
+    async def fading_at_nine(self, bridge, clock, changes):
+        clock.now = datetime.datetime(2026, 9, 1, 9, 0, tzinfo=BERLIN)
+        runner = await watched_runner(bridge, clock, changes, DAY_PLAN)
+        await runner.catch_up()
+        await runner.tick()
+        return runner
+
+    async def test_a_switch_off_mid_fade_does_not_yield(self, bridge, clock):
+        changes = FakeChanges()
+        runner = await self.fading_at_nine(bridge, clock, changes)
+        clock.advance(minutes=30)
+        changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": False}}))
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+        reported = runner.arbiter.state_of(GROUP_PATH).reported
+        assert reported == Action(on=False, brightness=100.0)
+
+    async def test_a_dark_light_is_left_dark_until_the_next_step(
+        self, bridge, http, clock
+    ):
+        changes = FakeChanges()
+        runner = await self.fading_at_nine(bridge, clock, changes)
+        clock.advance(minutes=30)
+        changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": False}}))
+        http.calls.clear()
+        clock.advance(minutes=10)
+        assert await runner.tick() == 0
+        assert await runner.rejoin() == 0
+
+    async def test_a_switch_on_rejoins_the_curve_where_it_is_now(
+        self, bridge, http, clock
+    ):
+        # Off at 09:30, on at 09:45: the curve from 20 to 100 over the hour
+        # from 09:00 is at 80. The light goes there over the catch-up ramp,
+        # then gets the last fifteen minutes of the step, as a restart would.
+        changes = FakeChanges()
+        runner = await self.fading_at_nine(bridge, clock, changes)
+        clock.advance(minutes=30)
+        changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": False}}))
+        clock.advance(minutes=15)
+        http.calls.clear()
+        changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": True}}))
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+        assert await runner.rejoin() == 1
+
+        first, second = http.writes
+        assert first[2]["dimming"]["brightness"] == pytest.approx(80.0)
+        assert first[2]["dynamics"]["duration"] == 5000
+        assert "on" not in first[2]
+        assert second[2]["dimming"]["brightness"] == 100
+        assert second[2]["dynamics"]["duration"] == 900_000
+
+    async def test_a_switch_on_ends_a_yield(self, bridge, http, clock):
+        # Dimmed by hand, then off, then on: the hand level does not survive
+        # the switch-on. The plan is what a switched-on light shows.
+        changes = FakeChanges()
+        runner = await self.fading_at_nine(bridge, clock, changes)
+        clock.advance(minutes=10)
+        changes.report(LIGHT, 10.0, clock.now)
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+        clock.advance(minutes=10)
+        changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": False}}))
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+        clock.advance(minutes=10)
+        http.calls.clear()
+        changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": True}}))
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+        assert await runner.rejoin() == 1
+        assert http.writes[0][2]["dimming"]["brightness"] == pytest.approx(60.0)
+
+    async def test_the_brightness_a_switch_on_reports_is_not_a_hand_change(
+        self, bridge, clock
+    ):
+        # The bridge's `last_on` recall names the level it restored. The plan
+        # overwrites it a moment later, so it is nothing to stand back from.
+        changes = FakeChanges()
+        runner = await self.fading_at_nine(bridge, clock, changes)
+        clock.advance(minutes=30)
+        changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": False}}))
+        clock.advance(minutes=15)
+        report = {"on": {"on": True}, "dimming": {"brightness": 100.0}}
+        changes.deliver(change(LIGHT, None, clock.now, delta=report))
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+
+    async def test_a_switch_on_the_fade_expects_changes_nothing(
+        self, bridge, http, clock
+    ):
+        # The bulb's own report of the `on` the fade-in asked for.
+        changes = FakeChanges()
+        clock.now = datetime.datetime(2026, 9, 1, 9, 0, tzinfo=BERLIN)
+        runner = await watched_runner(bridge, clock, changes, ON_PLAN)
+        await runner.catch_up()
+        clock.advance(seconds=2)
+        http.calls.clear()
+        changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": True}}))
+        assert await runner.rejoin() == 0
+        assert http.writes == []
+
+    async def test_a_switch_on_against_the_plans_off_is_still_a_hand(
+        self, bridge, http, clock
+    ):
+        # The plan says off. Putting the light "back on the plan" would switch
+        # it off again in the person's face, so this one still yields.
+        changes = FakeChanges()
+        clock.now = datetime.datetime(2026, 9, 1, 21, 0, tzinfo=BERLIN)
+        runner = await watched_runner(bridge, clock, changes, OFF_WITH_RAMP_PLAN)
+        await runner.catch_up()
+        clock.now = datetime.datetime(2026, 9, 1, 22, 0, tzinfo=BERLIN)
+        await runner.tick()
+        clock.advance(minutes=5)
+        http.calls.clear()
+        changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": True}}))
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+        assert await runner.rejoin() == 0
+        assert http.writes == []
+
+    async def test_the_loop_rejoins_a_switched_on_scope(self, bridge, http, clock):
+        changes = FakeChanges()
+        clock.now = datetime.datetime(2026, 9, 1, 9, 30, tzinfo=BERLIN)
+        runner = await watched_runner(bridge, clock, changes, DAY_PLAN)
+        task = asyncio.create_task(runner.run())
+        for _ in range(10):
+            await asyncio.sleep(0)
+        changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": False}}))
+        clock.advance(minutes=15)
+        http.calls.clear()
+        changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": True}}))
+        for _ in range(20):
+            await asyncio.sleep(0)
+        await runner.close()
+        await asyncio.wait_for(task, timeout=1.0)
+        assert [w[2]["dimming"]["brightness"] for w in http.writes] == [
+            pytest.approx(80.0),
+            100,
+        ]
+
+    async def test_a_second_member_switching_off_keeps_the_others_fade(
+        self, hue, http, clock
+    ):
+        # Two bulbs in the room, one switched off: the fade the other is still
+        # running is neither yielded nor forgotten as a running fade's start.
+        http.queue("/clip/v2/resource", envelope(*two_light_resources()))
+        changes = FakeChanges()
+        runner = await self.fading_at_nine(hue, clock, changes)
+        clock.advance(minutes=30)
+        changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": False}}))
+        clock.advance(minutes=10)
+        # 100 -> ... the other bulb reports the fade's own progress, 73 at 09:40.
+        changes.report(SECOND_LIGHT, 73.0, clock.now)
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
 
 
 def hold_of(runner: PlanRunner):
@@ -2609,7 +2779,9 @@ class TestLapsedFade:
     async def test_a_switch_the_lapsed_fade_would_explain_still_counts(
         self, hue, http, clock
     ):
-        # Forgetting a switch is how a later step comes to drop `on`.
+        # Forgetting a switch is how a later step comes to drop `on`. A
+        # switch-on is also what ends the yield: the plan is what a
+        # switched-on light shows.
         changes = FakeChanges()
         runner = await self.yielded_mid_fade(hue, http, clock, changes)
         clock.advance(minutes=10)
@@ -2617,7 +2789,7 @@ class TestLapsedFade:
             change(SECOND_LIGHT, None, clock.now, delta={"on": {"on": True}})
         )
         state = runner.arbiter.state_of(GROUP_PATH)
-        assert state.yielded_at == clock.now
+        assert state.yielded_at is None
         assert state.reported == Action(on=True, brightness=95.0)
 
     async def test_the_next_fade_forgets_the_lapsed_one(self, hue, http, clock):

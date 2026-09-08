@@ -213,6 +213,27 @@ ran, and left the scope yielded for good; and it let a *losing* rule's hold
 un-yield a room the human had dimmed during a film. Releasing a mode is itself
 the trigger that ends a yield made while it held the scope.
 
+A switch is not a hand change, and a switch-on is the third thing that ends
+a yield. The bathroom's motion automation switched the room off every five
+minutes without motion; each switch-off yielded the scope, and the hour-long
+fade it cut short was never finished, so every switch-on brought back the
+colour the fade had reached at the switch-off (246 mirek against the plan's
+447, one evening in September). A switch-off now leaves the fade on record —
+it is the plan's position on the scope and what a still-lit member is
+following — and marks the scope `ScopeState.dark`, which is what makes the
+next write carry `on` again and a fade-in start from zero. Nothing is sent to
+a dark light: the loop's idempotence check sees the same fade in force. A
+switch-on is a restart in miniature for that one scope, `PlanRunner.rejoin()`:
+the curve's current point over `catchup_ramp`, then the rest of the step. Two
+members reporting in the same instant rejoin once, because the loop does the
+rejoin rather than the observer. The level a switch-on names — the bridge's
+`last_on` recall says what it restored — is remembered as the fade's start
+and otherwise ignored. The exception is a switch-on against a claim that says
+`on = false`: the plan has nothing for a lit light there but "off", so that
+one is judged as a dial change and yields. It follows that a hand level does
+not survive a switch-off and switch-on; that is the decision, not an
+oversight — the plan is what a switched-on light shows.
+
 Two corollaries for plan authors. A rule without `hold` lasts until the scope's
 next scheduled step, not forever, or a button press would switch a day curve
 off for good. And a scope claimed by nobody is left alone, so a motion light
@@ -331,7 +352,9 @@ executor drops `on` when the previous fade already turned the light on, so a
 switch-off that went unnoticed made the noon step go out without `on` and the
 room stayed dark. Forgetting the fade is what makes the next write carry it
 again — under `reassert` as much as under `yield`, which is why a reassert plan
-still subscribes to changes.
+still subscribes to changes. (A switch-off itself no longer forgets the fade;
+`ScopeState.dark` carries that `on` instead — see "Handing a scope back never
+snaps".)
 
 Forgetting the fade must not mean forgetting where the light *is*. The first
 version of that fix cleared the fade and nothing else, so the next fade ran
@@ -436,7 +459,8 @@ integration probe establishing whether a third-party app key can POST one.
 | A level fires on the crossing, releases past the band, never on a repeat, and a still-dark report does not un-yield a scope; the lux scale round-trips through `models.LightLevel`; the schema ties `below`/`above` to `light_level:` and makes rules on one sensor agree | `TestLevelRules`, `TestLevelEdge`, `tests/test_plans_fields.py::TestLightLevelUnits`, `tests/test_plans_schema.py::TestLevelThreshold` |
 | The signal server fires known names, refuses unknown ones with the list, guards a token, survives a failing callback, and will not bind beyond loopback unguarded; `huepy plan signal` reaches it | `tests/test_plans_signals.py`, `tests/test_plans_cli.py::TestSignal` |
 | A trigger landing mid-write is not lost by the loop | `TestRules::test_a_trigger_during_a_write_is_not_lost` |
-| `origin="self"` is not proof; `command_echo` is; a switch-off yields and resets `on` | `TestObservation` |
+| `origin="self"` is not proof; `command_echo` is; a switch-off does not yield; reassert re-drives a dial change and leaves a dark light dark | `TestObservation` |
+| A switch-off mid-fade neither yields nor writes; a switch-on rejoins where the curve is, over the catch-up ramp, then continues the step; a switch-on ends a yield; the level a switch-on names is not a hand change; the fade's own `on` is not a switch-on; a switch-on against an `on = false` claim still yields; the loop rejoins; another member's progress after one member's switch-off is the fade | `TestPowerIsNotAHandChange` |
 | A yield ends at the first later step, hold or mode; a losing hold does not end it | `TestYieldResume` |
 | A restart mid-fade lands, waits, then continues the ramp | `TestRestart` |
 | The fade after a hand change starts where the human left the light; reassert re-drives once | `TestProgressAfterHandChange` |
@@ -448,11 +472,11 @@ integration probe establishing whether a third-party app key can POST one.
 | One failing scope neither stops the runner nor is forgotten | `TestFailureIsolation` |
 | `stop()` ends `run()` without cancelling it; SIGTERM reaches it; what a write logs | `TestClose`, `TestLogging`, `tests/test_plans_cli.py::TestStopSignals` |
 | What `validate` prints per binding; a disabled sensor is a warning, not an error | `tests/test_plans_cli.py::TestValidateReport`, `TestResolveTriggers` |
-| Against a real bridge, in one vetted room: one-snapshot resolution, one `grouped_light` PUT per catch-up reaching every member, the echo is not a yield, a hand switch-off and a hand jump both yield through the state layer's window, a ceiling-length first segment is accepted on a group | `tests/integration/test_live_plans.py` (opt-in) |
+| Against a real bridge, in one vetted room: one-snapshot resolution, one `grouped_light` PUT per catch-up reaching every member, the echo is not a yield, a hand switch-off is seen through the state layer's window and leaves the scope dark rather than yielded, a hand jump yields, a ceiling-length first segment is accepted on a group | `tests/integration/test_live_plans.py` (opt-in) |
 | What a bare switch-off leaves as the light's brightness; a real `light_level` resource and event shape | `tests/test_real_fixtures.py::test_plan_probe_*` |
 | A switch-off keeps the running segment's target, or the off step's starting level; a jump during the fade that follows is seen; a report naming only `on` keeps the brightness; a dimming report during an on-only fade is a human | `TestSwitchOffMemory` |
 | A refused write leaves the previous fade in force, so a switch-off after it remembers what the bridge holds; a refused first segment and a failed tail both retry as a chain | `TestBeliefAfterFailure` |
 | A `grouped_light` report is never judged; a member light's still is | `TestGroupReports` |
-| A fade-out's own on-and-dimming and off-at-zero reports are the fade, a straggler within the grace too; a fade-in from off is judged from dark; untouched members' progress after a hand change is not a second hand change, a switch is | `TestFadeOut`, `TestProgressAfterHandChange`, `TestLapsedFade` |
+| A fade-out's own on-and-dimming and off-at-zero reports are the fade, a straggler within the grace too; a fade-in from off is judged from dark; untouched members' progress after a hand change is not a second hand change, a switch-on ends the yield | `TestFadeOut`, `TestProgressAfterHandChange`, `TestLapsedFade` |
 | A wake more than `LATE_WAKE_SECONDS` late is a catch-up, not a snap; an on-time wake ticks | `TestLateWake` |
 | A report lagging a fast fade by a second is the fade; one off the whole stretch is a human | `TestFadeAttribution` |

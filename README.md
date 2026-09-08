@@ -480,7 +480,9 @@ timeslots accept no offsets. Fades are handed to the bridge whole rather than
 stepped: it runs a transition of up to 6,000 seconds from one PUT, so a
 ninety-minute sunset is a single request. Longer ramps are chained, a room is
 written through its `grouped_light`, and a scope someone changes by hand is left
-alone until its next scheduled step or trigger.
+alone until its next scheduled step or trigger. A switch is not a hand change:
+a light switched off stays dark, and one switched on rejoins the curve where
+it is.
 
 Rules react to the bridge's sensors and to signals from your own code:
 

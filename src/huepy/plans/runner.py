@@ -387,6 +387,7 @@ class PlanRunner:
         self._wake: asyncio.Event = asyncio.Event()
         self._closing: asyncio.Event = asyncio.Event()
         self._needs_catchup: bool = False
+        self._rejoining: set[str] = set()
 
     async def start(self) -> None:
         """Resolve every name in the plan against the bridge.
@@ -528,7 +529,8 @@ class PlanRunner:
             fade = state.fade if state.fade is not None else state.lapsed
             which = "running" if state.fade is not None else "interrupted"
             expected = fade.expected_at(now).brightness if fade is not None else None
-            if not self.arbiter.note_foreign_change(path, brightness, now, on=on):
+            verdict = self.arbiter.note_foreign_change(path, brightness, now, on=on)
+            if verdict == "fade":
                 # One line per progress report the bridge sends during a fade.
                 # It is the override arithmetic's verdict, which is the thing
                 # to read when a light is yielded that should not have been.
@@ -539,6 +541,28 @@ class PlanRunner:
                     which,
                     _brightness_text(expected),
                 )
+                continue
+            if verdict == "off":
+                # The tail of a chained fade is left running: another member
+                # of the scope may still be lit and following it, and on the
+                # dark one the bridge just stores what arrives.
+                logger.info(
+                    "%s: %s; switched off, the plan goes on without it",
+                    self._label(path),
+                    report,
+                )
+                continue
+            if verdict == "on":
+                # Back where the curve has got to, over the catch-up ramp,
+                # then the rest of the step -- the loop does it, so two
+                # members reporting in the same instant rejoin once.
+                logger.info(
+                    "%s: %s; switched on, rejoining the plan",
+                    self._label(path),
+                    report,
+                )
+                self._rejoining.add(path)
+                self._wake.set()
                 continue
             # Stop the rest of a chained fade. Without this, the second half of
             # a three-hour sunset would still land an hour after someone turned
@@ -742,12 +766,16 @@ class PlanRunner:
         self._wake.set()
         return outcomes
 
-    async def catch_up(self) -> int:
+    async def catch_up(self, *, only: frozenset[str] | None = None) -> int:
         """Move every scope to where it should be right now.
 
         Called on start and after a reconnect. Because the target is computed
         from the clock rather than remembered, this is the whole of crash
-        recovery.
+        recovery -- and, restricted to one scope, of a light switched back on.
+
+        Args:
+            only: Write paths to restrict the catch-up to; every scope
+                otherwise.
 
         Returns:
             How many scopes were written to.
@@ -755,7 +783,11 @@ class PlanRunner:
         """
         now = self._clock()
         written = 0
-        claims = self.arbiter.claims(now, catching_up=True)
+        claims = [
+            claim
+            for claim in self.arbiter.claims(now, catching_up=True)
+            if only is None or claim.binding.path in only
+        ]
         for claim in claims:
             if self._closing.is_set():
                 break
@@ -897,6 +929,11 @@ class PlanRunner:
         # and the fade has no brightness expectation to judge reports by.
         previous = state.fade
         start = previous.expected_at(now) if previous is not None else state.reported
+        if state.dark and start is not None:
+            # A switch-off leaves the fade on record but the light dark: the
+            # write has to carry `on` if the step asks for it, and a fade-in
+            # ramps up from zero, not from the level the bridge held.
+            start = start.model_copy(update={"on": False})
         # A light switched on from off ramps up from dark, not from the
         # brightness the bridge held for it; the waypoints and the arithmetic
         # that judges the bridge's reports both have to start there.
@@ -1042,7 +1079,25 @@ class PlanRunner:
         delay = (min(upcoming) - now).total_seconds()
         return max(0.0, min(delay, MAX_SLEEP))
 
-    async def _settle(self) -> None:
+    async def rejoin(self) -> int:
+        """Put every scope that was switched back on where the curve is now.
+
+        A switch-on is not a hand change: the light comes back as if it had
+        never been off. That is a restart in miniature -- the curve's current
+        point over the catch-up ramp, then the rest of the step -- for just
+        the scopes whose lights came on since the last pass.
+
+        Returns:
+            How many scopes were written to.
+
+        """
+        paths = frozenset(self._rejoining)
+        self._rejoining.clear()
+        if not paths:
+            return 0
+        return await self._settle(only=paths)
+
+    async def _settle(self, *, only: frozenset[str] | None = None) -> int:
         """Catch up, let the catch-up fade land, then carry on with the schedule.
 
         Catching up moves each scope to where it should already be, over the
@@ -1052,8 +1107,17 @@ class PlanRunner:
         Waiting for the catch-up fade first matters too: a second PUT straight
         after the first overrides it, and the light would run the whole
         remaining ramp from wherever it happened to be.
+
+        Args:
+            only: Write paths to restrict the catch-up to; every scope
+                otherwise.
+
+        Returns:
+            How many scopes the catch-up wrote to.
+
         """
-        if await self.catch_up():
+        written = await self.catch_up(only=only)
+        if written:
             logger.debug(
                 "waiting %s for the catch-up fade to land",
                 format_duration(self.plan.defaults.catchup_ramp),
@@ -1062,13 +1126,14 @@ class PlanRunner:
             if self._closing.is_set():
                 # close() returned while this was asleep; a tick now would
                 # write after the caller believes the runner has stopped.
-                return
+                return written
         _ = await self.tick()
+        return written
 
     async def run(self) -> None:
         """Catch up, then keep the plan running until closed or cancelled."""
         self._closing.clear()
-        await self._settle()
+        _ = await self._settle()
         while not self._closing.is_set():
             now = self._clock()
             delay = self._seconds_until_next(now)
@@ -1101,8 +1166,12 @@ class PlanRunner:
             self._wake.clear()
             if self._needs_catchup:
                 # The stream lost continuity, so nothing this runner believes
-                # about what is in flight can be trusted. Re-derive it all.
+                # about what is in flight can be trusted. Re-derive it all --
+                # which covers any scope waiting to rejoin.
                 self._needs_catchup = False
-                await self._settle()
+                self._rejoining.clear()
+                _ = await self._settle()
+            elif self._rejoining:
+                _ = await self.rejoin()
             else:
                 _ = await self.tick()
