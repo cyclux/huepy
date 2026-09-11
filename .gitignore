@@ -27,5 +27,6 @@ cookie*.txt
 # Mirrored external Hue developer docs (see docs/hue-portal-access.md)
 docs/hue-dev-docs/
 
-# The flat's own plan files: local configuration, not part of the package
-plans/
+# The flat's own plan files: local configuration, not part of the package.
+# Anchored: a bare `plans/` also matches src/huepy/plans and hides new modules.
+/plans/
