@@ -39,7 +39,7 @@ from huepy.plans.fields import (
 )
 from huepy.plans.protocol import Cancellable, ChangeSource, PlanClient
 from huepy.plans.resolve import Binding, ResolvedPlan, TriggerBinding, resolve
-from huepy.plans.schema import Plan, Rule, Side
+from huepy.plans.schema import Action, Plan, Rule, Side
 from huepy.plans.timeline import (
     Zone,
     combine,
@@ -67,6 +67,16 @@ MAX_SLEEP = 900.0
 The next scheduled step may be many hours away, but the runner still stirs
 every quarter hour. That is what lets a mode activated from outside, or a
 clock that jumped, be noticed without waiting for the next sunset.
+"""
+
+
+DARK_REFRESH_SECONDS = 300.0
+"""How often a dark scope's stored level is put back on the curve.
+
+A dark bulb keeps the level of the last write and shows it the moment
+something switches it on, so mid-ramp it must not be left holding a value
+from a quarter of an hour ago. Ten lights refreshed at this interval cost
+about two per cent of the bridge's write budget.
 """
 
 BUTTON_PRESS = "initial_press"
@@ -388,6 +398,9 @@ class PlanRunner:
         self._closing: asyncio.Event = asyncio.Event()
         self._needs_catchup: bool = False
         self._rejoining: set[str] = set()
+        # The level last stored in each dark scope, so a stirring tick that
+        # finds the curve unmoved costs no request.
+        self._stored: dict[str, Action] = {}
 
     async def start(self) -> None:
         """Resolve every name in the plan against the bridge.
@@ -816,6 +829,7 @@ class PlanRunner:
         """
         now = self._clock()
         written = 0
+        held: dict[str, Action] | None = None
         for claim in self.arbiter.claims(now):
             if self._closing.is_set():
                 # close() landed during another scope's write; finishing the
@@ -838,6 +852,18 @@ class PlanRunner:
                 and state.owner.source == claim.source
                 and not self._target_changed(claim)
             ):
+                if state.dark and claim.target.on is not True:
+                    # Nothing to send to a lit light. A dark one is still
+                    # holding a level for whatever switches it on next, and
+                    # the curve has moved on under it.
+                    if held is None:
+                        held = {
+                            point.binding.path: point.target
+                            for point in self.arbiter.claims(now, catching_up=True)
+                        }
+                    if await self._store_dark(claim, held.get(path)):
+                        written += 1
+                    continue
                 logger.debug(
                     "%s: %s still in force, nothing to send",
                     claim.binding.selector,
@@ -847,6 +873,45 @@ class PlanRunner:
             if await self._drive_safely(claim, now, ramp=claim.ramp):
                 written += 1
         return written
+
+    async def _store_dark(self, claim: Claim, point: Action | None) -> bool:
+        """Keep a dark scope's stored level on the curve.
+
+        A dark bulb cannot run a fade. It keeps whatever the last write asked
+        for and shows that the moment something switches it on -- a dimmer, or
+        a motion rule whose action is ``last_on``. Handed the step's *final*
+        target it stores a level the curve will not reach for another hour,
+        and the room then comes on at the wrong end of the ramp: the bathroom
+        flash this method exists to prevent.
+
+        So the level is refreshed with the curve's point now, at duration
+        zero, and nothing else about the scope moves. The interrupted fade
+        stays on record, because it is what a fade-in ramps up from and what
+        judges the next report; the owner stays as it was, because storing a
+        level is not taking the scope over.
+
+        Args:
+            claim: The scope's claim this tick.
+            point: Where the curve is now, or None when it says nothing.
+
+        Returns:
+            True when a write went out.
+
+        """
+        path = claim.binding.path
+        if point is None or self._stored.get(path) == point:
+            return False
+        segments = plan_segments(claim.binding, point, ramp=0.0, current_on=False)
+        if not segments:
+            return False
+        await send(self._client, segments[0])
+        self._stored[path] = point
+        logger.debug(
+            "%s: dark, storing %s for the next switch-on",
+            self._label(path),
+            point.describe(),
+        )
+        return True
 
     async def _drive_safely(
         self, claim: Claim, now: datetime.datetime, *, ramp: float
@@ -924,6 +989,7 @@ class PlanRunner:
         """
         path = claim.binding.path
         state = self.arbiter.state_of(path)
+        _ = self._stored.pop(path, None)
         # From the running fade if there is one, else from where a human
         # last left the light. Without a start, a long ramp cannot be chained
         # and the fade has no brightness expectation to judge reports by.
@@ -1074,10 +1140,15 @@ class PlanRunner:
             # or stop claiming its scope at midnight with no step to wake for.
             tomorrow = in_zone(now, self._zone).date() + datetime.timedelta(days=1)
             upcoming.append(combine(tomorrow, datetime.time(), self._zone))
+        ceiling = MAX_SLEEP
+        if any(state.dark for state in self.arbiter.scopes.values()):
+            # A dark scope has no step to wake for, but the level it is
+            # holding for the next switch-on goes stale as the curve moves.
+            ceiling = min(ceiling, DARK_REFRESH_SECONDS)
         if not upcoming:
-            return MAX_SLEEP
+            return ceiling
         delay = (min(upcoming) - now).total_seconds()
-        return max(0.0, min(delay, MAX_SLEEP))
+        return max(0.0, min(delay, ceiling))
 
     async def rejoin(self) -> int:
         """Put every scope that was switched back on where the curve is now.

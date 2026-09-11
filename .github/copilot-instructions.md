@@ -161,7 +161,13 @@ maths, or the executor.
   never a precomputed resume time. A hand change is remembered in
   `ScopeState.reported` and is where the next fade starts.
 - **A switch is not a hand change.** A switch-off keeps the fade on record
-  and marks the scope `ScopeState.dark`; nothing is written to a dark light.
+  and marks the scope `ScopeState.dark`. Nothing *lights* a dark light, but a
+  dark bulb cannot fade -- it keeps the last write and shows it on the next
+  switch-on -- so `_store_dark()` puts the curve's point now into a dark scope
+  at duration zero, on a tick that had nothing else to send, and
+  `DARK_REFRESH_SECONDS` caps the sleep. It touches neither the interrupted
+  fade nor the owner. A step that asks for `on` lights the room and owns its
+  ramp instead.
   A switch-on ends any yield and rejoins through `PlanRunner.rejoin()` -- the
   curve's current point over `catchup_ramp`, then the rest of the step --
   unless the claim in force says `on = false`, which is the one switch-on

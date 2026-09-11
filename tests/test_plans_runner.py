@@ -19,7 +19,13 @@ from huepy.exceptions import HueAPIError, PlanError
 from huepy.models import parse_resource
 from huepy.plans.arbiter import BRIGHTNESS_TOLERANCE, Fade
 from huepy.plans.fields import raw_light_level
-from huepy.plans.runner import PlanRunner, Threshold, _level_edge
+from huepy.plans.runner import (
+    DARK_REFRESH_SECONDS,
+    MAX_SLEEP,
+    PlanRunner,
+    Threshold,
+    _level_edge,
+)
 from huepy.plans.schema import Action, Plan
 from huepy.state.records import Change, ChangeKind, Resync, ResyncReason
 
@@ -2260,14 +2266,79 @@ class TestPowerIsNotAHandChange:
     async def test_a_dark_light_is_left_dark_until_the_next_step(
         self, bridge, http, clock
     ):
+        # The stored level follows the curve, but nothing lights the room and
+        # a light nobody switched on has nothing to rejoin.
         changes = FakeChanges()
         runner = await self.fading_at_nine(bridge, clock, changes)
         clock.advance(minutes=30)
         changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": False}}))
         http.calls.clear()
         clock.advance(minutes=10)
-        assert await runner.tick() == 0
+        _ = await runner.tick()
+        assert all("on" not in write[2] for write in http.writes)
         assert await runner.rejoin() == 0
+
+    async def test_a_dark_light_keeps_the_curve_in_its_stored_level(
+        self, bridge, http, clock
+    ):
+        # A dark bulb cannot run a fade; it just keeps what the last write
+        # asked for. Left holding the step's *final* target it stores a level
+        # the curve does not reach for another twenty minutes, and a motion
+        # rule that recalls `last_on` then lights the room at that level. So
+        # a dark scope is written the curve's point now, not the step's end.
+        changes = FakeChanges()
+        runner = await self.fading_at_nine(bridge, clock, changes)
+        clock.advance(minutes=30)
+        changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": False}}))
+        http.calls.clear()
+        clock.advance(minutes=10)
+        assert await runner.tick() == 1
+
+        (write,) = http.writes
+        # 20 to 100 over the hour from 09:00, so 73.3 at 09:40.
+        assert write[2]["dimming"]["brightness"] == pytest.approx(73.33, abs=0.05)
+        # Nothing may light a dark room, and a dark bulb cannot fade.
+        assert "on" not in write[2]
+        assert write[2]["dynamics"]["duration"] == 0
+
+    async def test_a_dark_scope_shortens_the_sleep_so_the_level_keeps_up(
+        self, bridge, clock
+    ):
+        # Mid-ramp there is no step to wake for, so the loop would sleep the
+        # full stir and the stored level would fall a quarter of an hour
+        # behind the curve. A dark scope brings the next wake forward.
+        changes = FakeChanges()
+        runner = await self.fading_at_nine(bridge, clock, changes)
+        clock.advance(minutes=10)
+        assert runner._seconds_until_next(clock.now) == pytest.approx(MAX_SLEEP)
+        changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": False}}))
+        assert runner._seconds_until_next(clock.now) == pytest.approx(
+            DARK_REFRESH_SECONDS
+        )
+
+    async def test_a_switch_on_after_a_refresh_has_nothing_to_correct(
+        self, bridge, http, clock
+    ):
+        # The bathroom flash: a motion rule whose action is `last_on` lights
+        # the room at the level the bulb stored, and the rejoin then dragged
+        # it to the curve in front of the person standing there. Once the
+        # stored level is the curve's point, the rejoin has nowhere to drag.
+        changes = FakeChanges()
+        runner = await self.fading_at_nine(bridge, clock, changes)
+        clock.advance(minutes=30)
+        changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": False}}))
+        http.calls.clear()
+        clock.advance(minutes=10)
+        assert await runner.tick() == 1
+        (refresh,) = http.writes
+        stored = refresh[2]["dimming"]["brightness"]
+
+        http.calls.clear()
+        changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": True}}))
+        assert await runner.rejoin() == 1
+
+        first = http.writes[0]
+        assert first[2]["dimming"]["brightness"] == pytest.approx(stored)
 
     async def test_a_switch_on_rejoins_the_curve_where_it_is_now(
         self, bridge, http, clock

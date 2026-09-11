@@ -221,8 +221,22 @@ colour the fade had reached at the switch-off (246 mirek against the plan's
 447, one evening in September). A switch-off now leaves the fade on record —
 it is the plan's position on the scope and what a still-lit member is
 following — and marks the scope `ScopeState.dark`, which is what makes the
-next write carry `on` again and a fade-in start from zero. Nothing is sent to
-a dark light: the loop's idempotence check sees the same fade in force. A
+next write carry `on` again and a fade-in start from zero. Nothing *lights* a
+dark light, but its stored level still follows the curve. A dark bulb cannot
+run a fade — it keeps the level of the last write and shows it the moment
+something switches it on — so leaving it holding the step's final target
+stores a level the curve will not reach for another hour. The bathroom
+measured it: the 00:00 step wrote its end value, 10, into two dark bulbs, the
+motion rule's `last_on` lit the room there five minutes later, and the rejoin
+then dragged it to the curve's 92 in front of the person standing in the
+doorway. So `PlanRunner._store_dark()` puts the curve's point now into a dark
+scope, at duration zero, on any tick that had nothing else to send, and
+`DARK_REFRESH_SECONDS` caps the sleep so mid-ramp the level never falls far
+behind. It writes nothing else: the interrupted fade stays on record, because
+it is what a fade-in ramps up from and what judges the next report, and the
+owner stays as it was, because storing a level is not taking a scope over. A
+step that asks for `on` is not this case — that one lights the room and owns
+its ramp. A
 switch-on is a restart in miniature for that one scope, `PlanRunner.rejoin()`:
 the curve's current point over `catchup_ramp`, then the rest of the step. Two
 members reporting in the same instant rejoin once, because the loop does the
