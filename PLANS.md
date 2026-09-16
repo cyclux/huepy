@@ -231,6 +231,9 @@ motion rule's `last_on` lit the room there five minutes later, and the rejoin
 then dragged it to the curve's 92 in front of the person standing in the
 doorway. So `PlanRunner._store_dark()` puts the curve's point now into a dark
 scope, at duration zero, on any tick that had nothing else to send, and
+right after a step's own write, which stores the step's end (measured: the
+00:00 step stored 20, and motion at 00:01:29 lit the bathroom at 20 against
+a curve at 98). And
 `DARK_REFRESH_SECONDS` caps the sleep so mid-ramp the level never falls far
 behind. It writes nothing else: the interrupted fade stays on record, because
 it is what a fade-in ramps up from and what judges the next report, and the

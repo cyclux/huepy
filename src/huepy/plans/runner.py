@@ -875,9 +875,35 @@ class PlanRunner:
                     claim.source,
                 )
                 continue
-            if await self._drive_safely(claim, now, ramp=claim.ramp):
+            if await self._drive_step(claim, now, store_dark=store_dark):
                 written += 1
         return written
+
+    async def _drive_step(
+        self, claim: Claim, now: datetime.datetime, *, store_dark: bool
+    ) -> bool:
+        """Drive a claim that changed, and keep a dark scope's level on the curve.
+
+        A dark bulb stores the step's *final* level, not a fade. Left to the
+        next refresh, a motion at 00:01:29 lit the bathroom at 20 against a
+        curve at 98, and the rejoin jumped it. So the same tick stores the
+        curve's point over it. The step's fade stays on record; only the
+        stored level moves.
+
+        Args:
+            claim: What to do and where.
+            now: The instant the fade starts from.
+            store_dark: Whether the scope is dark and the claim leaves it so.
+
+        Returns:
+            True when the step's write went out.
+
+        """
+        if not await self._drive_safely(claim, now, ramp=claim.ramp):
+            return False
+        if store_dark:
+            _ = await self._store_dark(claim, now)
+        return True
 
     async def _store_dark(self, claim: Claim, now: datetime.datetime) -> bool:
         """Keep a dark scope's stored level on the curve.
@@ -917,7 +943,14 @@ class PlanRunner:
         segments = plan_segments(claim.binding, point, ramp=0.0, current_on=False)
         if not segments:
             return False
-        await send(self._client, segments[0])
+        try:
+            await send(self._client, segments[0])
+        except HueError:
+            # A store runs on every tick while a scope is dark; one busy
+            # bridge must not end the plan for the whole flat. Nothing is
+            # remembered, so the next wake tries again.
+            logger.exception("%s: could not store a level", self._label(path))
+            return False
         self._stored[path] = point
         logger.debug(
             "%s: dark, storing %s for the next switch-on",

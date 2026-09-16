@@ -164,7 +164,8 @@ maths, or the executor.
   and marks the scope `ScopeState.dark`. Nothing *lights* a dark light, but a
   dark bulb cannot fade -- it keeps the last write and shows it on the next
   switch-on -- so `_store_dark()` puts the curve's point now into a dark scope
-  at duration zero, on a tick that had nothing else to send, and
+  at duration zero, on a tick that had nothing else to send and right after
+  a step's write (which stores the step's end), and
   `DARK_REFRESH_SECONDS` caps the sleep. It touches neither the interrupted
   fade nor the owner. A step that asks for `on` lights the room and owns its
   ramp instead. A yielded dark scope stores the curve too, and a switch-off

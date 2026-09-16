@@ -2406,6 +2406,53 @@ class TestPowerIsNotAHandChange:
         assert write[2]["dynamics"]["duration"] == 0
         assert runner.arbiter.is_yielded(GROUP_PATH)
 
+    async def test_a_step_starting_on_a_dark_light_stores_the_curve_not_its_end(
+        self, bridge, http, clock
+    ):
+        # The step's write gives a dark bulb the step's final level, and the
+        # refresh only came on the next wake. Measured: the 00:00 step stored
+        # 20, motion at 00:01:29 lit the bathroom at 20 against a curve at 98,
+        # and the rejoin jumped it. The same tick now stores the curve's point.
+        changes = FakeChanges()
+        runner = await self.fading_at_nine(bridge, clock, changes)
+        clock.now = datetime.datetime(2026, 9, 1, 21, 50, tzinfo=BERLIN)
+        _ = await runner.tick()
+        changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": False}}))
+        http.calls.clear()
+        clock.now = datetime.datetime(2026, 9, 1, 22, 0, tzinfo=BERLIN)
+        assert await runner.tick() == 1
+
+        step, stored = http.writes
+        assert step[2]["dimming"]["brightness"] == 20
+        assert stored[2]["dimming"]["brightness"] == pytest.approx(100.0)
+        assert stored[2]["dynamics"]["duration"] == 0
+        assert "on" not in stored[2]
+        # The step stays on record: it is what the rejoin and the reports
+        # are judged against.
+        fade = runner.arbiter.state_of(GROUP_PATH).fade
+        assert fade is not None
+        assert fade.target.brightness == 20
+
+    async def test_a_refused_store_does_not_stop_the_runner(self, bridge, http, clock):
+        # A store runs on every tick while a scope is dark. Unguarded, one
+        # busy bridge ended the plan for the whole flat.
+        changes = FakeChanges()
+        fails: set[int] = set()
+        client = BrokenClient(bridge, http, fails)
+        clock.now = datetime.datetime(2026, 9, 1, 21, 50, tzinfo=BERLIN)
+        runner = await watched_runner(client, clock, changes)
+        await runner.catch_up()
+        changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": False}}))
+        clock.now = datetime.datetime(2026, 9, 1, 22, 0, tzinfo=BERLIN)
+        fails.add(client.http.attempts + 2)
+        assert await runner.tick() == 1
+
+        http.calls.clear()
+        clock.advance(minutes=5)
+        assert await runner.tick() == 1
+        (retry,) = http.writes
+        assert retry[2]["dynamics"]["duration"] == 0
+
     async def test_a_switch_off_wakes_the_loop_to_store_the_curve(self, bridge, clock):
         # A motion can come back two minutes after the switch-off. Waiting for
         # the next refresh left the bridge's memory in charge of that one.
