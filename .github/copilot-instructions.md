@@ -167,11 +167,15 @@ maths, or the executor.
   at duration zero, on a tick that had nothing else to send, and
   `DARK_REFRESH_SECONDS` caps the sleep. It touches neither the interrupted
   fade nor the owner. A step that asks for `on` lights the room and owns its
-  ramp instead.
+  ramp instead. A yielded dark scope stores the curve too, and a switch-off
+  wakes the loop to store it at once: the bridge's `last_on` otherwise brings
+  back the level from before the motion sensor's warning dim.
   A switch-on ends any yield and rejoins through `PlanRunner.rejoin()` -- the
   curve's current point over `catchup_ramp`, then the rest of the step --
   unless the claim in force says `on = false`, which is the one switch-on
-  that still yields.
+  that still yields. A report within `REPORT_LAG_SECONDS` of the switch-on,
+  before the rejoin's fade, is the second half of a `last_on` recall and
+  belongs to the switch (`ScopeState.switched_on_at`), not to a hand.
 - `plans/` depends on the `PlanClient` Protocol in `plans/protocol.py`, never on
   `client/base.py`. `src/huepy/cli.py` is the composition root: the one module
   outside `client/` that binds a plan to a concrete `Hue`, and the one that

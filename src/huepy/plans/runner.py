@@ -564,6 +564,10 @@ class PlanRunner:
                     self._label(path),
                     report,
                 )
+                # Store the curve's point now rather than at the next refresh:
+                # until a write lands, the bridge's `last_on` brings back the
+                # level from before the sensor's warning dim.
+                self._wake.set()
                 continue
             if verdict == "on":
                 # Back where the curve has got to, over the catch-up ramp,
@@ -829,7 +833,6 @@ class PlanRunner:
         """
         now = self._clock()
         written = 0
-        held: dict[str, Action] | None = None
         for claim in self.arbiter.claims(now):
             if self._closing.is_set():
                 # close() landed during another scope's write; finishing the
@@ -837,12 +840,19 @@ class PlanRunner:
                 break
             path = claim.binding.path
             state = self.arbiter.state_of(path)
+            store_dark = state.dark and claim.target.on is not True
 
             # A scope someone took over comes back at the first step, hold or
             # mode that began after the hand change, not before: the human
             # wins now, the plan wins later.
             if state.yielded_at is not None:
                 if claim.since is None or claim.since < state.yielded_at:
+                    # Dark, the hand level shows nowhere, and the next
+                    # switch-on ends the yield anyway. The motion sensor's
+                    # warning dim is such a hand change; storing nothing let
+                    # its `last_on` bring back the level from before the dim.
+                    if store_dark and await self._store_dark(claim, now):
+                        written += 1
                     continue
                 self.arbiter.resume(path)
                 logger.info("%s: taking the scope back", claim.binding.selector)
@@ -852,16 +862,11 @@ class PlanRunner:
                 and state.owner.source == claim.source
                 and not self._target_changed(claim)
             ):
-                if state.dark and claim.target.on is not True:
+                if store_dark:
                     # Nothing to send to a lit light. A dark one is still
                     # holding a level for whatever switches it on next, and
                     # the curve has moved on under it.
-                    if held is None:
-                        held = {
-                            point.binding.path: point.target
-                            for point in self.arbiter.claims(now, catching_up=True)
-                        }
-                    if await self._store_dark(claim, held.get(path)):
+                    if await self._store_dark(claim, now):
                         written += 1
                     continue
                 logger.debug(
@@ -874,7 +879,7 @@ class PlanRunner:
                 written += 1
         return written
 
-    async def _store_dark(self, claim: Claim, point: Action | None) -> bool:
+    async def _store_dark(self, claim: Claim, now: datetime.datetime) -> bool:
         """Keep a dark scope's stored level on the curve.
 
         A dark bulb cannot run a fade. It keeps whatever the last write asked
@@ -892,13 +897,21 @@ class PlanRunner:
 
         Args:
             claim: The scope's claim this tick.
-            point: Where the curve is now, or None when it says nothing.
+            now: The instant the curve is read at.
 
         Returns:
             True when a write went out.
 
         """
         path = claim.binding.path
+        point = next(
+            (
+                caught.target
+                for caught in self.arbiter.claims(now, catching_up=True)
+                if caught.binding.path == path
+            ),
+            None,
+        )
         if point is None or self._stored.get(path) == point:
             return False
         segments = plan_segments(claim.binding, point, ramp=0.0, current_on=False)

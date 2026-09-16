@@ -236,13 +236,32 @@ behind. It writes nothing else: the interrupted fade stays on record, because
 it is what a fade-in ramps up from and what judges the next report, and the
 owner stays as it was, because storing a level is not taking a scope over. A
 step that asks for `on` is not this case — that one lights the room and owns
-its ramp. A
+its ramp.
+
+A yielded scope that is dark stores the curve too, and a switch-off wakes the
+loop to store it at once. The motion sensor dims the room to half thirty
+seconds before its switch-off, as a warning, and that dim is a hand change.
+The bridge's `last_on` undoes its own dim: unless something wrote the bulb
+after the switch-off, it brings back the level from before the dim. One night
+in September the bathroom came on at 97 % at 00:35, 00:42 and 02:13 against a
+curve at 56, 45 and 20. A dark hand level shows nowhere, and the next switch-on
+ends the yield anyway, so storing the curve over it loses nothing. A write
+after the switch-off does replace the bridge's memory: the 00:00 step stored
+20 in a dark bulb, and `last_on` lit the room at 20 at 00:01.
+
+A
 switch-on is a restart in miniature for that one scope, `PlanRunner.rejoin()`:
 the curve's current point over `catchup_ramp`, then the rest of the step. Two
 members reporting in the same instant rejoin once, because the loop does the
 rejoin rather than the observer. The level a switch-on names — the bridge's
 `last_on` recall says what it restored — is remembered as the fade's start
-and otherwise ignored. The exception is a switch-on against a claim that says
+and otherwise ignored. A recall can arrive in two reports: `on` at the stored
+level, then, in the same second, a bare level (measured: 46.64 then 96.84).
+Judged against the old fade the second report yielded the scope before the
+rejoin went out, and nothing corrected the light. So a report within
+`REPORT_LAG_SECONDS` of the switch-on, before the rejoin's fade, is part of
+the switch (`ScopeState.switched_on_at`); a dial turned later is a hand. The
+exception is a switch-on against a claim that says
 `on = false`: the plan has nothing for a lit light there but "off", so that
 one is judged as a dial change and yields. It follows that a hand level does
 not survive a switch-off and switch-on; that is the decision, not an

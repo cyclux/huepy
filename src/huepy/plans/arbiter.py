@@ -466,6 +466,10 @@ class ScopeState:
             when nothing covering the scope runs there is no next step to
             precompute, and the scope must still come back when one arrives.
         hold: The rule currently holding this scope, if one fired.
+        switched_on_at: When a switch-on handed the scope back, until the
+            rejoin's fade goes out. A ``last_on`` recall arrives as two
+            reports -- ``on`` at the stored level, then a bare level -- and
+            the second belongs to the switch, not to a hand at the dial.
         dark: Whether the last power report said the light is off and no
             fade has switched it on since. The fade a switch-off cut short
             stays on record -- the plan's position on the scope, and what a
@@ -481,6 +485,7 @@ class ScopeState:
     reported: Action | None = None
     yielded_at: datetime.datetime | None = None
     hold: Hold | None = None
+    switched_on_at: datetime.datetime | None = None
     dark: bool = False
 
 
@@ -848,6 +853,7 @@ class Arbiter:
         state = self.state_of(fade.scope)
         state.fade = fade
         state.lapsed = None
+        state.switched_on_at = None
         if fade.target.on is True:
             state.dark = False
 
@@ -895,6 +901,18 @@ class Arbiter:
             # The fade on record asked for `on` before the switch-off, so it
             # would explain this; but the light was dark a moment ago.
             return self._switched_on(state, at, brightness=brightness)
+        if (
+            on is not False
+            and state.switched_on_at is not None
+            and at - state.switched_on_at
+            <= datetime.timedelta(seconds=REPORT_LAG_SECONDS)
+        ):
+            # The second half of a `last_on` recall: the bridge undoing the
+            # motion sensor's warning dim, a level from before it (measured:
+            # 46.64 then 96.84 in one second). Judged against the old fade it
+            # yielded the scope before the rejoin went out, and the bathroom
+            # stayed at 97 % through the night.
+            return self._switched_on(state, at, brightness=brightness)
         if _explained(state, brightness, at, on=on):
             return "fade"
         if on is False:
@@ -905,6 +923,7 @@ class Arbiter:
             # bulb, often 0, not a level anyone set; what the bridge holds is
             # the interrupted fade's target, and that is what comes back.
             state.dark = True
+            state.switched_on_at = None
             state.reported = _remember(state, fade, at, on=False, brightness=None)
             return "off"
         if fade is not None:
@@ -951,6 +970,10 @@ class Arbiter:
         state.dark = False
         state.reported = _remember(state, fade, at, on=True, brightness=brightness)
         state.yielded_at = None
+        if state.switched_on_at is None:
+            # The first report only: the window is the recall's, and a
+            # stream of reports must not keep it open.
+            state.switched_on_at = at
         return "on"
 
     def _wants_off(self, path: str, now: datetime.datetime) -> bool:

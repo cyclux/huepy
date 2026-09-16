@@ -2340,6 +2340,82 @@ class TestPowerIsNotAHandChange:
         first = http.writes[0]
         assert first[2]["dimming"]["brightness"] == pytest.approx(stored)
 
+    async def test_a_switch_on_reported_in_two_parts_still_rejoins(
+        self, bridge, http, clock
+    ):
+        # The motion sensor's `last_on` undoes its own warning dim: the bridge
+        # reports `on` at the stored level, then, in the same second, a bare
+        # level from before the dim (measured: 46.64 then 96.84 at 00:35:23).
+        # Judged against the old fade, the second half yielded the scope
+        # before the rejoin went out, and the bathroom stayed at 97 % all night.
+        changes = FakeChanges()
+        runner = await self.fading_at_nine(bridge, clock, changes)
+        clock.advance(minutes=30)
+        changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": False}}))
+        clock.advance(minutes=15)
+        http.calls.clear()
+        changes.deliver(
+            change(
+                LIGHT,
+                47.0,
+                clock.now,
+                delta={"on": {"on": True}, "dimming": {"brightness": 47.0}},
+            )
+        )
+        changes.report(LIGHT, 97.0, clock.now)
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+        assert await runner.rejoin() == 1
+        assert http.writes[0][2]["dimming"]["brightness"] == pytest.approx(80.0)
+
+    async def test_a_level_well_after_a_switch_on_is_still_a_hand(self, bridge, clock):
+        # The two halves of a recall land together; a dial turned later is a
+        # person, even while the rejoin has not been sent.
+        changes = FakeChanges()
+        runner = await self.fading_at_nine(bridge, clock, changes)
+        clock.advance(minutes=30)
+        changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": False}}))
+        clock.advance(minutes=15)
+        changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": True}}))
+        clock.advance(seconds=10)
+        changes.report(LIGHT, 30.0, clock.now)
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+
+    async def test_a_dark_yielded_light_still_stores_the_curve(
+        self, bridge, http, clock
+    ):
+        # The sensor's warning dim is a hand change, and the switch-off comes
+        # thirty seconds later. A yielded scope stored nothing, so the bridge
+        # recalled the level from before the dim at the next motion. The
+        # switch-on ends the yield anyway, so the level it lands on is the
+        # curve's.
+        changes = FakeChanges()
+        runner = await self.fading_at_nine(bridge, clock, changes)
+        clock.advance(minutes=30)
+        changes.report(LIGHT, 30.0, clock.now)
+        clock.advance(seconds=30)
+        changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": False}}))
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+        http.calls.clear()
+        clock.advance(minutes=10)
+        assert await runner.tick() == 1
+
+        (write,) = http.writes
+        # 20 to 100 over the hour from 09:00, so 74 at 09:40:30.
+        assert write[2]["dimming"]["brightness"] == pytest.approx(74.0, abs=0.05)
+        assert "on" not in write[2]
+        assert write[2]["dynamics"]["duration"] == 0
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+
+    async def test_a_switch_off_wakes_the_loop_to_store_the_curve(self, bridge, clock):
+        # A motion can come back two minutes after the switch-off. Waiting for
+        # the next refresh left the bridge's memory in charge of that one.
+        changes = FakeChanges()
+        runner = await self.fading_at_nine(bridge, clock, changes)
+        clock.advance(minutes=30)
+        runner._wake.clear()
+        changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": False}}))
+        assert runner._wake.is_set()
+
     async def test_a_switch_on_rejoins_the_curve_where_it_is_now(
         self, bridge, http, clock
     ):
