@@ -976,6 +976,33 @@ class Arbiter:
             state.switched_on_at = at
         return "on"
 
+    def restored(
+        self, path: str, at: datetime.datetime, *, brightness: float | None
+    ) -> None:
+        """Record a light brought back after a motion rule's warning dim.
+
+        The dim was a level command, so the bridge dropped the transition it
+        was running; the fade on record describes nothing any more. Left in
+        place, it put a rejoin's start at the fade's end, found nothing to
+        send, and left the bulb short of the curve. So it goes the way a
+        switch-on's does, and the light is remembered where it came back to.
+        Unlike a switch-on this ends no yield: the motion came back to a
+        room someone had set by hand.
+
+        Args:
+            path: The scope's write path.
+            at: When the level came back.
+            brightness: The level it came back to.
+
+        """
+        state = self.state_of(path)
+        fade = state.fade
+        if fade is not None:
+            state.lapsed = fade
+        state.fade = None
+        state.dark = False
+        state.reported = _remember(state, fade, at, on=True, brightness=brightness)
+
     def _wants_off(self, path: str, now: datetime.datetime) -> bool:
         """Whether the plan asks for this scope to be off right now.
 

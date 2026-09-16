@@ -37,6 +37,7 @@ from huepy.models import (
     Zone,
 )
 from huepy.models.common import ResourceType
+from huepy.plans.automation import Malformed, MotionRule, parse_motion_rule
 from huepy.plans.fields import ScopeKind, Selector, TriggerKind
 from huepy.plans.protocol import PlanClient
 from huepy.plans.schema import Plan, Scenario
@@ -109,6 +110,9 @@ class ResolvedPlan:
             expects -- a sensor disabled on the bridge, which resolves fine
             and never fires. Not errors, because disabling a sensor in the
             app for a week should not stop the rest of the plan running.
+        motion_rules: The Hue app's enabled motion automations that switch a
+            room off, read so the runner knows their warning dim for what it
+            is. Read from the same snapshot as everything else.
 
     """
 
@@ -116,6 +120,7 @@ class ResolvedPlan:
     scopes: dict[str, tuple[Binding, ...]]
     triggers: dict[str, TriggerBinding]
     warnings: tuple[str, ...] = ()
+    motion_rules: tuple[MotionRule, ...] = ()
 
     def scope_of(self, scenario: Scenario) -> tuple[Binding, ...]:
         """Look up the bindings a scenario writes to.
@@ -445,6 +450,57 @@ def _overlaps(scopes: dict[str, tuple[Binding, ...]]) -> list[str]:
     return found
 
 
+def _motion_rules(
+    resources: list[AnyResource], warnings: list[str]
+) -> tuple[MotionRule, ...]:
+    """Read every enabled Hue app motion automation that switches a room off.
+
+    Args:
+        resources: Everything the aggregate endpoint returned.
+        warnings: Accumulator for automations that look like motion rules but
+            cannot be read with certainty. A warning, not an error: an
+            unreadable rule only means its warning dim is judged as a hand
+            change, as it was before rules were read at all.
+
+    Returns:
+        The rules, in snapshot order.
+
+    """
+    lights = [resource for resource in resources if isinstance(resource, Light)]
+    motion_ids = {resource.id for resource in resources if isinstance(resource, Motion)}
+    motions_of_device: dict[str, tuple[str, ...]] = {}
+    lights_of_group: dict[str, frozenset[str]] = {}
+    for resource in resources:
+        if isinstance(resource, Device):
+            owned = tuple(s.rid for s in resource.services if s.rtype == "motion")
+            motions_of_device[resource.id] = owned
+            motion_ids.update(owned)
+        elif isinstance(resource, (Room, Zone)):
+            lights_of_group[resource.id] = frozenset(
+                light.id for light in lights if resource.contains_light(light)
+            )
+    rules: list[MotionRule] = []
+    for resource in resources:
+        if not isinstance(resource, BehaviorInstance):
+            continue
+        parsed = parse_motion_rule(
+            resource,
+            motion_ids=frozenset(motion_ids),
+            motions_of_device=motions_of_device,
+            lights_of_group=lights_of_group,
+        )
+        if isinstance(parsed, MotionRule):
+            rules.append(parsed)
+        elif isinstance(parsed, Malformed):
+            msg = (
+                f"the Hue app's motion automation '{resource.name}' cannot be "
+                f"read ({parsed.reason}); its warning dim before the switch-off "
+                "is judged as a hand change"
+            )
+            warnings.append(msg)
+    return tuple(rules)
+
+
 def bind(resources: list[AnyResource], plan: Plan) -> ResolvedPlan:
     """Bind every name in a plan against one snapshot.
 
@@ -494,8 +550,13 @@ def bind(resources: list[AnyResource], plan: Plan) -> ResolvedPlan:
         raise PlanError(msg)
 
     warnings.extend(_overlaps(scopes))
+    motion_rules = _motion_rules(resources, warnings)
     return ResolvedPlan(
-        plan=plan, scopes=scopes, triggers=triggers, warnings=tuple(warnings)
+        plan=plan,
+        scopes=scopes,
+        triggers=triggers,
+        warnings=tuple(warnings),
+        motion_rules=motion_rules,
     )
 
 

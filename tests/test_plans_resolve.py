@@ -488,3 +488,65 @@ class TestSegmentDelays:
         # Every segment after the first waits a full slot.
         total = sum(s.delay for s in segments)
         assert total == pytest.approx(18000 - segments[0].duration)
+
+
+def motion_automation(*, enabled=True, where_rid="room-living"):
+    return {
+        "id": "auto-motion",
+        "type": "behavior_instance",
+        "enabled": enabled,
+        "metadata": {"name": "Hall motion"},
+        "configuration": {
+            "motion": {
+                "motion_service": {"rid": MOTION, "rtype": "motion"},
+                "when": {
+                    "timeslots": [
+                        {
+                            "on_motion": {"recall_single": [{"action": "last_on"}]},
+                            "on_no_motion": {
+                                "after": {"minutes": 5},
+                                "recall_single": [{"action": "all_off"}],
+                            },
+                        }
+                    ]
+                },
+                "where": [{"group": {"rid": where_rid, "rtype": "room"}}],
+            },
+            "source": {"rid": SENSOR_DEVICE, "rtype": "device"},
+        },
+    }
+
+
+class TestResolveMotionRules:
+    """The Hue app's motion automations, read so their warning dim is known."""
+
+    async def test_a_motion_automation_is_read(self, hue, http):
+        http.queue(
+            "/clip/v2/resource", envelope(*bridge_resources(), motion_automation())
+        )
+        resolved = await resolve(hue, make_plan())
+        (rule,) = resolved.motion_rules
+        assert rule.behavior_id == "auto-motion"
+        assert rule.motion_service_id == MOTION
+        assert rule.light_ids == frozenset({LIGHT})
+        assert rule.afters == frozenset({300.0})
+        assert resolved.warnings == ()
+
+    async def test_a_disabled_motion_automation_is_not_read(self, hue, http):
+        http.queue(
+            "/clip/v2/resource",
+            envelope(*bridge_resources(), motion_automation(enabled=False)),
+        )
+        assert (await resolve(hue, make_plan())).motion_rules == ()
+
+    async def test_an_unreadable_motion_automation_is_a_warning_not_an_error(
+        self, hue, http
+    ):
+        http.queue(
+            "/clip/v2/resource",
+            envelope(*bridge_resources(), motion_automation(where_rid="room-gone")),
+        )
+        resolved = await resolve(hue, make_plan())
+        assert resolved.motion_rules == ()
+        (warning,) = resolved.warnings
+        assert warning.startswith("the Hue app's motion automation 'Hall motion'")

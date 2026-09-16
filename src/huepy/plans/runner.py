@@ -29,7 +29,17 @@ from dataclasses import dataclass
 from typing import Any, Literal, Self, cast
 
 from huepy.exceptions import HueError
+from huepy.models.light import Light
 from huepy.plans.arbiter import Arbiter, Claim, Fade
+from huepy.plans.automation import (
+    FOLLOW_UP_SECONDS,
+    MotionRule,
+    PendingWarning,
+    bare_level,
+    follow_up,
+    is_warning_dim,
+    motion_transition,
+)
 from huepy.plans.executor import Segment, plan_segments, send, send_chain
 from huepy.plans.fields import (
     LIGHT_LEVEL_DEADBAND,
@@ -48,7 +58,7 @@ from huepy.plans.timeline import (
     next_transition,
     zone_of,
 )
-from huepy.state.records import Change, Resync
+from huepy.state.records import Change, ChangeKind, Resync
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +102,16 @@ CONTACT_OPENED = "no_contact"
 
 LIGHT_TYPE = "light"
 """The one resource type whose reports are judged as measurements of a scope."""
+
+BEHAVIOR_TYPE = "behavior_instance"
+"""The resource type of a Hue app automation."""
+
+RULE_FIELDS = frozenset({"enabled", "configuration", "script_id"})
+"""The fields of an automation whose change can change what its rule does.
+
+An automation also reports its running state; that changes nothing read here,
+and forgetting the rule on it would forget it the first time it ran.
+"""
 
 type Clock = Callable[[], datetime.datetime]
 type Sleeper = Callable[[float], Awaitable[None]]
@@ -401,6 +421,16 @@ class PlanRunner:
         # The level last stored in each dark scope, so a stirring tick that
         # finds the curve unmoved costs no request.
         self._stored: dict[str, Action] = {}
+        # The Hue app's motion rules on lights this plan drives, and what the
+        # runner has seen of them: when each rule's sensor last went still,
+        # and each warning dim still waiting for the switch-off.
+        self._rules_of_light: dict[str, tuple[MotionRule, ...]] = {}
+        self._no_motion: dict[str, datetime.datetime] = {}
+        self._pending: dict[str, PendingWarning] = {}
+        # Automations seen changing before resolution finished, and whether
+        # the stream lost continuity then: the snapshot's rules are stale.
+        self._rules_changed: set[str] = set()
+        self._rules_stale: bool = False
 
     async def start(self) -> None:
         """Resolve every name in the plan against the bridge.
@@ -411,19 +441,29 @@ class PlanRunner:
                 plan.
 
         """
-        self._resolved = await resolve(self._client, self.plan)
-        self._arbiter = Arbiter(resolved=self._resolved, zone=self._zone)
-        self._index_scopes(self._resolved)
-        self._index_triggers(self._resolved)
-        if self._changes is not None:
-            # Subscribed under `reassert` too: not yielding is a different
-            # thing from not looking. A hand switch-off still has to reset
-            # what the runner believes about the light.
-            self._subscription = self._changes.on_change(self._observe)
-            # A gap in the stream invalidates every belief this runner holds
-            # about what is in flight, so the answer is to re-derive the whole
-            # picture from the clock rather than trust any of it.
-            self._resync = self._changes.on_resync(self._observe_resync)
+        try:
+            if self._changes is not None:
+                # Subscribed under `reassert` too: not yielding is a different
+                # thing from not looking. A hand switch-off still has to reset
+                # what the runner believes about the light. Subscribed before
+                # resolving, so an app automation rewritten while the snapshot
+                # is in flight is seen changing rather than trusted as it was.
+                self._subscription = self._changes.on_change(self._observe)
+                # A gap in the stream invalidates every belief this runner
+                # holds about what is in flight, so the answer is to re-derive
+                # the whole picture from the clock rather than trust any of it.
+                self._resync = self._changes.on_resync(self._observe_resync)
+            resolved = await resolve(self._client, self.plan)
+            self._index_scopes(resolved)
+            self._index_triggers(resolved)
+            self._index_motion_rules(resolved)
+        except BaseException:
+            # Early subscription means a failed start would otherwise leave a
+            # half-built runner listening to the stream.
+            self._unsubscribe()
+            raise
+        self._resolved = resolved
+        self._arbiter = Arbiter(resolved=resolved, zone=self._zone)
         logger.info(
             "plan resolved: %d scenarios, %d scopes",
             len(self.plan.scenario),
@@ -500,6 +540,34 @@ class PlanRunner:
                 if rule.threshold is not None:
                     _ = self._thresholds.setdefault(str(rule.when), Threshold.of(rule))
 
+    def _index_motion_rules(self, resolved: ResolvedPlan) -> None:
+        """Map every light this plan drives to the app motion rules acting on it.
+
+        Args:
+            resolved: The plan, with every name bound.
+
+        """
+        if self._rules_stale:
+            msg = (
+                "continuity lost while resolving; the app's motion automations "
+                "are read again on restart"
+            )
+            logger.info(msg)
+            return
+        for rule in resolved.motion_rules:
+            if rule.behavior_id in self._rules_changed:
+                logger.info(
+                    (
+                        "the app's motion automation '%s' changed while resolving; "
+                        "it is read again on restart"
+                    ),
+                    rule.name,
+                )
+                continue
+            for light_id in rule.light_ids & self._scope_of.keys():
+                known = self._rules_of_light.get(light_id, ())
+                self._rules_of_light[light_id] = (*known, rule)
+
     def _observe(self, change: Change) -> None:
         """React to a change: a sensor firing, or a human adjusting a light.
 
@@ -507,10 +575,97 @@ class PlanRunner:
             change: The observed transition.
 
         """
+        if change.resource_type == BEHAVIOR_TYPE:
+            self._observe_automation(change)
+            return
+        if self._arbiter is None:
+            # Still resolving: nothing is driven yet, so nothing is judged.
+            return
+        self._note_motion(change)
         triggers = self._triggers_of.get(change.resource_id)
         if triggers is not None:
             self._observe_trigger(change, triggers)
             return
+        self._observe_light(change)
+
+    def _observe_automation(self, change: Change) -> None:
+        """Forget an app motion rule whose configuration may have changed.
+
+        The rule is not read again here: the runner has no snapshot to read
+        the rooms it names against. Forgetting it fails closed -- its next
+        warning dim is judged as a hand change, as before rules were read.
+
+        Args:
+            change: The observed transition on a ``behavior_instance``.
+
+        """
+        if change.kind != ChangeKind.DELETE and not (RULE_FIELDS & change.delta.keys()):
+            return
+        self._rules_changed.add(change.resource_id)
+        self._forget_rules(
+            lambda rule: rule.behavior_id == change.resource_id,
+            "changed on the bridge",
+        )
+
+    def _forget_rules(self, forget: Callable[[MotionRule], bool], why: str) -> None:
+        """Drop app motion rules, and the warning dims they left waiting.
+
+        Args:
+            forget: Which rules to drop.
+            why: What happened, for the log.
+
+        """
+        dropped: set[str] = set()
+        for light_id, rules in tuple(self._rules_of_light.items()):
+            dropped.update(rule.name for rule in rules if forget(rule))
+            kept = tuple(rule for rule in rules if not forget(rule))
+            if kept:
+                self._rules_of_light[light_id] = kept
+            else:
+                del self._rules_of_light[light_id]
+        for light_id, pending in tuple(self._pending.items()):
+            rules = self._rules_of_light.get(light_id, ())
+            if all(rule.behavior_id != pending.behavior_id for rule in rules):
+                del self._pending[light_id]
+        for name in sorted(dropped):
+            logger.info(
+                (
+                    "the app's motion automation '%s' %s; its warning dim is judged "
+                    "as a hand change until restart"
+                ),
+                name,
+                why,
+            )
+
+    def _note_motion(self, change: Change) -> None:
+        """Remember when an app motion rule's sensor last went still.
+
+        Args:
+            change: Any observed transition.
+
+        """
+        watched = any(
+            rule.motion_service_id == change.resource_id
+            for rules in self._rules_of_light.values()
+            for rule in rules
+        )
+        if not watched:
+            return
+        moving = motion_transition(change.delta)
+        if moving is False:
+            # The host's clock, as the dim's `received_at` is: the two are
+            # subtracted, and no bridge timestamp is compared with either.
+            self._no_motion[change.resource_id] = change.received_at
+        elif moving is True:
+            _ = self._no_motion.pop(change.resource_id, None)
+
+    def _observe_light(self, change: Change) -> None:
+        """Judge a report on a light: a fade, a switch, a hand, or an app's warning.
+
+        Args:
+            change: The observed transition.
+
+        """
         if change.resource_type != LIGHT_TYPE:
             # A grouped_light's dimming is the average of its members' *last
             # reports* -- during a fade a stale mix of targets and progress,
@@ -525,78 +680,242 @@ class PlanRunner:
             # construction. `origin == "self"` is deliberately *not* trusted:
             # it is the state layer's time window, which attributes every
             # report on the light to us until the fade ends -- the masking
-            # the arbiter's own arithmetic exists to avoid.
+            # the arbiter's own arithmetic exists to avoid. Checked before a
+            # pending warning dim, so a write of ours never settles one.
             return
-        brightness = _reported_brightness(change)
-        on = _reported_on(change)
         # The runner's clock, not the report's own timestamp: the instant a
         # yield began is compared against hold placements and mode
         # activations, which come from this clock, and a trigger arriving
         # within bridge-clock skew of the hand change must not lose to it.
         now = self._clock()
+        pending = self._pending.pop(change.resource_id, None)
+        if pending is not None:
+            if follow_up(pending, delta=change.delta) == "restored":
+                self._restore(pending, bare_level(change.delta), now)
+                return
+            # A switch-off, or anything else: the newer report says where the
+            # light is now and is judged as itself. The dim is forgotten.
+        elif self._recognize_warning(change, now):
+            return
+        brightness = _reported_brightness(change)
+        on = _reported_on(change)
         for path in self._scope_of.get(change.resource_id, ()):
-            report = _describe_report(change.resource_id, brightness, on)
-            state = self.arbiter.state_of(path)
-            # After a hand change the fade it interrupted goes on explaining
-            # the members the human did not touch; say which one answered.
-            fade = state.fade if state.fade is not None else state.lapsed
-            which = "running" if state.fade is not None else "interrupted"
-            expected = fade.expected_at(now).brightness if fade is not None else None
-            verdict = self.arbiter.note_foreign_change(path, brightness, now, on=on)
-            if verdict == "fade":
-                # One line per progress report the bridge sends during a fade.
-                # It is the override arithmetic's verdict, which is the thing
-                # to read when a light is yielded that should not have been.
-                logger.debug(
-                    "%s: %s explained by the %s fade (expected %s)",
-                    self._label(path),
-                    report,
-                    which,
-                    _brightness_text(expected),
+            self._judge(path, change.resource_id, brightness, on, now)
+
+    def _recognize_warning(self, change: Change, now: datetime.datetime) -> bool:
+        """Hold back a report that is an app motion rule's warning dim.
+
+        The arbiter is not told: the scope is neither yielded nor moved off
+        its fade while the bridge decides between switching the room off and
+        bringing the level back.
+
+        Args:
+            change: A light report that is not ours.
+            now: The runner's clock.
+
+        Returns:
+            True when the report was a warning dim, now pending.
+
+        """
+        rules = self._rules_of_light.get(change.resource_id, ())
+        before = change.before if isinstance(change.before, Light) else None
+        before_on = before.on.on if before is not None and before.on else None
+        pre = (
+            before.dimming.brightness if before is not None and before.dimming else None
+        )
+        dimmed = bare_level(change.delta)
+        rule = next(
+            (
+                rule
+                for rule in rules
+                if is_warning_dim(
+                    delta=change.delta,
+                    before_on=before_on,
+                    before_brightness=pre,
+                    no_motion_at=self._no_motion.get(rule.motion_service_id),
+                    received_at=change.received_at,
+                    afters=rule.afters,
                 )
-                continue
-            if verdict == "off":
-                # The tail of a chained fade is left running: another member
-                # of the scope may still be lit and following it, and on the
-                # dark one the bridge just stores what arrives.
-                logger.info(
-                    "%s: %s; switched off, the plan goes on without it",
-                    self._label(path),
-                    report,
-                )
-                # Store the curve's point now rather than at the next refresh:
-                # until a write lands, the bridge's `last_on` brings back the
-                # level from before the sensor's warning dim.
-                self._wake.set()
-                continue
-            if verdict == "on":
-                # Back where the curve has got to, over the catch-up ramp,
-                # then the rest of the step -- the loop does it, so two
-                # members reporting in the same instant rejoin once.
-                logger.info(
-                    "%s: %s; switched on, rejoining the plan",
-                    self._label(path),
-                    report,
-                )
+            ),
+            None,
+        )
+        if rule is None or pre is None or dimmed is None:
+            return False
+        self._pending[change.resource_id] = PendingWarning(
+            light_id=change.resource_id,
+            behavior_id=rule.behavior_id,
+            rule_name=rule.name,
+            pre=pre,
+            dimmed=dimmed,
+            observed_at=now,
+            due=now + datetime.timedelta(seconds=FOLLOW_UP_SECONDS),
+        )
+        for path in self._scope_of.get(change.resource_id, ()):
+            # A chained segment landing during the warning would undo the dim
+            # the bridge is about to act on; a restore sends the curve again.
+            self._cancel_fade(path)
+            logger.info(
+                (
+                    "%s: warning dim by the app's '%s' (%s to %s); waiting for the "
+                    "switch-off"
+                ),
+                self._label(path),
+                rule.name,
+                _brightness_text(pre),
+                _brightness_text(dimmed),
+            )
+        # The loop's sleep has to end in time to judge a dim nobody follows up.
+        self._wake.set()
+        return True
+
+    def _restore(
+        self, pending: PendingWarning, level: float | None, now: datetime.datetime
+    ) -> None:
+        """Put a light back on the plan after motion undid a warning dim.
+
+        A restore is a switch-on in all but name: the room is in use again,
+        so it rejoins the curve -- whether or not the fade on record has
+        ended, because the dim replaced the bridge's transition. A scope
+        someone set by hand stays theirs.
+
+        Args:
+            pending: The warning dim the restore followed.
+            level: The level the light came back to.
+            now: The runner's clock.
+
+        """
+        for path in self._scope_of.get(pending.light_id, ()):
+            self.arbiter.restored(path, now, brightness=level)
+            yielded = self.arbiter.is_yielded(path)
+            logger.info(
+                "%s: %s back after the warning dim; %s",
+                self._label(path),
+                _brightness_text(level),
+                "standing back" if yielded else "rejoining the plan",
+            )
+            if not yielded:
                 self._rejoining.add(path)
                 self._wake.set()
-                continue
-            # Stop the rest of a chained fade. Without this, the second half of
-            # a three-hour sunset would still land an hour after someone turned
-            # the lights up by hand.
-            self._cancel_fade(path)
-            verdict = (
-                "standing back" if self.arbiter.is_yielded(path) else "re-asserting"
-            )
-            logger.info(
-                "%s: %s is not the running fade (expected %s); changed by hand, %s",
+
+    def _expire_warnings(self, now: datetime.datetime) -> None:
+        """Judge the warning dims nothing followed up.
+
+        Judged now, as a hand report arriving late would be -- unless a step,
+        hold or mode began after the dim: a hand change at the dim would have
+        lasted only until then, so the dim is superseded and dropped.
+
+        Args:
+            now: The runner's clock.
+
+        """
+        due = [p for p in self._pending.values() if p.due <= now]
+        if not due:
+            return
+        claims = {claim.binding.path: claim for claim in self.arbiter.claims(now)}
+        for pending in due:
+            del self._pending[pending.light_id]
+            for path in self._scope_of.get(pending.light_id, ()):
+                claim = claims.get(path)
+                if (
+                    claim is not None
+                    and claim.since is not None
+                    and (claim.since > pending.observed_at)
+                ):
+                    logger.info(
+                        (
+                            "%s: warning dim by the app's '%s' not followed up; %s "
+                            "has begun since"
+                        ),
+                        self._label(path),
+                        pending.rule_name,
+                        claim.source,
+                    )
+                    continue
+                logger.info(
+                    "%s: warning dim by the app's '%s' not followed up",
+                    self._label(path),
+                    pending.rule_name,
+                )
+                self._judge(path, pending.light_id, pending.dimmed, None, now)
+
+    def _judge(
+        self,
+        path: str,
+        resource_id: str,
+        brightness: float | None,
+        on: bool | None,
+        now: datetime.datetime,
+    ) -> None:
+        """Have the arbiter judge a foreign report on one scope, and act on it.
+
+        Args:
+            path: The scope's write path.
+            resource_id: The light that reported.
+            brightness: The brightness it reported, if any.
+            on: The power state it reported, if any.
+            now: The runner's clock.
+
+        """
+        report = _describe_report(resource_id, brightness, on)
+        state = self.arbiter.state_of(path)
+        # After a hand change the fade it interrupted goes on explaining
+        # the members the human did not touch; say which one answered.
+        fade = state.fade if state.fade is not None else state.lapsed
+        which = "running" if state.fade is not None else "interrupted"
+        expected = fade.expected_at(now).brightness if fade is not None else None
+        verdict = self.arbiter.note_foreign_change(path, brightness, now, on=on)
+        if verdict == "fade":
+            # One line per progress report the bridge sends during a fade.
+            # It is the override arithmetic's verdict, which is the thing
+            # to read when a light is yielded that should not have been.
+            logger.debug(
+                "%s: %s explained by the %s fade (expected %s)",
                 self._label(path),
                 report,
+                which,
                 _brightness_text(expected),
-                verdict,
             )
-            if not self.arbiter.is_yielded(path):
-                self._wake.set()
+            return
+        if verdict == "off":
+            # The tail of a chained fade is left running: another member
+            # of the scope may still be lit and following it, and on the
+            # dark one the bridge just stores what arrives.
+            logger.info(
+                "%s: %s; switched off, the plan goes on without it",
+                self._label(path),
+                report,
+            )
+            # Store the curve's point now rather than at the next refresh:
+            # until a write lands, the bridge's `last_on` brings back the
+            # level from before the sensor's warning dim.
+            self._wake.set()
+            return
+        if verdict == "on":
+            # Back where the curve has got to, over the catch-up ramp,
+            # then the rest of the step -- the loop does it, so two
+            # members reporting in the same instant rejoin once.
+            logger.info(
+                "%s: %s; switched on, rejoining the plan",
+                self._label(path),
+                report,
+            )
+            self._rejoining.add(path)
+            self._wake.set()
+            return
+        # Stop the rest of a chained fade. Without this, the second half of
+        # a three-hour sunset would still land an hour after someone turned
+        # the lights up by hand.
+        self._cancel_fade(path)
+        verdict = "standing back" if self.arbiter.is_yielded(path) else "re-asserting"
+        logger.info(
+            "%s: %s is not the running fade (expected %s); changed by hand, %s",
+            self._label(path),
+            report,
+            _brightness_text(expected),
+            verdict,
+        )
+        if not self.arbiter.is_yielded(path):
+            self._wake.set()
 
     def _observe_trigger(self, change: Change, triggers: list[TriggerBinding]) -> None:
         """Fire every trigger a sensor change means.
@@ -644,6 +963,12 @@ class PlanRunner:
         """
         logger.info("continuity lost (%s); recomputing every scope", resync.reason)
         self._needs_catchup = True
+        # A motion report or a rule rewrite may be lost in the gap, and either
+        # would make a stale countdown or rule match a hand. Fail closed.
+        self._no_motion.clear()
+        self._pending.clear()
+        self._rules_stale = True
+        self._forget_rules(lambda _rule: True, "may have changed during the gap")
         self._wake.set()
 
     def _cancel_fade(self, path: str) -> None:
@@ -672,6 +997,14 @@ class PlanRunner:
         self._closing.set()
         self._wake.set()
 
+    def _unsubscribe(self) -> None:
+        """Stop receiving changes and continuity markers."""
+        for subscription in (self._subscription, self._resync):
+            if subscription is not None:
+                subscription.cancel()
+        self._subscription = None
+        self._resync = None
+
     async def close(self) -> None:
         """Stop the runner, cancelling any fade still being chained.
 
@@ -679,11 +1012,7 @@ class PlanRunner:
         point of a long transition -- but the chaining of later segments stops.
         """
         self.stop()
-        for subscription in (self._subscription, self._resync):
-            if subscription is not None:
-                subscription.cancel()
-        self._subscription = None
-        self._resync = None
+        self._unsubscribe()
 
         tasks = tuple(self._fades.values())
         for task in tasks:
@@ -833,6 +1162,7 @@ class PlanRunner:
         """
         now = self._clock()
         written = 0
+        self._expire_warnings(now)
         for claim in self.arbiter.claims(now):
             if self._closing.is_set():
                 # close() landed during another scope's write; finishing the
@@ -1180,6 +1510,7 @@ class PlanRunner:
         expiry = self.arbiter.next_expiry(now)
         if expiry is not None:
             upcoming.append(expiry)
+        upcoming.extend(pending.due for pending in self._pending.values())
         gated = (s for s in self.plan.scenario if s.enabled and s.days is not None)
         if any(gated):
             # `days` gates by the local calendar date, so a scenario can start

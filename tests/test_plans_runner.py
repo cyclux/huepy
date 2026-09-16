@@ -10,7 +10,7 @@ import copy
 import datetime
 import logging
 import zoneinfo
-from typing import Any, Literal
+from typing import Any, Literal, override
 
 import pytest
 
@@ -659,6 +659,7 @@ class TestObservation:
 
         # Nothing changed on the clock, so a plain tick would write nothing.
         assert await runner.tick() == 0
+        assert changes.resync_handler is not None
         assert changes.resync_handler is not None
         changes.resync_handler(
             Resync(
@@ -3033,3 +3034,431 @@ class TestLateWake:
 
         assert len(http.writes) == 1
         assert http.writes[0][2]["dynamics"]["duration"] == 60 * 60 * 1000 - 100
+
+
+MOTION_AUTOMATION = "auto-hall"
+
+
+def motion_automation():
+    return {
+        "id": MOTION_AUTOMATION,
+        "type": "behavior_instance",
+        "enabled": True,
+        "metadata": {"name": "Hall motion"},
+        "configuration": {
+            "motion": {
+                "motion_service": {"rid": MOTION, "rtype": "motion"},
+                "when": {
+                    "timeslots": [
+                        {
+                            "on_motion": {"recall_single": [{"action": "last_on"}]},
+                            "on_no_motion": {
+                                "after": {"minutes": 5},
+                                "recall_single": [{"action": "all_off"}],
+                            },
+                        }
+                    ]
+                },
+                "where": [{"group": {"rid": "room-living", "rtype": "room"}}],
+            },
+            "source": {"rid": SENSOR_DEVICE, "rtype": "device"},
+        },
+    }
+
+
+def lit(brightness):
+    return parse_resource(
+        {
+            "id": LIGHT,
+            "type": "light",
+            "owner": {"rid": DEVICE, "rtype": "device"},
+            "on": {"on": True},
+            "dimming": {"brightness": brightness},
+        }
+    )
+
+
+def level(
+    brightness,
+    at,
+    *,
+    before=None,
+    observation: Literal["reported", "command_echo"] = "reported",
+):
+    """Build a bare level report on the member light, as the warning dim sends it."""
+    return Change(
+        kind=ChangeKind.UPDATE,
+        received_at=at,
+        resource_id=LIGHT,
+        resource_type="light",
+        before=None if before is None else lit(before),
+        after=None,
+        delta={"dimming": {"brightness": brightness}},
+        observation=observation,
+    )
+
+
+def automation_change(at, **delta):
+    return Change(
+        kind=ChangeKind.UPDATE,
+        received_at=at,
+        resource_id=MOTION_AUTOMATION,
+        resource_type="behavior_instance",
+        before=None,
+        after=None,
+        delta=delta,
+    )
+
+
+class TestWarningDim:
+    """A Hue app motion rule dims the room before it switches it off.
+
+    Measured on 147 dims in the bathroom: 50.2 points down, or to 0, 260 s
+    after the sensor's `motion=false`, the switch-off 30 s later. Judged as a
+    hand change, the dim stood the plan back from the room until its next
+    step, and the bathroom came on at 97 % at 02:13 against a curve at 20.
+    """
+
+    @pytest.fixture
+    def warned(self, hue, http):
+        http.queue(
+            "/clip/v2/resource", envelope(*sensor_resources(), motion_automation())
+        )
+        return hue
+
+    async def running(self, warned, clock, changes, plan=None, at=(9, 0)):
+        clock.now = datetime.datetime(2026, 9, 1, *at, tzinfo=BERLIN)
+        runner = await watched_runner(warned, clock, changes, plan)
+        await runner.catch_up()
+        await runner.tick()
+        return runner
+
+    def warn(self, changes, clock, before=60.0):
+        """No motion, then the dim 260 s later, as the bridge sends them."""
+        changes.deliver(motion(clock.now, detected=False))
+        clock.advance(seconds=260)
+        changes.deliver(level(max(0.0, before - 50.2), clock.now, before=before))
+
+    async def test_the_dim_then_the_off_does_not_yield(self, warned, http, clock):
+        changes = FakeChanges()
+        runner = await self.running(warned, clock, changes)
+        clock.advance(minutes=30)
+        self.warn(changes, clock)
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+        assert runner.arbiter.state_of(GROUP_PATH).fade is not None
+
+        clock.advance(seconds=30)
+        changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": False}}))
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+        http.calls.clear()
+        assert await runner.tick() == 1
+        assert http.writes[0][2]["dynamics"]["duration"] == 0
+
+    async def test_the_level_coming_back_rejoins_the_curve(self, warned, http, clock):
+        # The dim replaced the bridge's transition, so the fade on record is
+        # no longer running anywhere: the curve has to be sent again.
+        changes = FakeChanges()
+        runner = await self.running(warned, clock, changes)
+        clock.advance(minutes=30)
+        self.warn(changes, clock)
+        clock.advance(seconds=20)
+        changes.deliver(level(60.0, clock.now))
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+        http.calls.clear()
+        assert await runner.rejoin() == 1
+        # 20 to 100 over the hour from 09:00, at 09:34:40.
+        assert http.writes[0][2]["dimming"]["brightness"] == pytest.approx(
+            66.2, abs=0.1
+        )
+
+    async def test_a_fade_that_ended_on_paper_during_the_warning_still_rejoins(
+        self, warned, http, clock
+    ):
+        # The dim at 09:59:40 cancelled the last twenty seconds of the fade; by
+        # the restore at 10:00:10 the fade on record says 100. Starting the
+        # rejoin from that record found nothing to send.
+        changes = FakeChanges()
+        runner = await self.running(warned, clock, changes)
+        clock.now = datetime.datetime(2026, 9, 1, 9, 55, 20, tzinfo=BERLIN)
+        self.warn(changes, clock, before=90.0)
+        clock.advance(seconds=30)
+        changes.deliver(level(90.0, clock.now))
+        http.calls.clear()
+        assert await runner.rejoin() == 1
+        assert http.writes[0][2]["dimming"]["brightness"] == pytest.approx(100.0)
+
+    async def test_a_yielded_scope_stays_yielded(self, warned, http, clock):
+        changes = FakeChanges()
+        runner = await self.running(warned, clock, changes)
+        clock.advance(minutes=10)
+        changes.report(LIGHT, 80.0, clock.now)
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+        clock.advance(minutes=10)
+        self.warn(changes, clock, before=80.0)
+        clock.advance(seconds=20)
+        changes.deliver(level(80.0, clock.now))
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+        http.calls.clear()
+        assert await runner.rejoin() == 0
+        assert runner.arbiter.state_of(GROUP_PATH).reported == Action(
+            on=True, brightness=80.0
+        )
+
+    async def test_the_wrong_amount_is_a_hand(self, warned, clock):
+        changes = FakeChanges()
+        runner = await self.running(warned, clock, changes)
+        clock.advance(minutes=30)
+        changes.deliver(motion(clock.now, detected=False))
+        clock.advance(seconds=260)
+        changes.deliver(level(30.0, clock.now, before=60.0))
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+
+    async def test_without_a_no_motion_report_it_is_a_hand(self, warned, clock):
+        changes = FakeChanges()
+        runner = await self.running(warned, clock, changes)
+        clock.advance(minutes=30)
+        changes.deliver(level(9.8, clock.now, before=60.0))
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+
+    async def test_an_update_without_a_motion_transition_starts_no_countdown(
+        self, warned, clock
+    ):
+        # Re-enabling the sensor while its last state was "no motion" is not
+        # the room going still.
+        changes = FakeChanges()
+        runner = await self.running(warned, clock, changes)
+        clock.advance(minutes=30)
+        changes.deliver(sensor_change(MOTION, "motion", clock.now, enabled=True))
+        clock.advance(seconds=260)
+        changes.deliver(level(9.8, clock.now, before=60.0))
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+
+    def gap(self, changes, clock):
+        assert changes.resync_handler is not None
+        changes.resync_handler(
+            Resync(
+                reason=ResyncReason.RECONNECT,
+                gap_started=clock.now,
+                gap_ended=clock.now,
+            )
+        )
+
+    async def test_a_gap_in_the_stream_forgets_the_rules(self, warned, clock):
+        # A rule rewritten inside the gap would never be seen changing.
+        changes = FakeChanges()
+        runner = await self.running(warned, clock, changes)
+        clock.advance(minutes=30)
+        self.gap(changes, clock)
+        self.warn(changes, clock)
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+
+    async def test_a_gap_forgets_the_countdown_and_the_pending_dim(self, warned, clock):
+        # A `motion=true` lost in the gap would leave a stale countdown.
+        changes = FakeChanges()
+        runner = await self.running(warned, clock, changes)
+        clock.advance(minutes=30)
+        self.warn(changes, clock)
+        assert runner._pending
+        assert runner._no_motion
+        self.gap(changes, clock)
+        assert runner._pending == {}
+        assert runner._no_motion == {}
+
+    async def test_a_changed_rule_is_forgotten(self, warned, clock):
+        changes = FakeChanges()
+        runner = await self.running(warned, clock, changes)
+        clock.advance(minutes=30)
+        changes.deliver(automation_change(clock.now, configuration={}))
+        self.warn(changes, clock)
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+
+    async def test_a_changed_rule_drops_the_dim_it_left_waiting(self, warned, clock):
+        changes = FakeChanges()
+        runner = await self.running(warned, clock, changes)
+        clock.advance(minutes=30)
+        self.warn(changes, clock)
+        changes.deliver(automation_change(clock.now, enabled=False))
+        assert runner._pending == {}
+        clock.advance(seconds=20)
+        changes.deliver(level(60.0, clock.now))
+        assert GROUP_PATH not in runner._rejoining
+
+    async def test_a_rule_reporting_its_state_is_kept(self, warned, clock):
+        changes = FakeChanges()
+        runner = await self.running(warned, clock, changes)
+        clock.advance(minutes=30)
+        changes.deliver(automation_change(clock.now, state={"model_id": "SML003"}))
+        self.warn(changes, clock)
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+
+    async def test_a_rule_changed_while_resolving_is_forgotten(self, warned, clock):
+        changes = FakeChanges()
+
+        class Racing:
+            http = warned.http
+
+            async def snapshot(self):
+                # A light report too: nothing is judged before resolution.
+                changes.deliver(level(10.0, clock.now, before=60.0))
+                changes.deliver(automation_change(clock.now, enabled=False))
+                return await warned.snapshot()
+
+        clock.now = datetime.datetime(2026, 9, 1, 9, 0, tzinfo=BERLIN)
+        runner = await watched_runner(Racing(), clock, changes)
+        await runner.catch_up()
+        clock.advance(minutes=30)
+        self.warn(changes, clock)
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+
+    async def test_a_gap_while_resolving_forgets_the_rules(self, warned, clock):
+        changes = FakeChanges()
+        test = self
+
+        class Racing:
+            http = warned.http
+
+            async def snapshot(self):
+                test.gap(changes, clock)
+                return await warned.snapshot()
+
+        clock.now = datetime.datetime(2026, 9, 1, 9, 0, tzinfo=BERLIN)
+        runner = await watched_runner(Racing(), clock, changes)
+        assert runner._rules_of_light == {}
+
+    async def test_a_failure_after_resolving_lets_go_of_the_stream(
+        self, warned, clock, monkeypatch
+    ):
+        changes = FakeChanges()
+        runner = PlanRunner(warned, Plan.model_validate(DAY_PLAN), changes=changes)
+
+        def broken(_resolved):
+            raise RuntimeError
+
+        monkeypatch.setattr(runner, "_index_scopes", broken)
+        with pytest.raises(RuntimeError):
+            await runner.start()
+        assert changes.changes.cancelled
+        assert changes.resyncs.cancelled
+
+    async def test_a_failed_resync_subscription_lets_go_of_the_first(
+        self, warned, clock
+    ):
+        class Refusing(FakeChanges):
+            @override
+            def on_resync(self, handler, /):
+                raise RuntimeError
+
+        changes = Refusing()
+        runner = PlanRunner(warned, Plan.model_validate(DAY_PLAN), changes=changes)
+        with pytest.raises(RuntimeError):
+            await runner.start()
+        assert changes.changes.cancelled
+
+    async def test_a_failed_start_lets_go_of_the_stream(self, hue, http, clock):
+        http.queue("/clip/v2/resource", envelope())
+        changes = FakeChanges()
+        runner = PlanRunner(hue, Plan.model_validate(DAY_PLAN), changes=changes)
+        with pytest.raises(PlanError):
+            await runner.start()
+        assert changes.changes.cancelled
+        assert changes.resyncs.cancelled
+
+    async def test_our_own_echo_does_not_end_the_warning(self, warned, clock):
+        changes = FakeChanges()
+        runner = await self.running(warned, clock, changes)
+        clock.advance(minutes=30)
+        self.warn(changes, clock)
+        clock.advance(seconds=5)
+        changes.deliver(level(70.0, clock.now, observation="command_echo"))
+        clock.advance(seconds=10)
+        changes.deliver(level(60.0, clock.now))
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+        assert GROUP_PATH in runner._rejoining
+
+    async def test_no_follow_up_judges_the_dim_as_a_hand(self, warned, clock):
+        changes = FakeChanges()
+        runner = await self.running(warned, clock, changes)
+        clock.advance(minutes=30)
+        self.warn(changes, clock)
+        assert runner._seconds_until_next(clock.now) == pytest.approx(35.0)
+        clock.advance(seconds=36)
+        _ = await runner.tick()
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+
+    async def test_a_step_that_began_during_the_warning_wins(self, warned, clock):
+        # A hand change at the dim would have lasted until this step; so does
+        # a dim nobody followed up.
+        changes = FakeChanges()
+        runner = await self.running(warned, clock, changes)
+        clock.now = datetime.datetime(2026, 9, 1, 21, 55, 30, tzinfo=BERLIN)
+        _ = await runner.tick()
+        self.warn(changes, clock, before=100.0)
+        clock.now = datetime.datetime(2026, 9, 1, 22, 0, 30, tzinfo=BERLIN)
+        _ = await runner.tick()
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+        fade = runner.arbiter.state_of(GROUP_PATH).fade
+        assert fade is not None
+        assert fade.target.brightness == 20
+
+    async def test_a_step_that_began_during_the_warning_then_a_restore_rejoins(
+        self, warned, clock
+    ):
+        changes = FakeChanges()
+        runner = await self.running(warned, clock, changes)
+        clock.now = datetime.datetime(2026, 9, 1, 21, 55, 30, tzinfo=BERLIN)
+        _ = await runner.tick()
+        self.warn(changes, clock, before=100.0)
+        clock.now = datetime.datetime(2026, 9, 1, 22, 0, 10, tzinfo=BERLIN)
+        _ = await runner.tick()
+        changes.deliver(level(100.0, clock.now))
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+        assert GROUP_PATH in runner._rejoining
+
+    async def test_a_restore_on_a_flat_curve_does_not_move_the_level(
+        self, warned, http, clock
+    ):
+        # The restore names only a level, so the rejoin sends the curve's
+        # colour with it -- the same colour and level the light already shows.
+        changes = FakeChanges()
+        runner = await self.running(warned, clock, changes, at=(12, 0))
+        self.warn(changes, clock, before=100.0)
+        clock.advance(seconds=20)
+        changes.deliver(level(100.0, clock.now))
+        http.calls.clear()
+        _ = await runner.rejoin()
+        assert all(write[2]["dimming"]["brightness"] == 100 for write in http.writes)
+
+    async def test_a_yielded_scope_switched_off_after_the_dim_stays_yielded(
+        self, warned, clock
+    ):
+        changes = FakeChanges()
+        runner = await self.running(warned, clock, changes)
+        clock.advance(minutes=10)
+        changes.report(LIGHT, 80.0, clock.now)
+        clock.advance(minutes=10)
+        self.warn(changes, clock, before=80.0)
+        clock.advance(seconds=30)
+        changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": False}}))
+        state = runner.arbiter.state_of(GROUP_PATH)
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+        assert state.dark
+
+    async def test_the_dim_stops_a_chained_fade(self, warned, clock):
+        changes = FakeChanges()
+        runner = await self.running(warned, clock, changes)
+        clock.advance(minutes=30)
+
+        async def forever() -> None:
+            await asyncio.Event().wait()
+
+        tail = asyncio.ensure_future(forever())
+        runner._fades[GROUP_PATH] = tail
+        self.warn(changes, clock)
+        await asyncio.sleep(0)
+        assert tail.cancelled()
+
+    async def test_a_plan_rule_on_the_same_sensor_still_fires(self, warned, clock):
+        changes = FakeChanges()
+        runner = await self.running(warned, clock, changes, RULE_PLAN, at=(12, 30))
+        changes.deliver(motion(clock.now))
+        assert runner.arbiter.state_of(GROUP_PATH).hold is not None

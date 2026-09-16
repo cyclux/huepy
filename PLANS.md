@@ -71,6 +71,7 @@ Pure — no clock, no client, no I/O, `now` always a parameter:
 | `sun.py` | When is sunrise here, on this date? |
 | `timeline.py` | Which step is in force, and where should the light be now? |
 | `arbiter.py` | Who owns this scope, and was that change ours? |
+| `automation.py` | Which Hue app motion rules act on a light, and is this report their warning dim? |
 
 Impure:
 
@@ -174,7 +175,8 @@ behaviour instances: measured, not documented. Without it a hallway sensor
 that sees the night light it switches on releases the rule as the light comes
 up and fires again as it goes out. The crossing needs the previous reading,
 so `PlanRunner._levels` keeps one per sensor — the runner's only per-sensor
-memory, kept across a resync because a stale previous still gives the right
+memory for triggers (`_no_motion`, below, is the one for app motion rules),
+kept across a resync because a stale previous still gives the right
 direction. A first reading is judged as if the one before it had been on the
 far side, so a daemon started after dark fires on the sensor's next report,
 and a still-dark report three minutes after someone dimmed the hall by hand
@@ -434,6 +436,55 @@ hand-change-then-next-fade path is pinned on the fake in
 `TestProgressAfterHandChange`, and the failure paths in
 `TestBeliefAfterFailure`.
 
+### An app motion rule's warning dim is not a hand
+
+A Hue app motion automation runs on the bridge. Before its `all_off` it dims
+the room as a warning, and the event stream says nothing about who did it:
+`Change.origin` is `self` or `unattributed`, and no `behavior_instance` event
+comes with the dim. Judged as a hand change, the dim stood the plan back from
+the bathroom until its next step, and a motion inside the thirty seconds
+brought back a level the plan no longer followed.
+
+The dim has a signature, measured on all 147 of them in the recorder history
+between 2026-09-11 and 2026-09-16: a bare `dimming` delta exactly 50.2 points
+down, or to 0 from below that, with `on` left alone; 259-260 s after the
+sensor's `motion=false` report for a rule whose `after` is five minutes; the
+switch-off 29-30 s later. `resolve.py` reads the enabled motion rules off the
+snapshot's `behavior_instance`s, in both shapes the app writes (the bathroom's
+rule moved from one to the other when its daylight setting changed), and
+`automation.is_warning_dim()` tests a report against every part of the
+signature. Anything unknown fails closed and is judged as a hand change, as
+before: a rule that cannot be read is a warning, not an error.
+
+A recognized dim is held back from the arbiter as a `PendingWarning` for
+`FOLLOW_UP_SECONDS`, and the chained tail of a long fade is stopped. What comes
+next decides it:
+
+- **The switch-off** is an ordinary switch-off; the dark store takes over.
+- **The level coming back** -- motion inside the warning -- is a switch-on in
+  all but name. The dim was a level command, so the bridge dropped the
+  transition it was running, and the fade on record describes nothing:
+  `Arbiter.restored()` forgets it the way a switch-on does, and the scope
+  rejoins the curve, whether or not that fade has ended on paper. Rejoining
+  from the old record once found nothing to send and left the bulb short of
+  the curve. Unlike a switch-on it ends no yield.
+- **Any other report** is judged as itself, and the dim is forgotten.
+- **Nothing** within the time is the dim judged now, as a late hand report --
+  unless a step, hold or mode began after the dim, which supersedes it the way
+  it would have superseded a hand change then. A pending dim is never replayed
+  with its old timestamp: `note_foreign_change()` works on the scope state as
+  it is, and backdating would change a newer fade.
+
+The runner's memory of a rule is fail-closed throughout. It learns when a
+sensor went still only from a `motion` delta it saw itself, never from the
+snapshot (a motion between snapshot and subscription would leave a stale
+countdown). It subscribes before it resolves, and a rule whose `enabled`,
+`configuration` or `script_id` changes -- then or later -- or that is deleted
+is forgotten until restart; an automation reporting its running state is not a
+change. A gap in the stream forgets every rule, every countdown and every
+pending dim. The times compared are both `Change.received_at`, on the host's
+clock.
+
 ## No durable state
 
 The runner writes nothing to disk and remembers nothing across restarts. On
@@ -513,6 +564,7 @@ integration probe establishing whether a third-party app key can POST one.
 | A switch-off keeps the running segment's target, or the off step's starting level; a jump during the fade that follows is seen; a report naming only `on` keeps the brightness; a dimming report during an on-only fade is a human | `TestSwitchOffMemory` |
 | A refused write leaves the previous fade in force, so a switch-off after it remembers what the bridge holds; a refused first segment and a failed tail both retry as a chain | `TestBeliefAfterFailure` |
 | A `grouped_light` report is never judged; a member light's still is | `TestGroupReports` |
+| A motion rule's warning dim neither yields nor moves the fade; a restore rejoins even after the fade ended on paper, and leaves a yield in place; the wrong amount, no `motion=false` seen, a stream gap, or a changed rule makes it a hand; an unfollowed dim is judged later unless a step began since; our own echo does not settle it; both rule shapes parse and malformed ones warn | `TestWarningDim`, `tests/test_plans_automation.py`, `tests/test_plans_resolve.py::TestResolveMotionRules` |
 | A fade-out's own on-and-dimming and off-at-zero reports are the fade, a straggler within the grace too; a fade-in from off is judged from dark; untouched members' progress after a hand change is not a second hand change, a switch-on ends the yield | `TestFadeOut`, `TestProgressAfterHandChange`, `TestLapsedFade` |
 | A wake more than `LATE_WAKE_SECONDS` late is a catch-up, not a snap; an on-time wake ticks | `TestLateWake` |
 | A report lagging a fast fade by a second is the fade; one off the whole stretch is a human | `TestFadeAttribution` |

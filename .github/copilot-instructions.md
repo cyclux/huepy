@@ -135,7 +135,7 @@ maths, or the executor.
 - **Plan models set `extra="forbid"`**, inverting `HueModel`. An unknown key in
   a bridge payload is new firmware; an unknown key in a hand-written config is a
   typo, and ignoring it is the failure the format exists to prevent.
-- **`fields`, `schema`, `sun`, `timeline` and `arbiter` are pure** -- no clock,
+- **`fields`, `schema`, `sun`, `timeline`, `arbiter` and `automation` are pure** -- no clock,
   no client, no I/O; `now` is always a parameter. That is what lets a simulated
   day run in microseconds and what makes crash recovery work. Keep them that way.
 - **A fade is one PUT, not a tick loop.** The bridge runs a transition up to
@@ -153,7 +153,17 @@ maths, or the executor.
   `Arbiter.fire(key, now)` as the selector string they were written as; do not
   add a second dispatch. What a kind *means* lives in `runner._edge()` and,
   for a level crossing, `runner._level_edge()`; the runner's `_levels` dict is
-  its only per-sensor memory.
+  its only per-sensor memory for triggers, and `_no_motion` (when an app motion
+  rule's sensor last went still) the only one for app rules.
+- **An app motion rule's warning dim is not a hand.** The bridge dims a room
+  50.2 points 260 s after `motion=false`, then switches it off; the stream
+  carries no provenance. `automation.is_warning_dim()` tests that signature,
+  failing closed, and the runner holds the dim as a `PendingWarning` instead of
+  telling the arbiter: an off is an off, a restore goes through
+  `Arbiter.restored()` and rejoins (the dim dropped the bridge's transition), no
+  follow-up is judged then unless a later claim superseded it. Nothing is
+  backdated. Rules are read at resolve, subscribed before it, forgotten on a
+  config change or a gap.
 - **Handing a scope back never snaps.** The return to a day curve is floored at
   `catchup_ramp`; a mode keeps its author's ramp. `Claim.source` vs
   `ScopeState.owner.source` is what tells a hand-over from a claim still in
