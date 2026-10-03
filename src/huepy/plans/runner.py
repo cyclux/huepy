@@ -40,7 +40,13 @@ from huepy.plans.automation import (
     is_warning_dim,
     motion_transition,
 )
-from huepy.plans.effects import flash, flash_seconds, run_command
+from huepy.plans.effects import (
+    breathe,
+    flash,
+    flash_seconds,
+    read_lights,
+    run_command,
+)
 from huepy.plans.executor import Segment, plan_segments, send, send_chain
 from huepy.plans.fields import (
     LIGHT_LEVEL_DEADBAND,
@@ -50,7 +56,7 @@ from huepy.plans.fields import (
 )
 from huepy.plans.protocol import Cancellable, ChangeSource, PlanClient
 from huepy.plans.resolve import Binding, ResolvedPlan, TriggerBinding, resolve
-from huepy.plans.schema import Action, Fire, Flash, Plan, Rule, Run, Side
+from huepy.plans.schema import Action, Breathe, Fire, Flash, Plan, Rule, Run, Side
 from huepy.plans.timeline import (
     Zone,
     combine,
@@ -103,6 +109,15 @@ CONTACT_OPENED = "no_contact"
 
 LIGHT_TYPE = "light"
 """The one resource type whose reports are judged as measurements of a scope."""
+
+BREATH_GRACE = 5.0
+"""Seconds after a breath during which its lights' reports are still its own.
+
+A bulb reports a fade on its own cadence, a second or two behind
+(:data:`~huepy.plans.arbiter.REPORT_LAG_SECONDS`), and the last half of a
+breath is a fade like any other. Judged, a late report of the dip would be a
+hand at the dial; this is the stretch the arbiter allows a fade-out's tail.
+"""
 
 IDENTITY_FIELDS = frozenset({"id", "id_v1", "owner", "service_id", "type"})
 """The fields a light report carries whatever it is about."""
@@ -450,6 +465,9 @@ class PlanRunner:
         # is done long before the lights are.
         self._effects: dict[str, asyncio.Task[None]] = {}
         self._busy_until: dict[str, datetime.datetime] = {}
+        # Lights a breath is moving: None while it runs, then when its
+        # reports stop being its own. Neither judged nor written meanwhile.
+        self._breathing: dict[str, datetime.datetime | None] = {}
 
     async def start(self) -> None:
         """Resolve every name in the plan against the bridge.
@@ -701,6 +719,15 @@ class PlanRunner:
             # A blink, ours or the app's "identify": the bridge restores the
             # light by itself and reports nothing about its state. Checked
             # before a pending warning dim too -- a blink settles nothing.
+            return
+        if self._is_breathing(change.resource_id, self._clock()):
+            # The breath's own fades: the light ends where it began, and the
+            # breath hands the scope back when it is done.
+            logger.debug(
+                "%s: %s during a breath, not judged",
+                change.resource_id[:8],
+                change.summary or "a report",
+            )
             return
         if change.observation == "command_echo":
             # The bridge repeating a transition's *target* back the moment it
@@ -1170,6 +1197,8 @@ class PlanRunner:
                 seconds = flash_seconds(effect.flash)
                 self._busy_until[label] = fired.at + datetime.timedelta(seconds=seconds)
                 work = self._flash(fired, effect)
+            elif isinstance(effect, Breathe):
+                work = self._breathe(fired, effect)
             else:
                 work = self._run(fired, effect)
             self._effects[label] = asyncio.create_task(
@@ -1218,6 +1247,117 @@ class PlanRunner:
         )
         _ = await flash(self._client, light_ids, blinks=effect.flash)
 
+    def _is_breathing(self, light_id: str, now: datetime.datetime) -> bool:
+        """Whether a light's reports belong to a breath.
+
+        Args:
+            light_id: The light that reported.
+            now: The runner's clock.
+
+        Returns:
+            True while a breath moves it, and for :data:`BREATH_GRACE` after.
+
+        """
+        if light_id not in self._breathing:
+            return False
+        until = self._breathing[light_id]
+        if until is None or now < until:
+            return True
+        del self._breathing[light_id]
+        return False
+
+    def _breathing_paths(self, now: datetime.datetime) -> frozenset[str]:
+        """Collect the scopes a running breath is moving a light of.
+
+        Args:
+            now: The runner's clock.
+
+        Returns:
+            Their write paths. Empty when nothing breathes.
+
+        """
+        return frozenset(
+            path
+            for light_id, until in tuple(self._breathing.items())
+            if until is None or now < until
+            for path in self._scope_of.get(light_id, ())
+        )
+
+    def _not_breathing(
+        self, claims: list[Claim], now: datetime.datetime
+    ) -> list[Claim]:
+        """Hold back the claims on scopes a breath is moving.
+
+        Written now, a claim would land mid-breath and be undone by the
+        breath's last half. The breath rejoins the scope when it is done.
+
+        Args:
+            claims: The claims due.
+            now: The runner's clock.
+
+        Returns:
+            The claims that can be written now.
+
+        """
+        breathing = self._breathing_paths(now)
+        for claim in claims:
+            if claim.binding.path in breathing:
+                logger.debug("%s: breathing, write deferred", claim.binding.selector)
+        return [claim for claim in claims if claim.binding.path not in breathing]
+
+    async def _breathe(self, fired: Fired, effect: Breathe) -> None:
+        """Breathe every light in the fired rule's scope, then hand it back.
+
+        The breath writes ``on`` and ``dimming`` itself, so for its length
+        the lights are its own: reports from them are not judged and the
+        plan's writes to their scopes wait. Each light ends where it began.
+        A scope the plan drives then rejoins its curve -- the breath's writes
+        cancelled whatever fade the bridge was running -- unless it is
+        yielded to a hand, whose level the breath has put back, or dark,
+        where the breath restored nothing the plan had stored.
+
+        Args:
+            fired: The rule that fired.
+            effect: How many breaths, and how long each takes.
+
+        """
+        label = f"{fired.scenario.name}/{fired.key}"
+        light_ids = [
+            light_id
+            for binding in self.arbiter.resolved.scope_of(fired.scenario)
+            for light_id in binding.light_ids
+        ]
+        for light_id in light_ids:
+            # Before the reads, so a write the loop would send meanwhile waits.
+            self._breathing[light_id] = None
+        try:
+            lights = await read_lights(self._client, light_ids)
+            logger.info(
+                "%s: breathing %d light%s %dx",
+                label,
+                len(lights),
+                "" if len(lights) == 1 else "s",
+                effect.breathe,
+            )
+            await breathe(
+                self._client,
+                lights,
+                breaths=effect.breathe,
+                period=effect.period,
+                sleep=self._sleep,
+            )
+        finally:
+            until = self._clock() + datetime.timedelta(seconds=BREATH_GRACE)
+            for light_id in light_ids:
+                self._breathing[light_id] = until
+        for path in {
+            p for light_id in light_ids for p in self._scope_of.get(light_id, ())
+        }:
+            state = self.arbiter.state_of(path)
+            if state.yielded_at is None and not state.dark:
+                self._rejoining.add(path)
+        self._wake.set()
+
     async def _run(self, fired: Fired, effect: Run) -> None:
         """Run the fired rule's command and log how it ended.
 
@@ -1262,7 +1402,9 @@ class PlanRunner:
         written = 0
         claims = [
             claim
-            for claim in self.arbiter.claims(now, catching_up=True)
+            for claim in self._not_breathing(
+                self.arbiter.claims(now, catching_up=True), now
+            )
             if only is None or claim.binding.path in only
         ]
         for claim in claims:
@@ -1294,7 +1436,7 @@ class PlanRunner:
         now = self._clock()
         written = 0
         self._expire_warnings(now)
-        for claim in self.arbiter.claims(now):
+        for claim in self._not_breathing(self.arbiter.claims(now), now):
             if self._closing.is_set():
                 # close() landed during another scope's write; finishing the
                 # pass would keep writing after the caller was told it stopped.

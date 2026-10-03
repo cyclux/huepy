@@ -212,6 +212,22 @@ to rejoin after. A scenario made only of effect rules is left out of the
 scope index (`Scenario.drives_scope`): with nothing of its own ever written
 there, every report on its lights would have read as a hand.
 
+A breath is the effect that cannot be left to the bridge. Its `breathe`
+alert, measured on the same spots, runs about fifteen breaths whatever is
+sent; a second alert or a `no_signal` does not stop it, and the event stream
+says nothing about it at all. So `breathe = N` is written: a lit light dips
+to 15 % of its level and back, a dark one is switched on at 1 %, rises to the
+level it holds, and fades out — a fade to off leaves `dimming` where it was,
+so the dark light keeps the level the plan stored. Two breaths at 1 s a half
+looked smooth and in step on three lights, lit and dark. Being real writes,
+a breath fences itself off: `PlanRunner._breathing` marks its lights, their
+reports are dropped unjudged until `BREATH_GRACE` after it ends, and
+`_not_breathing()` holds back the loop's writes to their scopes. It reads
+each light from the bridge first and ends where it read it, then rejoins
+each driven scope that is neither yielded nor dark, because its writes
+cancelled the fade the bridge was running. A hand at the dial during the
+breath goes unseen; it lasts seconds.
+
 ### Handing a scope back never snaps
 
 A rule hold lapses, or a mode releases, and the day curve underneath takes the
@@ -567,6 +583,7 @@ integration probe establishing whether a third-party app key can POST one.
 | What fires each trigger kind, holds, windows, hand-back, the no-snap floor | `TestRules`, `TestModeHandback` |
 | A level fires on the crossing, releases past the band, never on a repeat, and a still-dark report does not un-yield a scope; the lux scale round-trips through `models.LightLevel`; the schema ties `below`/`above` to `light_level:` and makes rules on one sensor agree | `TestLevelRules`, `TestLevelEdge`, `tests/test_plans_fields.py::TestLightLevelUnits`, `tests/test_plans_schema.py::TestLevelThreshold` |
 | The signal server fires known names, refuses unknown ones with the list, guards a token, survives a failing callback, and will not bind beyond loopback unguarded; `huepy plan signal` reaches it | `tests/test_plans_signals.py`, `tests/test_plans_cli.py::TestSignal` |
+| A breath dips a lit light and raises a dark one, exactly N times, at its period; its reports are not judged and the plan waits for it; it rejoins a driven scope, puts a hand's level back, leaves a dark scope dark, and is put back if the runner closes mid-breath | `TestBreathe` |
 | An effect claims nothing; a blink's report is never a hand, even with no fade on record; a repeat while running is ignored; `fire` chains; `run` passes its trigger and is stopped by `close()`; the schema rejects unheard and looping fires | `TestEffects`, `tests/test_plans_effects.py`, `tests/test_plans_schema.py::TestEffects` |
 | A trigger landing mid-write is not lost by the loop | `TestRules::test_a_trigger_during_a_write_is_not_lost` |
 | `origin="self"` is not proof; `command_echo` is; a switch-off does not yield; reassert re-drives a dial change and leaves a dark light dark | `TestObservation` |

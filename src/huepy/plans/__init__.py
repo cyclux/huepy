@@ -44,6 +44,7 @@ from huepy.plans.resolve import Binding, ResolvedPlan, TriggerBinding, resolve
 from huepy.plans.runner import PlanRunner
 from huepy.plans.schema import (
     Action,
+    Breathe,
     Defaults,
     Fire,
     Flash,
@@ -69,6 +70,7 @@ __all__ = [
     "DEFAULT_SIGNAL_PORT",
     "Action",
     "Binding",
+    "Breathe",
     "ChangeSource",
     "Defaults",
     "Fire",

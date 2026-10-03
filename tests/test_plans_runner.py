@@ -3756,3 +3756,255 @@ class TestEffects:
         await asyncio.wait_for(runner.close(), timeout=5)
 
         assert runner._effects == {}
+
+
+BREATHE_RULE = {"when": "button:Hall sensor", "do": {"breathe": 2}}
+
+
+def lamp(*, on, brightness):
+    """Build the lamp's GET body, as a breath reads it before it starts."""
+    return envelope(
+        {
+            "id": LIGHT,
+            "type": "light",
+            "owner": {"rid": DEVICE, "rtype": "device"},
+            "metadata": {"name": "Corner Lamp"},
+            "on": {"on": on},
+            "dimming": {"brightness": brightness},
+        }
+    )
+
+
+def light_puts(http):
+    return [call[2] for call in http.writes if call[1] == LIGHT_PATH]
+
+
+async def breathing_runner(sensor_bridge, clock, changes, sleep, plan=None):
+    """Start a rule runner whose waits run ``sleep`` -- a breath's halves too."""
+    clock.now = datetime.datetime(2026, 9, 1, 9, 0, tzinfo=BERLIN)
+    runner = PlanRunner(
+        sensor_bridge,
+        Plan.model_validate(plan or effect_plan(BREATHE_RULE)),
+        changes=changes,
+        clock=clock,
+        sleep=sleep,
+    )
+    await runner.start()
+    await runner.catch_up()
+    return runner
+
+
+class TestBreathe:
+    async def test_a_lit_light_dips_and_comes_back_twice(
+        self, sensor_bridge, http, clock
+    ):
+        changes = FakeChanges()
+        runner = await rule_runner(
+            sensor_bridge, clock, changes, effect_plan(BREATHE_RULE)
+        )
+        http.queue(LIGHT_PATH, lamp(on=True, brightness=80))
+        http.calls.clear()
+
+        changes.deliver(button(clock.now, "initial_press"))
+        await settle_effects(runner)
+
+        dip = {"dimming": {"brightness": 12.0}, "dynamics": {"duration": 1000}}
+        back = {"dimming": {"brightness": 80.0}, "dynamics": {"duration": 1000}}
+        assert light_puts(http) == [dip, back, dip, back]
+
+    async def test_a_dark_light_rises_to_its_stored_level_and_goes_out(
+        self, sensor_bridge, http, clock
+    ):
+        changes = FakeChanges()
+        runner = await rule_runner(
+            sensor_bridge, clock, changes, effect_plan(BREATHE_RULE)
+        )
+        http.queue(LIGHT_PATH, lamp(on=False, brightness=70))
+        http.calls.clear()
+
+        changes.deliver(button(clock.now, "initial_press"))
+        await settle_effects(runner)
+
+        breath = [
+            {
+                "on": {"on": True},
+                "dimming": {"brightness": 1.0},
+                "dynamics": {"duration": 0},
+            },
+            {"dimming": {"brightness": 70.0}, "dynamics": {"duration": 1000}},
+            {"on": {"on": False}, "dynamics": {"duration": 1000}},
+        ]
+        assert light_puts(http) == breath * 2
+
+    async def test_the_period_sets_the_pace(self, sensor_bridge, http, clock):
+        changes = FakeChanges()
+        rule = {"when": "button:Hall sensor", "do": {"breathe": 1, "period": "1.4s"}}
+        runner = await rule_runner(sensor_bridge, clock, changes, effect_plan(rule))
+        http.queue(LIGHT_PATH, lamp(on=True, brightness=80))
+        http.calls.clear()
+
+        changes.deliver(button(clock.now, "initial_press"))
+        await settle_effects(runner)
+
+        assert [put["dynamics"]["duration"] for put in light_puts(http)] == [700, 700]
+
+    async def test_its_own_reports_are_not_a_hand(self, sensor_bridge, http, clock):
+        changes = FakeChanges()
+
+        async def report_mid_breath(_seconds):
+            changes.report(LIGHT, 12, clock.now)
+            changes.report(LIGHT, None, clock.now, delta={"on": {"on": True}})
+
+        runner = await breathing_runner(
+            sensor_bridge, clock, changes, report_mid_breath
+        )
+        http.queue(LIGHT_PATH, lamp(on=True, brightness=80))
+        clock.advance(minutes=1)
+
+        changes.deliver(button(clock.now, "initial_press"))
+        await settle_effects(runner)
+        clock.advance(seconds=4)
+        changes.report(LIGHT, 12, clock.now)
+
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+        assert not runner.arbiter.state_of(GROUP_PATH).dark
+
+    async def test_a_report_after_the_grace_is_judged_again(
+        self, sensor_bridge, http, clock
+    ):
+        changes = FakeChanges()
+        runner = await rule_runner(
+            sensor_bridge, clock, changes, effect_plan(BREATHE_RULE)
+        )
+        http.queue(LIGHT_PATH, lamp(on=True, brightness=80))
+        changes.deliver(button(clock.now, "initial_press"))
+        await settle_effects(runner)
+
+        clock.advance(seconds=6)
+        changes.report(LIGHT, 20, clock.now)
+
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+
+    async def test_the_plan_waits_for_the_breath(self, sensor_bridge, http, clock):
+        # A step landing mid-breath would be undone by the breath's last
+        # half, so it waits, and the scope rejoins its curve afterwards.
+        changes = FakeChanges()
+        deferred: list[int] = []
+        runner: PlanRunner | None = None
+
+        async def tick_mid_breath(_seconds):
+            assert runner is not None
+            clock.advance(hours=3)  # 12:00, the next step is due
+            deferred.append(await runner.tick())
+
+        runner = await breathing_runner(sensor_bridge, clock, changes, tick_mid_breath)
+        http.queue(LIGHT_PATH, lamp(on=True, brightness=80))
+
+        changes.deliver(button(clock.now, "initial_press"))
+        await settle_effects(runner)
+
+        assert set(deferred) == {0}
+        http.calls.clear()
+        assert await runner.tick() == 0  # still inside the grace
+        clock.advance(seconds=6)
+        assert await runner.rejoin() == 1
+        assert http.writes[0][1] == GROUP_PATH
+
+    async def test_a_driven_scope_rejoins_its_curve_after(
+        self, sensor_bridge, http, clock
+    ):
+        changes = FakeChanges()
+        runner = await rule_runner(
+            sensor_bridge, clock, changes, effect_plan(BREATHE_RULE)
+        )
+        http.queue(LIGHT_PATH, lamp(on=True, brightness=80))
+
+        changes.deliver(button(clock.now, "initial_press"))
+        await settle_effects(runner)
+
+        assert runner._rejoining == {GROUP_PATH}
+
+    async def test_a_yielded_scope_is_put_back_not_rejoined(
+        self, sensor_bridge, http, clock
+    ):
+        changes = FakeChanges()
+        runner = await rule_runner(
+            sensor_bridge, clock, changes, effect_plan(BREATHE_RULE)
+        )
+        clock.advance(minutes=1)
+        changes.report(LIGHT, 35, clock.now)
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+        http.queue(LIGHT_PATH, lamp(on=True, brightness=35))
+        http.calls.clear()
+
+        changes.deliver(button(clock.now, "initial_press"))
+        await settle_effects(runner)
+
+        assert light_puts(http)[-1]["dimming"]["brightness"] == 35
+        assert runner._rejoining == set()
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+
+    async def test_a_dark_scope_stays_dark(self, sensor_bridge, http, clock):
+        changes = FakeChanges()
+        runner = await rule_runner(
+            sensor_bridge, clock, changes, effect_plan(BREATHE_RULE)
+        )
+        clock.advance(minutes=1)
+        changes.report(LIGHT, None, clock.now, delta={"on": {"on": False}})
+        http.queue(LIGHT_PATH, lamp(on=False, brightness=80))
+
+        changes.deliver(button(clock.now, "initial_press"))
+        await settle_effects(runner)
+
+        assert runner._rejoining == set()
+        assert runner.arbiter.state_of(GROUP_PATH).dark
+
+    async def test_a_press_while_breathing_is_ignored(self, sensor_bridge, http, clock):
+        changes = FakeChanges()
+        runner: PlanRunner | None = None
+
+        async def press_again(_seconds):
+            changes.deliver(button(clock.now, "initial_press"))
+
+        runner = await breathing_runner(sensor_bridge, clock, changes, press_again)
+        http.queue(LIGHT_PATH, lamp(on=True, brightness=80))
+        http.calls.clear()
+
+        changes.deliver(button(clock.now, "initial_press"))
+        await settle_effects(runner)
+
+        assert len(light_puts(http)) == 4
+
+    async def test_closing_mid_breath_puts_every_light_back(
+        self, sensor_bridge, http, clock
+    ):
+        changes = FakeChanges()
+        runner = await breathing_runner(sensor_bridge, clock, changes, blocking_sleep)
+        http.queue(LIGHT_PATH, lamp(on=False, brightness=70))
+        http.calls.clear()
+
+        changes.deliver(button(clock.now, "initial_press"))
+        await asyncio.sleep(0.05)
+        await asyncio.wait_for(runner.close(), timeout=5)
+
+        assert light_puts(http)[-1] == {
+            "on": {"on": False},
+            "dynamics": {"duration": 0},
+        }
+
+    async def test_a_refused_light_is_put_back_and_the_rest_breathe_on(
+        self, sensor_bridge, http, clock, caplog
+    ):
+        changes = FakeChanges()
+        runner = await rule_runner(
+            sensor_bridge, clock, changes, effect_plan(BREATHE_RULE)
+        )
+        http.queue(LIGHT_PATH, lamp(on=True, brightness=80))
+        http.write_result = envelope(errors=["device unreachable"])
+
+        with caplog.at_level(logging.ERROR):
+            changes.deliver(button(clock.now, "initial_press"))
+            await settle_effects(runner)
+
+        assert f"light {LIGHT} could not breathe" in caplog.text
+        assert runner._effects == {}

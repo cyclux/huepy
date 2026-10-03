@@ -507,8 +507,9 @@ a sensor's reading crosses the rule's `below` or `above` lux, and `signal:name`
 when your code calls `runner.fire("name")` — or, with `huepy plan run`, when
 `huepy plan signal name` posts to it from another shell.
 
-A rule can also *do* something once instead of holding a state — blink a
-room when the doorbell button goes down, run a script, or fire a signal:
+A rule can also *do* something once instead of holding a state — blink or
+breathe a room when the doorbell button goes down, run a script, or fire a
+signal:
 
 ```toml
 [[scenario.rule]]
@@ -518,6 +519,8 @@ do = { flash = 3 }
 
 The blink is the bridge's own signal, so the room's day curve carries on
 underneath it and the plan never mistakes it for someone at the switch.
+`do = { breathe = 2 }` fades the room down and up twice instead, and puts
+every light back where it was — a dark one stays dark.
 
 ### Errors
 

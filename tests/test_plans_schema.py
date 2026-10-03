@@ -413,13 +413,29 @@ class TestEffects:
             Rule.model_validate({"when": "button:A", "do": {"flash": 1}, key: "1m"})
 
     def test_an_unknown_effect_names_the_kinds(self):
-        with pytest.raises(ValidationError, match="needs one of: flash, run, fire"):
+        with pytest.raises(
+            ValidationError, match="needs one of: flash, breathe, run, fire"
+        ):
             Rule.model_validate({"when": "button:A", "do": {"blink": 2}})
 
     def test_an_error_is_reported_against_the_kind_that_was_meant(self):
         with pytest.raises(ValidationError, match=r"do\.run\.timeout"):
             Rule.model_validate(
                 {"when": "button:A", "do": {"run": ["/bin/true"], "timeout": "0s"}}
+            )
+
+    def test_a_breath_has_a_count_and_a_pace(self):
+        rule = Rule.model_validate(
+            {"when": "button:A", "do": {"breathe": 2, "period": "1.5s"}}
+        )
+        assert rule.do is not None
+        assert rule.do.describe() == "breathe 2x"
+
+    @pytest.mark.parametrize("period", ["0s", "11s"])
+    def test_a_breath_pace_is_bounded(self, period):
+        with pytest.raises(ValidationError, match=r"do\.breathe\.period"):
+            Rule.model_validate(
+                {"when": "button:A", "do": {"breathe": 2, "period": period}}
             )
 
     @pytest.mark.parametrize("blinks", [0, 31])

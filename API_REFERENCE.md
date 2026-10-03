@@ -1171,7 +1171,7 @@ set = { brightness = 60, kelvin = 2700 }
 | `activate_on` / `release_on` | `[[scenario]]` | Make it a mode, dormant until a trigger fires. |
 | `when` / `between` / `hold` | `[[scenario.rule]]` | A trigger, an optional window, and how long to stay. |
 | `below` / `above` | `[[scenario.rule]]` | For a `light_level:` trigger, the illuminance in lux that fires it. Exactly one of the two. |
-| `do` | `[[scenario.rule]]` | Instead of `set`: a one-shot effect — `{ flash = 3 }`, `{ run = ["/path/to/script", "arg"], timeout = "30s" }` or `{ fire = "name" }`. It claims nothing, so it takes no `ramp` or `hold`. |
+| `do` | `[[scenario.rule]]` | Instead of `set`: a one-shot effect — `{ flash = 3 }`, `{ breathe = 2, period = "1.5s" }`, `{ run = ["/path/to/script", "arg"], timeout = "30s" }` or `{ fire = "name" }`. It claims nothing, so it takes no `ramp` or `hold`. |
 
 Triggers and scopes share one `kind:name` grammar. Scopes take `light:`, `room:`
 and `zone:`; triggers take `motion:`, `button:`, `contact:`, `light_level:` and
@@ -1315,16 +1315,18 @@ do = { flash = 3 }
 A rule with `do` instead of `set` runs an effect once and claims nothing: the
 scope's day curve, mode or hand setting carries on underneath as if the rule
 were not there, and a scenario made only of such rules never writes a state
-to its scope. Three kinds:
+to its scope. Four kinds:
 
 | Effect | Does |
 | --- | --- |
 | `flash = N` | Blinks every light in the scope N times (1–30) with the bridge's `on_off` signal, about one blink a second. The bridge restores each light itself and reports only `signaling.status`, so the blink is neither a switch nor a hand change, and it works whatever the light was doing. Sent per light, so a bulb that cannot signal is logged and skipped. |
+| `breathe = N` | Fades every light in the scope down and back up N times (1–10), each breath taking `period` (default `"2s"`). A lit light dips to 15 % of its level and comes back; a dark one rises to the level it holds and goes out again, and stays dark. Unlike the bridge's own breathe alert — about fifteen breaths, whatever is asked — the count is exact, because the runner writes the breath itself; for its length the lights' reports are not judged and the plan's writes to them wait, and a driven scope then rejoins its curve. A scope set by hand is put back where the hand left it. |
 | `run = [program, args...]` | Runs a command without a shell, as the user the plan runs as, killed after `timeout` (default 30 s, at most 10 min). `HUEPY_TRIGGER` and `HUEPY_SCENARIO` in its environment say what started it; a failure is logged with the tail of its error output. |
 | `fire = "name"` | Fires `signal:name`, as `runner.fire("name")` would, so one button can feed several scenarios. The plan does not load if nothing listens for the name or if the fires form a loop. |
 
 An effect still going when its trigger fires again ignores the repeat: a
-flash for as long as it blinks, a command until it exits. `between` limits an
+flash for as long as it blinks, a breath until it is done, a command until
+it exits. `between` limits an
 effect like any other rule.
 
 ### Signals
@@ -1378,7 +1380,7 @@ every PUT. `-q` keeps only errors.
 | Name | Is |
 | --- | --- |
 | `load_plans(path)`, `load_plan(path)` | Read a `.toml` file, or a directory of them, into a `Plan`. `PlanError` on anything wrong, naming the file and key. |
-| `Plan`, `Scenario`, `Step`, `Rule`, `Action`, `Defaults`, `Location`, `Flash`, `Run`, `Fire` | The format, as frozen pydantic models; the last three are a rule's `do` effects. `Plan.model_json_schema()` is what `huepy plan schema` prints. |
+| `Plan`, `Scenario`, `Step`, `Rule`, `Action`, `Defaults`, `Location`, `Flash`, `Breathe`, `Run`, `Fire` | The format, as frozen pydantic models; the last four are a rule's `do` effects. `Plan.model_json_schema()` is what `huepy plan schema` prints. |
 | `PlanRunner` | Runs a plan. `changes=` takes anything with `on_change` and `on_resync` — `hue.state` — and `clock=` / `sleep=` are injectable for tests. `fire(name)` returns what the signal did, one phrase per scenario it reached, and `signals` is the set of names the plan listens for. `stop()` asks `run()` to return after the write it is on, so a signal handler can end a daemon without cancelling it. |
 | `PlanClient`, `ChangeSource` | The two Protocols the runner depends on. `Hue` and `HueState` satisfy them. |
 | `SignalServer(fire, known, *, host, port, token)`, `DEFAULT_SIGNAL_PORT` | Serves `signal:` triggers over HTTP; `async with` it around `runner.run()`. Loopback unless a token is given. |

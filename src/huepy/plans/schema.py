@@ -297,6 +297,15 @@ and a typo of ``flash = 300`` should fail at load, not strobe a room for five
 minutes.
 """
 
+MAX_BREATHS = 10
+"""The most breaths one ``breathe`` effect may ask for."""
+
+DEFAULT_BREATH = 2.0
+"""Seconds one breath takes, down and back up: the pace that looked right."""
+
+MAX_BREATH = 10.0
+"""The longest one breath may take, in seconds."""
+
 DEFAULT_RUN_TIMEOUT = 30.0
 """Seconds a ``run`` effect's command may take before it is killed."""
 
@@ -331,6 +340,40 @@ class Flash(BaseModel):
 
         """
         return f"flash {self.flash}x"
+
+
+class Breathe(BaseModel):
+    """Fade every light in the scope down and back up, then leave it as it was.
+
+    The bridge's own ``breathe`` alert cannot count: on LTG002 spots it runs
+    about fifteen breaths whatever is sent, and nothing cancels it. So a
+    breath here is two writes the runner makes itself -- a lit light dips
+    and comes back to its level, a dark one rises to its stored level and
+    fades out again -- and for its length the lights are the effect's, not
+    the plan's: reports from them are not judged, and the plan's own writes
+    wait. Afterwards each light is where it started (a dark one still dark,
+    holding the level it held), and a scope the plan drives rejoins its
+    curve, since the breath cancelled whatever fade the bridge was running.
+
+    Attributes:
+        breathe: How many breaths.
+        period: How long one breath takes, down and back up.
+
+    """
+
+    model_config: ClassVar[ConfigDict] = _PLAN_CONFIG
+
+    breathe: Annotated[int, Field(ge=1, le=MAX_BREATHS)]
+    period: Annotated[Duration, Field(gt=0, le=MAX_BREATH)] = DEFAULT_BREATH
+
+    def describe(self) -> str:
+        """Render this effect for ``huepy plan explain`` and the log.
+
+        Returns:
+            A short phrase.
+
+        """
+        return f"breathe {self.breathe}x"
 
 
 class Run(BaseModel):
@@ -387,7 +430,7 @@ class Fire(BaseModel):
         return f"fire signal:{self.fire}"
 
 
-_EFFECT_KINDS = ("flash", "run", "fire")
+_EFFECT_KINDS = ("flash", "breathe", "run", "fire")
 
 
 def _effect_kind(value: object) -> str | None:
@@ -404,7 +447,7 @@ def _effect_kind(value: object) -> str | None:
         The kind's key, or None when the block names none of them.
 
     """
-    if isinstance(value, Flash | Run | Fire):
+    if isinstance(value, Flash | Breathe | Run | Fire):
         return next(kind for kind in _EFFECT_KINDS if hasattr(value, kind))
     if isinstance(value, dict):
         return next((kind for kind in _EFFECT_KINDS if kind in value), None)
@@ -413,12 +456,13 @@ def _effect_kind(value: object) -> str | None:
 
 type Effect = Annotated[
     Annotated[Flash, Tag("flash")]
+    | Annotated[Breathe, Tag("breathe")]
     | Annotated[Run, Tag("run")]
     | Annotated[Fire, Tag("fire")],
     Discriminator(
         _effect_kind,
         custom_error_type="effect_kind",
-        custom_error_message="a 'do' block needs one of: flash, run, fire",
+        custom_error_message="a 'do' block needs one of: flash, breathe, run, fire",
     ),
 ]
 """Something a rule does once, instead of a state it holds."""
