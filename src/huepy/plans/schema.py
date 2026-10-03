@@ -27,7 +27,15 @@ import datetime
 import zoneinfo
 from typing import Annotated, Any, ClassVar, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Discriminator,
+    Field,
+    Tag,
+    field_validator,
+    model_validator,
+)
 
 from huepy.models.group import WeekDay
 from huepy.models.state import build_light_payload
@@ -281,6 +289,140 @@ class Step(BaseModel):
 type Side = Literal["below", "above"]
 """Which side of a light-level threshold fires a rule."""
 
+MAX_FLASHES = 30
+"""The most blinks one ``flash`` effect may ask for.
+
+A doorbell wants a handful; thirty seconds of blinking is already an alarm,
+and a typo of ``flash = 300`` should fail at load, not strobe a room for five
+minutes.
+"""
+
+DEFAULT_RUN_TIMEOUT = 30.0
+"""Seconds a ``run`` effect's command may take before it is killed."""
+
+MAX_RUN_TIMEOUT = 600.0
+"""The longest timeout a ``run`` effect may ask for, in seconds."""
+
+
+class Flash(BaseModel):
+    """Blink every light in the scope, then leave it exactly as it was.
+
+    Sent as the bridge's ``on_off`` signal, which blinks once a second
+    (measured: a four-second signal blinked four times on LTG002 spots) and
+    restores the light by itself. The signal never touches ``on`` or
+    ``dimming`` -- the bridge reports only ``signaling.status`` -- so a flash
+    is neither a hand change nor a switch, and whatever the scope was doing
+    carries on underneath it.
+
+    Attributes:
+        flash: How many blinks.
+
+    """
+
+    model_config: ClassVar[ConfigDict] = _PLAN_CONFIG
+
+    flash: Annotated[int, Field(ge=1, le=MAX_FLASHES)]
+
+    def describe(self) -> str:
+        """Render this effect for ``huepy plan explain`` and the log.
+
+        Returns:
+            A short phrase.
+
+        """
+        return f"flash {self.flash}x"
+
+
+class Run(BaseModel):
+    """Run a command, as the plan's own user, without a shell.
+
+    The command is an argument list, never a string: nothing in a plan file is
+    handed to a shell, so a name with a space or a quote in it means what it
+    says. ``HUEPY_TRIGGER`` and ``HUEPY_SCENARIO`` in its environment say what
+    started it.
+
+    Attributes:
+        run: The program and its arguments.
+        timeout: How long it may take before it is killed.
+
+    """
+
+    model_config: ClassVar[ConfigDict] = _PLAN_CONFIG
+
+    run: Annotated[list[Annotated[str, Field(min_length=1)]], Field(min_length=1)]
+    timeout: Annotated[Duration, Field(gt=0, le=MAX_RUN_TIMEOUT)] = DEFAULT_RUN_TIMEOUT
+
+    def describe(self) -> str:
+        """Render this effect for ``huepy plan explain`` and the log.
+
+        Returns:
+            A short phrase.
+
+        """
+        return f"run {' '.join(self.run)}"
+
+
+class Fire(BaseModel):
+    """Fire an application signal, as if it had arrived over HTTP.
+
+    What lets one button feed several scenarios -- or a scenario in another
+    file -- without each of them naming the button.
+
+    Attributes:
+        fire: The signal's name, without the ``signal:`` prefix.
+
+    """
+
+    model_config: ClassVar[ConfigDict] = _PLAN_CONFIG
+
+    fire: Annotated[str, Field(min_length=1)]
+
+    def describe(self) -> str:
+        """Render this effect for ``huepy plan explain`` and the log.
+
+        Returns:
+            A short phrase.
+
+        """
+        return f"fire signal:{self.fire}"
+
+
+_EFFECT_KINDS = ("flash", "run", "fire")
+
+
+def _effect_kind(value: object) -> str | None:
+    """Tell which effect a ``do`` block is, by the one key that names it.
+
+    Picking the model up front, rather than trying each in turn, is what
+    keeps a typo's error about the kind that was meant: ``run`` with a bad
+    timeout is reported against ``run``, not as three failed guesses.
+
+    Args:
+        value: The block as written, or an already-built effect.
+
+    Returns:
+        The kind's key, or None when the block names none of them.
+
+    """
+    if isinstance(value, Flash | Run | Fire):
+        return next(kind for kind in _EFFECT_KINDS if hasattr(value, kind))
+    if isinstance(value, dict):
+        return next((kind for kind in _EFFECT_KINDS if kind in value), None)
+    return None
+
+
+type Effect = Annotated[
+    Annotated[Flash, Tag("flash")]
+    | Annotated[Run, Tag("run")]
+    | Annotated[Fire, Tag("fire")],
+    Discriminator(
+        _effect_kind,
+        custom_error_type="effect_kind",
+        custom_error_message="a 'do' block needs one of: flash, run, fire",
+    ),
+]
+"""Something a rule does once, instead of a state it holds."""
+
 
 class Rule(BaseModel):
     """A discrete trigger and what it does.
@@ -306,6 +448,10 @@ class Rule(BaseModel):
             fire. Exactly one of ``below`` and ``above`` on a ``light_level:``
             rule; neither on any other kind.
         set: The target state.
+        do: A one-shot effect instead of a target state. It claims nothing:
+            the scope goes on doing whatever it was doing, which is why
+            ``ramp`` and ``hold`` mean nothing here. Exactly one of ``set``
+            and ``do``.
 
     """
 
@@ -317,7 +463,36 @@ class Rule(BaseModel):
     hold: Annotated[Duration, Field(gt=0)] | None = None
     below: Annotated[float, Field(gt=0)] | None = None
     above: Annotated[float, Field(gt=0)] | None = None
-    set: Action
+    set: Action | None = None
+    do: Effect | None = None
+
+    @model_validator(mode="after")
+    def _one_outcome(self) -> Self:
+        """Require a rule to either hold a state or run an effect.
+
+        Returns:
+            The validated rule.
+
+        Raises:
+            ValueError: If it gives neither or both, or gives a ``do`` a
+                ``ramp`` or ``hold`` it could never honour.
+
+        """
+        if (self.set is None) == (self.do is None):
+            msg = (
+                f"the rule on {self.when} needs exactly one of 'set' (a state to "
+                f"hold) and 'do' (an effect to run once)"
+            )
+            raise ValueError(msg)
+        if self.do is not None:
+            given = [key for key in ("ramp", "hold") if getattr(self, key) is not None]
+            if given:
+                msg = (
+                    f"the rule on {self.when} runs an effect, so '{given[0]}' "
+                    f"means nothing: an effect claims no scope to fade or hold"
+                )
+                raise ValueError(msg)
+        return self
 
     @property
     def threshold(self) -> tuple[Side, float] | None:
@@ -468,6 +643,20 @@ class Scenario(BaseModel):
         """Whether this scenario waits for a trigger before claiming its scope."""
         return self.activate_on is not None
 
+    @property
+    def drives_scope(self) -> bool:
+        """Whether this scenario can ever claim its scope.
+
+        One whose rules all run effects only *points at* lights -- what to
+        flash -- and never writes a state there. Judging reports on its scope
+        would find no fade of its own on record and call every report a hand.
+        """
+        return (
+            bool(self.step)
+            or self.set is not None
+            or any(rule.set is not None for rule in self.rule)
+        )
+
     def uses_sun(self) -> bool:
         """Whether any anchor in this scenario needs solar times.
 
@@ -540,6 +729,7 @@ class Plan(BaseModel):
                 raise ValueError(msg)
             seen.add(scenario.name)
         self._reject_disagreeing_thresholds()
+        self._reject_bad_fires()
 
         if self.location is None:
             solar = [s.name for s in self.scenario if s.uses_sun()]
@@ -582,6 +772,38 @@ class Plan(BaseModel):
                     )
                     raise ValueError(msg)
 
+    def _reject_bad_fires(self) -> None:
+        """Reject a ``fire`` effect nothing hears, or one that fires itself.
+
+        A signal nobody listens for is a typo that would only show as a
+        warning in the log, the first time the button is pressed. A loop --
+        ``signal:a`` firing ``a``, or ``a`` firing ``b`` firing ``a`` -- would
+        spin the runner forever on one press, so it must not load at all.
+
+        Raises:
+            ValueError: If a fired signal has no listener, or the fires form
+                a cycle.
+
+        """
+        listened: set[str] = set()
+        fires: dict[str, set[str]] = {}
+        for scenario in self.scenario:
+            if not scenario.enabled:
+                continue
+            selectors = [scenario.activate_on, scenario.release_on]
+            selectors.extend(rule.when for rule in scenario.rule)
+            listened.update(str(s) for s in selectors if s is not None)
+            for rule in scenario.rule:
+                if isinstance(rule.do, Fire):
+                    target = f"signal:{rule.do.fire}"
+                    fires.setdefault(str(rule.when), set()).add(target)
+        for source, targets in fires.items():
+            for target in sorted(targets - listened):
+                msg = f"{source} fires {target!r}, but nothing listens for it"
+                raise ValueError(msg)
+        for source in fires:
+            _reject_fire_cycle(source, fires, ())
+
     def scenarios_for_day(self, day: datetime.date) -> list[Scenario]:
         """Select the enabled scenarios whose recurrence includes a date.
 
@@ -598,3 +820,25 @@ class Plan(BaseModel):
             for scenario in self.scenario
             if scenario.enabled and (scenario.days is None or weekday in scenario.days)
         ]
+
+
+def _reject_fire_cycle(
+    key: str, fires: dict[str, set[str]], path: tuple[str, ...]
+) -> None:
+    """Walk the signals a trigger fires, failing on the first one seen twice.
+
+    Args:
+        key: The trigger being followed.
+        fires: For each trigger, the signals its ``fire`` effects fire.
+        path: The triggers already on this walk, in order.
+
+    Raises:
+        ValueError: If ``key`` is already on the walk.
+
+    """
+    if key in path:
+        loop = " -> ".join((*path[path.index(key) :], key))
+        msg = f"these 'fire' effects form a loop: {loop}"
+        raise ValueError(msg)
+    for target in sorted(fires.get(key, ())):
+        _reject_fire_cycle(target, fires, (*path, key))

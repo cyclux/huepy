@@ -17,8 +17,9 @@ so a crash mid-sunset recovers into the right place.
 Triggers -- motion, buttons, door contacts, light levels, and signals the
 application fires -- all go through one path. A rule that fires holds its
 scope for a while and then hands it back to whatever curve was underneath,
-without a snap. :class:`SignalServer` makes the signals reachable over HTTP
-from outside the process.
+without a snap -- or, with ``do``, runs a one-shot effect that claims
+nothing. :class:`SignalServer` makes the signals reachable over HTTP from
+outside the process.
 
 The scheduling arithmetic, the executor and the arbiter stay reachable as
 :mod:`huepy.plans.timeline`, :mod:`huepy.plans.executor` and
@@ -44,9 +45,12 @@ from huepy.plans.runner import PlanRunner
 from huepy.plans.schema import (
     Action,
     Defaults,
+    Fire,
+    Flash,
     Location,
     Plan,
     Rule,
+    Run,
     Scenario,
     Step,
 )
@@ -67,12 +71,15 @@ __all__ = [
     "Binding",
     "ChangeSource",
     "Defaults",
+    "Fire",
+    "Flash",
     "Location",
     "Plan",
     "PlanClient",
     "PlanRunner",
     "ResolvedPlan",
     "Rule",
+    "Run",
     "Scenario",
     "SignalServer",
     "Step",

@@ -126,6 +126,11 @@ def _explain(plan: Plan, when: datetime.datetime) -> None:
             if rule.threshold is not None:
                 side, lux = rule.threshold
                 level = f" {side} {_lux(lux)}"
+            if rule.do is not None:
+                print(f"  on {rule.when}{level}{window}: {rule.do.describe()}")
+                continue
+            if rule.set is None:
+                continue
             hold = _hold_of(rule, scenario, plan)
             print(f"  on {rule.when}{level}{window}: {rule.set.describe()}, {hold}")
 

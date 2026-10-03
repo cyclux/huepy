@@ -133,3 +133,16 @@ below = 30
 between = ["sunrise", "sunset"]
 ramp = "5m"
 set = { on = true, brightness = 70, kelvin = 4000 }
+
+# A button by the front door as a doorbell for whoever is in the study. `do`
+# runs an effect once instead of holding a state: the blink is the bridge's
+# own signal, so the study's day curve carries on underneath it and the plan
+# never takes the blink for someone at the switch. A press while it is still
+# blinking is ignored.
+[[scenario]]
+name = "doorbell"
+scope = ["room:Study"]
+
+[[scenario.rule]]
+when = "button:Doorbell"
+do = { flash = 3 }

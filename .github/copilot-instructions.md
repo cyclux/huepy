@@ -155,6 +155,13 @@ maths, or the executor.
   for a level crossing, `runner._level_edge()`; the runner's `_levels` dict is
   its only per-sensor memory for triggers, and `_no_motion` (when an app motion
   rule's sensor last went still) the only one for app rules.
+- **An effect is not a claim.** A rule's `do` (`flash`, `run`, `fire`) goes
+  through `Arbiter.fire()` like every trigger, but records a `Fired` instead
+  of a hold; the runner drains it with `take_fired()` and runs it in a task.
+  A flash is the bridge's `on_off` signal, which reports only
+  `signaling.status`; `runner._observe_light()` drops attention-only reports
+  before judging, so a blink is never a hand. A scenario of effects only is
+  not indexed as a scope (`Scenario.drives_scope`).
 - **An app motion rule's warning dim is not a hand.** The bridge dims a room
   50.2 points 260 s after `motion=false`, then switches it off; the stream
   carries no provenance. `automation.is_warning_dim()` tests that signature,

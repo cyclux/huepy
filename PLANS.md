@@ -190,6 +190,28 @@ The state layer folds every resource type, and each sensor event carries a
 fresh `changed` / `updated` timestamp, so a repeated `initial_press` is a
 distinct `Change` even though the folded `event` field did not move.
 
+A rule with `do` goes down the same path and branches only at the end:
+`Arbiter.fire()` records a `Fired` instead of placing a hold, and the runner
+drains them with `take_fired()` right after the trigger and starts each in
+its own task — a doorbell must not wait for the loop to finish a write. An
+effect claims nothing, so ownership, fades and yields are untouched by
+construction rather than by care. `fire = "name"` re-enters through
+`PlanRunner.fire()`; the schema rejects a fired name nobody listens for and
+any loop of fires, so one press cannot spin the runner.
+
+A flash is the bridge's `on_off` signal, sent per light. Measured on three
+LTG002 spots: four seconds blinked four times, and the event stream carried
+nothing but `signaling.status` — the signal, then `null` — with `on` and
+`dimming` untouched. A daemon running at the time judged those reports as
+its fade progressing. That was luck rather than design: on a scope with no
+fade on record a report naming neither `on` nor a level was a hand, so
+`_observe_light()` now drops a report whose only fields are `signaling` or
+`alert` before anything judges it. Client-side on/off pulses were the other
+way to blink, and every pulse would have been a switch-off and a switch-on
+to rejoin after. A scenario made only of effect rules is left out of the
+scope index (`Scenario.drives_scope`): with nothing of its own ever written
+there, every report on its lights would have read as a hand.
+
 ### Handing a scope back never snaps
 
 A rule hold lapses, or a mode releases, and the day curve underneath takes the
@@ -545,6 +567,7 @@ integration probe establishing whether a third-party app key can POST one.
 | What fires each trigger kind, holds, windows, hand-back, the no-snap floor | `TestRules`, `TestModeHandback` |
 | A level fires on the crossing, releases past the band, never on a repeat, and a still-dark report does not un-yield a scope; the lux scale round-trips through `models.LightLevel`; the schema ties `below`/`above` to `light_level:` and makes rules on one sensor agree | `TestLevelRules`, `TestLevelEdge`, `tests/test_plans_fields.py::TestLightLevelUnits`, `tests/test_plans_schema.py::TestLevelThreshold` |
 | The signal server fires known names, refuses unknown ones with the list, guards a token, survives a failing callback, and will not bind beyond loopback unguarded; `huepy plan signal` reaches it | `tests/test_plans_signals.py`, `tests/test_plans_cli.py::TestSignal` |
+| An effect claims nothing; a blink's report is never a hand, even with no fade on record; a repeat while running is ignored; `fire` chains; `run` passes its trigger and is stopped by `close()`; the schema rejects unheard and looping fires | `TestEffects`, `tests/test_plans_effects.py`, `tests/test_plans_schema.py::TestEffects` |
 | A trigger landing mid-write is not lost by the loop | `TestRules::test_a_trigger_during_a_write_is_not_lost` |
 | `origin="self"` is not proof; `command_echo` is; a switch-off does not yield; reassert re-drives a dial change and leaves a dark light dark | `TestObservation` |
 | A switch-off mid-fade neither yields nor writes; a switch-on rejoins where the curve is, over the catch-up ramp, then continues the step; a switch-on ends a yield; the level a switch-on names is not a hand change; the fade's own `on` is not a switch-on; a switch-on against an `on = false` claim still yields; the loop rejoins; another member's progress after one member's switch-off is the fade | `TestPowerIsNotAHandChange` |

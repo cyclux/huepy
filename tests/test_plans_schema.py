@@ -360,3 +360,139 @@ class TestDays:
                     "step": [{"at": "10:00", "set": {"brightness": 1}}],
                 }
             )
+
+
+def effect_plan(*rules, extra=()):
+    """Build a plan whose one scenario runs effects, beside any extra scenarios."""
+    return {
+        "version": 1,
+        "scenario": [
+            {"name": "doorbell", "scope": ["room:Office"], "rule": list(rules)},
+            *extra,
+        ],
+    }
+
+
+class TestEffects:
+    def test_a_rule_can_run_an_effect_instead_of_holding_a_state(self):
+        plan = Plan.model_validate(
+            effect_plan({"when": "button:Doorbell", "do": {"flash": 3}})
+        )
+        rule = plan.scenario[0].rule[0]
+        assert rule.set is None
+        assert rule.do is not None
+        assert rule.do.describe() == "flash 3x"
+
+    def test_each_kind_is_picked_by_its_key(self):
+        plan = Plan.model_validate(
+            effect_plan(
+                {"when": "button:A", "do": {"run": ["/bin/true"], "timeout": "5s"}},
+                {"when": "button:B", "do": {"fire": "bell"}},
+                {"when": "signal:bell", "do": {"flash": 1}},
+            )
+        )
+        run, fire, _ = (rule.do for rule in plan.scenario[0].rule)
+        assert run is not None
+        assert run.describe() == "run /bin/true"
+        assert fire is not None
+        assert fire.describe() == "fire signal:bell"
+
+    def test_a_rule_needs_a_set_or_a_do(self):
+        with pytest.raises(ValidationError, match="exactly one of 'set'"):
+            Rule.model_validate({"when": "button:A"})
+
+    def test_a_rule_cannot_have_both(self):
+        with pytest.raises(ValidationError, match="exactly one of 'set'"):
+            Rule.model_validate(
+                {"when": "button:A", "set": {"on": True}, "do": {"flash": 1}}
+            )
+
+    @pytest.mark.parametrize("key", ["hold", "ramp"])
+    def test_an_effect_has_nothing_to_fade_or_hold(self, key):
+        with pytest.raises(ValidationError, match=f"'{key}' means nothing"):
+            Rule.model_validate({"when": "button:A", "do": {"flash": 1}, key: "1m"})
+
+    def test_an_unknown_effect_names_the_kinds(self):
+        with pytest.raises(ValidationError, match="needs one of: flash, run, fire"):
+            Rule.model_validate({"when": "button:A", "do": {"blink": 2}})
+
+    def test_an_error_is_reported_against_the_kind_that_was_meant(self):
+        with pytest.raises(ValidationError, match=r"do\.run\.timeout"):
+            Rule.model_validate(
+                {"when": "button:A", "do": {"run": ["/bin/true"], "timeout": "0s"}}
+            )
+
+    @pytest.mark.parametrize("blinks", [0, 31])
+    def test_a_flash_is_bounded(self, blinks):
+        # flash = 300 is a typo, not five minutes of strobing.
+        with pytest.raises(ValidationError):
+            Rule.model_validate({"when": "button:A", "do": {"flash": blinks}})
+
+    def test_a_command_is_a_list_never_a_shell_string(self):
+        with pytest.raises(ValidationError):
+            Rule.model_validate({"when": "button:A", "do": {"run": "rm -rf /"}})
+
+    def test_a_fired_signal_needs_a_listener(self):
+        with pytest.raises(ValidationError, match="nothing listens for it"):
+            Plan.model_validate(effect_plan({"when": "button:A", "do": {"fire": "x"}}))
+
+    def test_a_disabled_listener_does_not_count(self):
+        listener = {
+            "name": "off",
+            "scope": ["room:Office"],
+            "enabled": False,
+            "rule": [{"when": "signal:x", "do": {"flash": 1}}],
+        }
+        with pytest.raises(ValidationError, match="nothing listens for it"):
+            Plan.model_validate(
+                effect_plan({"when": "button:A", "do": {"fire": "x"}}, extra=[listener])
+            )
+
+    def test_a_mode_listening_counts(self):
+        mode = scenario(name="movie", activate_on="signal:x")
+        Plan.model_validate(
+            effect_plan({"when": "button:A", "do": {"fire": "x"}}, extra=[mode])
+        )
+
+    def test_a_signal_firing_itself_is_rejected(self):
+        with pytest.raises(ValidationError, match="form a loop"):
+            Plan.model_validate(effect_plan({"when": "signal:x", "do": {"fire": "x"}}))
+
+    def test_a_longer_loop_is_rejected(self):
+        with pytest.raises(
+            ValidationError, match="loop: signal:a -> signal:b -> signal:a"
+        ):
+            Plan.model_validate(
+                effect_plan(
+                    {"when": "button:A", "do": {"fire": "a"}},
+                    {"when": "signal:a", "do": {"fire": "b"}},
+                    {"when": "signal:b", "do": {"fire": "a"}},
+                )
+            )
+
+    def test_two_paths_to_one_signal_are_not_a_loop(self):
+        Plan.model_validate(
+            effect_plan(
+                {"when": "button:A", "do": {"fire": "a"}},
+                {"when": "button:A", "do": {"fire": "b"}},
+                {"when": "signal:a", "do": {"fire": "c"}},
+                {"when": "signal:b", "do": {"fire": "c"}},
+                {"when": "signal:c", "do": {"flash": 1}},
+            )
+        )
+
+    def test_a_scenario_of_effects_drives_no_scope(self):
+        plan = Plan.model_validate(
+            effect_plan({"when": "button:A", "do": {"flash": 1}}, extra=[scenario()])
+        )
+        assert not plan.scenario[0].drives_scope
+        assert plan.scenario[1].drives_scope
+
+    def test_one_held_rule_makes_a_scenario_drive_its_scope(self):
+        plan = Plan.model_validate(
+            effect_plan(
+                {"when": "button:A", "do": {"flash": 1}},
+                {"when": "button:B", "set": {"on": True}},
+            )
+        )
+        assert plan.scenario[0].drives_scope

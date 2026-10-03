@@ -9,6 +9,7 @@ import asyncio
 import copy
 import datetime
 import logging
+import sys
 import zoneinfo
 from typing import Any, Literal, override
 
@@ -3462,3 +3463,296 @@ class TestWarningDim:
         runner = await self.running(warned, clock, changes, RULE_PLAN, at=(12, 30))
         changes.deliver(motion(clock.now))
         assert runner.arbiter.state_of(GROUP_PATH).hold is not None
+
+
+LIGHT_PATH = f"/clip/v2/resource/light/{LIGHT}"
+
+
+def effect_plan(*rules: dict[str, Any], base: bool = True) -> dict[str, Any]:
+    """Build the rule plan's day curve, beside a scenario that only runs effects."""
+    plan = copy.deepcopy(RULE_PLAN)
+    plan["scenario"] = [plan["scenario"][0]] if base else []
+    plan["scenario"].append(
+        {"name": "doorbell", "scope": ["room:Living Room"], "rule": list(rules)}
+    )
+    return plan
+
+
+FLASH_RULE = {"when": "button:Hall sensor", "do": {"flash": 3}}
+
+
+async def settle_effects(runner):
+    """Wait for every effect task the runner started."""
+    await asyncio.gather(*runner._effects.values())
+
+
+def signaling_report(at, status):
+    """Build a blink's report, shaped like the one measured on the bridge."""
+    return change(
+        LIGHT,
+        None,
+        at,
+        delta={
+            "id": LIGHT,
+            "id_v1": "/lights/7",
+            "owner": {"rid": DEVICE, "rtype": "device"},
+            "service_id": 0,
+            "type": "light",
+            "signaling": {"status": status},
+        },
+    )
+
+
+class TestEffects:
+    async def test_a_press_blinks_every_light_with_the_bridge_signal(
+        self, sensor_bridge, http, clock
+    ):
+        changes = FakeChanges()
+        runner = await rule_runner(
+            sensor_bridge, clock, changes, effect_plan(FLASH_RULE)
+        )
+        http.calls.clear()
+
+        changes.deliver(button(clock.now, "initial_press"))
+        await settle_effects(runner)
+
+        assert http.writes == [
+            (
+                "PUT",
+                LIGHT_PATH,
+                {"signaling": {"signal": "on_off", "duration": 3000}},
+            )
+        ]
+
+    async def test_a_flash_claims_nothing(self, sensor_bridge, http, clock):
+        # The point of an effect: the day curve's fade, its owner and the
+        # room's state are untouched, and the loop has nothing to send.
+        changes = FakeChanges()
+        runner = await rule_runner(
+            sensor_bridge, clock, changes, effect_plan(FLASH_RULE)
+        )
+        state = runner.arbiter.state_of(GROUP_PATH)
+        before = (state.fade, state.owner, state.hold, state.yielded_at)
+
+        changes.deliver(button(clock.now, "initial_press"))
+        await settle_effects(runner)
+        http.calls.clear()
+
+        assert await runner.tick() == 0
+        assert (state.fade, state.owner, state.hold, state.yielded_at) == before
+
+    async def test_the_blink_report_is_not_a_hand(self, sensor_bridge, http, clock):
+        changes = FakeChanges()
+        runner = await rule_runner(
+            sensor_bridge, clock, changes, effect_plan(FLASH_RULE)
+        )
+        changes.deliver(button(clock.now, "initial_press"))
+        await settle_effects(runner)
+
+        changes.deliver(signaling_report(clock.now, {"signal": "on_off"}))
+        clock.advance(seconds=3)
+        changes.deliver(signaling_report(clock.now, None))
+
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+
+    async def test_a_blink_with_no_fade_on_record_is_not_a_hand(
+        self, sensor_bridge, clock
+    ):
+        # A report naming neither `on` nor a level, on a scope with no fade
+        # to explain it, used to be taken for a hand -- a doorbell rung after
+        # someone dimmed the room would have yielded it again.
+        changes = FakeChanges()
+        runner = await rule_runner(
+            sensor_bridge, clock, changes, effect_plan(FLASH_RULE)
+        )
+        state = runner.arbiter.state_of(GROUP_PATH)
+        state.fade = None
+        state.lapsed = None
+
+        changes.deliver(signaling_report(clock.now, {"signal": "on_off"}))
+
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+
+    async def test_a_report_with_a_level_beside_the_signal_is_still_judged(
+        self, sensor_bridge, clock
+    ):
+        changes = FakeChanges()
+        runner = await rule_runner(
+            sensor_bridge, clock, changes, effect_plan(FLASH_RULE)
+        )
+        clock.advance(minutes=1)
+
+        changes.report(
+            LIGHT,
+            None,
+            clock.now,
+            delta={"signaling": {"status": None}, "dimming": {"brightness": 20}},
+        )
+
+        assert runner.arbiter.is_yielded(GROUP_PATH)
+
+    async def test_a_second_press_while_blinking_is_ignored(
+        self, sensor_bridge, http, clock
+    ):
+        changes = FakeChanges()
+        runner = await rule_runner(
+            sensor_bridge, clock, changes, effect_plan(FLASH_RULE)
+        )
+        http.calls.clear()
+
+        changes.deliver(button(clock.now, "initial_press"))
+        await settle_effects(runner)
+        clock.advance(seconds=2)
+        changes.deliver(button(clock.now, "initial_press"))
+        await settle_effects(runner)
+        assert len(http.writes) == 1
+
+        clock.advance(seconds=1)
+        changes.deliver(button(clock.now, "initial_press"))
+        await settle_effects(runner)
+        assert len(http.writes) == 2
+
+    async def test_only_the_press_fires_not_the_release(
+        self, sensor_bridge, http, clock
+    ):
+        changes = FakeChanges()
+        runner = await rule_runner(
+            sensor_bridge, clock, changes, effect_plan(FLASH_RULE)
+        )
+        http.calls.clear()
+
+        changes.deliver(button(clock.now, "short_release"))
+        await settle_effects(runner)
+
+        assert http.writes == []
+
+    async def test_a_closed_window_runs_nothing(self, sensor_bridge, http, clock):
+        changes = FakeChanges()
+        rule = FLASH_RULE | {"between": ["22:00", "06:00"]}
+        runner = await rule_runner(sensor_bridge, clock, changes, effect_plan(rule))
+        http.calls.clear()
+
+        changes.deliver(button(clock.now, "initial_press"))
+        await settle_effects(runner)
+
+        assert http.writes == []
+
+    async def test_an_effect_only_scope_is_never_judged(
+        self, sensor_bridge, http, clock
+    ):
+        # Nothing drives the room, so a report on it is nobody's business:
+        # judged, every one would have been "changed by hand".
+        changes = FakeChanges()
+        runner = await rule_runner(
+            sensor_bridge, clock, changes, effect_plan(FLASH_RULE, base=False)
+        )
+
+        changes.report(LIGHT, 20, clock.now)
+
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+        changes.deliver(button(clock.now, "initial_press"))
+        await settle_effects(runner)
+        assert http.writes[-1][1] == LIGHT_PATH
+
+    async def test_a_refused_light_is_logged_and_the_plan_goes_on(
+        self, sensor_bridge, http, clock, caplog
+    ):
+        changes = FakeChanges()
+        runner = await rule_runner(
+            sensor_bridge, clock, changes, effect_plan(FLASH_RULE)
+        )
+        http.write_result = envelope(errors=["device (light) does not support signal"])
+
+        with caplog.at_level(logging.ERROR):
+            changes.deliver(button(clock.now, "initial_press"))
+            await settle_effects(runner)
+
+        assert f"light {LIGHT} could not flash" in caplog.text
+        assert not runner.arbiter.is_yielded(GROUP_PATH)
+
+    async def test_fire_passes_the_press_on_as_a_signal(
+        self, sensor_bridge, http, clock
+    ):
+        changes = FakeChanges()
+        plan = effect_plan(
+            {"when": "button:Hall sensor", "do": {"fire": "doorbell"}},
+            {"when": "signal:doorbell", "do": {"flash": 2}},
+        )
+        runner = await rule_runner(sensor_bridge, clock, changes, plan)
+        http.calls.clear()
+
+        changes.deliver(button(clock.now, "initial_press"))
+        await settle_effects(runner)
+
+        assert http.writes[0][2]["signaling"]["duration"] == 2000
+
+    async def test_an_http_signal_runs_an_effect(self, sensor_bridge, http, clock):
+        changes = FakeChanges()
+        plan = effect_plan({"when": "signal:doorbell", "do": {"flash": 1}})
+        runner = await rule_runner(sensor_bridge, clock, changes, plan)
+        http.calls.clear()
+
+        assert runner.fire("doorbell") == ("'doorbell': flash 1x",)
+        await settle_effects(runner)
+
+        assert http.writes[0][1] == LIGHT_PATH
+
+    async def test_run_starts_a_command_that_knows_its_trigger(
+        self, sensor_bridge, clock, tmp_path
+    ):
+        out = tmp_path / "trigger.txt"
+        script = (
+            "import os, pathlib; pathlib.Path(os.environ['OUT']).write_text("
+            "os.environ['HUEPY_TRIGGER'] + '|' + os.environ['HUEPY_SCENARIO'])"
+        )
+        changes = FakeChanges()
+        plan = effect_plan(
+            {
+                "when": "button:Hall sensor",
+                "do": {"run": [sys.executable, "-c", script]},
+            }
+        )
+        runner = await rule_runner(sensor_bridge, clock, changes, plan)
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setenv("OUT", str(out))
+            changes.deliver(button(clock.now, "initial_press"))
+            await settle_effects(runner)
+
+        assert out.read_text() == "button:Hall sensor|doorbell"
+
+    async def test_a_failing_command_is_logged_with_its_error(
+        self, sensor_bridge, clock, caplog
+    ):
+        changes = FakeChanges()
+        script = "import sys; sys.stderr.write('no bell'); sys.exit(3)"
+        plan = effect_plan(
+            {
+                "when": "button:Hall sensor",
+                "do": {"run": [sys.executable, "-c", script]},
+            }
+        )
+        runner = await rule_runner(sensor_bridge, clock, changes, plan)
+
+        with caplog.at_level(logging.WARNING):
+            changes.deliver(button(clock.now, "initial_press"))
+            await settle_effects(runner)
+
+        assert "exited 3: no bell" in caplog.text
+
+    async def test_close_stops_a_running_command(self, sensor_bridge, clock):
+        changes = FakeChanges()
+        script = "import time; time.sleep(30)"
+        plan = effect_plan(
+            {
+                "when": "button:Hall sensor",
+                "do": {"run": [sys.executable, "-c", script]},
+            }
+        )
+        runner = await rule_runner(sensor_bridge, clock, changes, plan)
+        changes.deliver(button(clock.now, "initial_press"))
+        await asyncio.sleep(0.1)
+
+        await asyncio.wait_for(runner.close(), timeout=5)
+
+        assert runner._effects == {}

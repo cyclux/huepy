@@ -43,7 +43,7 @@ from typing import Literal
 from huepy.plans.executor import segment_count
 from huepy.plans.fields import TriggerKind
 from huepy.plans.resolve import Binding, ResolvedPlan
-from huepy.plans.schema import Action, Rule, Scenario
+from huepy.plans.schema import Action, Effect, Rule, Scenario
 from huepy.plans.timeline import (
     Zone,
     current_step,
@@ -409,6 +409,31 @@ class Hold:
 
 
 @dataclass(frozen=True, slots=True)
+class Fired:
+    """A rule's effect, due to run once.
+
+    The arbiter only records it: running a command or blinking a light is
+    I/O, and this module does none. The runner drains these after every
+    trigger with :meth:`Arbiter.take_fired`.
+
+    Attributes:
+        scenario: The scenario the rule belongs to, whose scope the effect
+            acts on.
+        rule: The rule that fired.
+        effect: What it does.
+        key: The trigger that fired it, as written.
+        at: When it fired.
+
+    """
+
+    scenario: Scenario
+    rule: Rule
+    effect: Effect
+    key: str
+    at: datetime.datetime
+
+
+@dataclass(frozen=True, slots=True)
 class Claim:
     """One scenario's answer for one scope at one instant.
 
@@ -499,6 +524,7 @@ class Arbiter:
         active_modes: Mode scenarios currently claiming their scope, by name,
             with the instant each was activated.
         scopes: Per-scope state, keyed by the scope's write path.
+        fired: Effects a trigger fired that the runner has not taken yet.
 
     """
 
@@ -506,6 +532,7 @@ class Arbiter:
     zone: Zone
     active_modes: dict[str, datetime.datetime] = field(default_factory=dict)
     scopes: dict[str, ScopeState] = field(default_factory=dict)
+    fired: list[Fired] = field(default_factory=list)
 
     def state_of(self, path: str) -> ScopeState:
         """Fetch a scope's state, creating it on first use.
@@ -625,13 +652,15 @@ class Arbiter:
         state = self.state_of(binding.path)
 
         hold = state.hold
-        if hold is not None and hold.scenario == scenario.name:
+        # Only a rule with a `set` places a hold; the check narrows the type.
+        held = hold.rule.set if hold is not None else None
+        if hold is not None and held is not None and hold.scenario == scenario.name:
             rule = hold.rule
             ramp = rule.ramp if rule.ramp is not None else defaults.ramp
             return Claim(
                 scenario=scenario,
                 binding=binding,
-                target=rule.set.resolved(),
+                target=held.resolved(),
                 ramp=defaults.catchup_ramp if catching_up else ramp,
                 source=hold.source,
                 since=hold.placed_at,
@@ -747,9 +776,33 @@ class Arbiter:
                 if not in_window(rule, plan, now, self.zone):
                     outcomes.append(f"{scenario.name!r}: outside its window, ignored")
                     continue
+                if rule.do is not None:
+                    # An effect claims nothing, so it places no hold: the
+                    # scope's owner, fade and yield are exactly as they were.
+                    self.fired.append(
+                        Fired(
+                            scenario=scenario,
+                            rule=rule,
+                            effect=rule.do,
+                            key=key,
+                            at=now,
+                        )
+                    )
+                    outcomes.append(f"{scenario.name!r}: {rule.do.describe()}")
+                    continue
                 self._hold(scenario, rule, now)
                 outcomes.append(f"{scenario.name!r} holds its scope")
         return outcomes
+
+    def take_fired(self) -> list[Fired]:
+        """Hand over every effect fired since the last call.
+
+        Returns:
+            The effects, in the order they fired.
+
+        """
+        fired, self.fired = self.fired, []
+        return fired
 
     def _hold(self, scenario: Scenario, rule: Rule, now: datetime.datetime) -> None:
         """Place a rule's hold on each of its scenario's scopes.

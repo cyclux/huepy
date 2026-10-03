@@ -30,7 +30,7 @@ from typing import Any, Literal, Self, cast
 
 from huepy.exceptions import HueError
 from huepy.models.light import Light
-from huepy.plans.arbiter import Arbiter, Claim, Fade
+from huepy.plans.arbiter import Arbiter, Claim, Fade, Fired
 from huepy.plans.automation import (
     FOLLOW_UP_SECONDS,
     MotionRule,
@@ -40,6 +40,7 @@ from huepy.plans.automation import (
     is_warning_dim,
     motion_transition,
 )
+from huepy.plans.effects import flash, flash_seconds, run_command
 from huepy.plans.executor import Segment, plan_segments, send, send_chain
 from huepy.plans.fields import (
     LIGHT_LEVEL_DEADBAND,
@@ -49,7 +50,7 @@ from huepy.plans.fields import (
 )
 from huepy.plans.protocol import Cancellable, ChangeSource, PlanClient
 from huepy.plans.resolve import Binding, ResolvedPlan, TriggerBinding, resolve
-from huepy.plans.schema import Action, Plan, Rule, Side
+from huepy.plans.schema import Action, Fire, Flash, Plan, Rule, Run, Side
 from huepy.plans.timeline import (
     Zone,
     combine,
@@ -102,6 +103,19 @@ CONTACT_OPENED = "no_contact"
 
 LIGHT_TYPE = "light"
 """The one resource type whose reports are judged as measurements of a scope."""
+
+IDENTITY_FIELDS = frozenset({"id", "id_v1", "owner", "service_id", "type"})
+"""The fields a light report carries whatever it is about."""
+
+ATTENTION_FIELDS = frozenset({"signaling", "alert"})
+"""The fields of a light's attention signals, which say nothing about its state.
+
+A ``flash`` effect's blink reports only ``signaling.status`` (measured), and
+the bridge puts the light back by itself. Judged like any other report, one
+arriving on a scope with no fade on record -- after a hand change, say --
+named neither ``on`` nor a level and was taken for a hand: a doorbell would
+have yielded the room.
+"""
 
 BEHAVIOR_TYPE = "behavior_instance"
 """The resource type of a Hue app automation."""
@@ -431,6 +445,11 @@ class PlanRunner:
         # the stream lost continuity then: the snapshot's rules are stale.
         self._rules_changed: set[str] = set()
         self._rules_stale: bool = False
+        # Effects in flight, by the rule that started them, and how long a
+        # flash keeps its rule busy: the bridge runs the blink, so the task
+        # is done long before the lights are.
+        self._effects: dict[str, asyncio.Task[None]] = {}
+        self._busy_until: dict[str, datetime.datetime] = {}
 
     async def start(self) -> None:
         """Resolve every name in the plan against the bridge.
@@ -494,8 +513,12 @@ class PlanRunner:
             resolved: The plan, with every name bound.
 
         """
-        for bindings in resolved.scopes.values():
-            for binding in bindings:
+        for scenario in self.plan.scenario:
+            if not scenario.drives_scope:
+                # It only names lights to act on; no fade of its own will
+                # ever explain a report there.
+                continue
+            for binding in resolved.scope_of(scenario):
                 # Two scenarios on one room bind it twice; either spelling
                 # names the same path, so the first is as good as any.
                 _ = self._binding_of.setdefault(binding.path, binding)
@@ -672,6 +695,12 @@ class PlanRunner:
             # measured 27 points off the ramp (tests/fixtures/plan_probe.json)
             # -- so it is not a measurement of anything. The members report
             # for themselves, and every one of them is indexed here.
+            return
+        fields = change.delta.keys() - IDENTITY_FIELDS
+        if fields and fields <= ATTENTION_FIELDS:
+            # A blink, ours or the app's "identify": the bridge restores the
+            # light by itself and reports nothing about its state. Checked
+            # before a pending warning dim too -- a blink settles nothing.
             return
         if change.observation == "command_echo":
             # The bridge repeating a transition's *target* back the moment it
@@ -946,6 +975,7 @@ class PlanRunner:
             )
             for outcome in outcomes:
                 logger.info("%s: %s", key, outcome)
+            self._start_effects()
             self._wake.set()
         if level is not None:
             # Remembered even when nothing fired: the band is judged from the
@@ -1014,7 +1044,7 @@ class PlanRunner:
         self.stop()
         self._unsubscribe()
 
-        tasks = tuple(self._fades.values())
+        tasks = (*self._fades.values(), *self._effects.values())
         for task in tasks:
             _ = task.cancel()
         for task in tasks:
@@ -1023,6 +1053,7 @@ class PlanRunner:
             with contextlib.suppress(asyncio.CancelledError, HueError):
                 await task
         self._fades.clear()
+        self._effects.clear()
 
     async def __aenter__(self) -> Self:
         """Resolve the plan and return the runner.
@@ -1109,8 +1140,108 @@ class PlanRunner:
             # mean the name matches no trigger: most likely a typo in the
             # caller, which is worth more than an INFO line.
             logger.warning("%s: nothing in the plan listens for it", key)
+        self._start_effects()
         self._wake.set()
         return outcomes
+
+    def _start_effects(self) -> None:
+        """Start every effect the last trigger fired, each in its own task.
+
+        A task, not an await: a trigger arrives in a synchronous callback,
+        and a doorbell must not wait for the loop to finish a write. A rule
+        whose last effect is still going ignores another press -- a held or
+        twice-pressed button blinks once -- and a ``fire`` is passed straight
+        on, which the schema has already proved cannot loop.
+        """
+        for fired in self.arbiter.take_fired():
+            effect = fired.effect
+            if isinstance(effect, Fire):
+                _ = self.fire(effect.fire)
+                continue
+            label = f"{fired.scenario.name}/{fired.key}"
+            running = self._effects.get(label)
+            busy_until = self._busy_until.get(label)
+            if (running is not None and not running.done()) or (
+                busy_until is not None and fired.at < busy_until
+            ):
+                logger.info("%s: still running %s, ignored", label, effect.describe())
+                continue
+            if isinstance(effect, Flash):
+                seconds = flash_seconds(effect.flash)
+                self._busy_until[label] = fired.at + datetime.timedelta(seconds=seconds)
+                work = self._flash(fired, effect)
+            else:
+                work = self._run(fired, effect)
+            self._effects[label] = asyncio.create_task(
+                self._effect(label, work), name=f"effect:{label}"
+            )
+
+    async def _effect(self, label: str, work: Awaitable[None]) -> None:
+        """Run one effect, keeping its failure to itself.
+
+        Args:
+            label: The rule that started it, for the log.
+            work: The effect.
+
+        """
+        try:
+            await work
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # An effect must never stop the plan, whatever went wrong in it.
+            logger.exception("%s: the effect failed", label)
+        finally:
+            if self._effects.get(label) is asyncio.current_task():
+                del self._effects[label]
+
+    async def _flash(self, fired: Fired, effect: Flash) -> None:
+        """Blink every light in the fired rule's scope.
+
+        Args:
+            fired: The rule that fired.
+            effect: How many blinks.
+
+        """
+        light_ids = [
+            light_id
+            for binding in self.arbiter.resolved.scope_of(fired.scenario)
+            for light_id in binding.light_ids
+        ]
+        logger.info(
+            "%s/%s: flashing %d light%s %dx",
+            fired.scenario.name,
+            fired.key,
+            len(light_ids),
+            "" if len(light_ids) == 1 else "s",
+            effect.flash,
+        )
+        _ = await flash(self._client, light_ids, blinks=effect.flash)
+
+    async def _run(self, fired: Fired, effect: Run) -> None:
+        """Run the fired rule's command and log how it ended.
+
+        Args:
+            fired: The rule that fired.
+            effect: The command.
+
+        """
+        label = f"{fired.scenario.name}/{fired.key}"
+        logger.info("%s: running %s", label, " ".join(effect.run))
+        result = await run_command(
+            effect.run,
+            kill_after=effect.timeout,
+            env={"HUEPY_TRIGGER": fired.key, "HUEPY_SCENARIO": fired.scenario.name},
+        )
+        if result.ok:
+            logger.info("%s: %s finished", label, effect.run[0])
+            return
+        status = (
+            "did not finish"
+            if result.returncode is None
+            else f"exited {result.returncode}"
+        )
+        logger.warning("%s: %s %s: %s", label, effect.run[0], status, result.stderr)
 
     async def catch_up(self, *, only: frozenset[str] | None = None) -> int:
         """Move every scope to where it should be right now.
