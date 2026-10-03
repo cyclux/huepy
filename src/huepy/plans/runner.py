@@ -1266,11 +1266,14 @@ class PlanRunner:
         del self._breathing[light_id]
         return False
 
-    def _breathing_paths(self, now: datetime.datetime) -> frozenset[str]:
+    def _breathing_paths(self) -> frozenset[str]:
         """Collect the scopes a running breath is moving a light of.
 
-        Args:
-            now: The runner's clock.
+        Only while it runs, not through :data:`BREATH_GRACE`: the grace is
+        for late reports, and the rejoin that ends a breath is a write that
+        must go out at once. Held back through the grace, it was dropped --
+        the loop runs it the moment the breath ends -- and a light the
+        breath caught mid-fade stayed where the breath left it.
 
         Returns:
             Their write paths. Empty when nothing breathes.
@@ -1278,14 +1281,12 @@ class PlanRunner:
         """
         return frozenset(
             path
-            for light_id, until in tuple(self._breathing.items())
-            if until is None or now < until
+            for light_id, until in self._breathing.items()
+            if until is None
             for path in self._scope_of.get(light_id, ())
         )
 
-    def _not_breathing(
-        self, claims: list[Claim], now: datetime.datetime
-    ) -> list[Claim]:
+    def _not_breathing(self, claims: list[Claim]) -> list[Claim]:
         """Hold back the claims on scopes a breath is moving.
 
         Written now, a claim would land mid-breath and be undone by the
@@ -1293,13 +1294,12 @@ class PlanRunner:
 
         Args:
             claims: The claims due.
-            now: The runner's clock.
 
         Returns:
             The claims that can be written now.
 
         """
-        breathing = self._breathing_paths(now)
+        breathing = self._breathing_paths()
         for claim in claims:
             if claim.binding.path in breathing:
                 logger.debug("%s: breathing, write deferred", claim.binding.selector)
@@ -1402,9 +1402,7 @@ class PlanRunner:
         written = 0
         claims = [
             claim
-            for claim in self._not_breathing(
-                self.arbiter.claims(now, catching_up=True), now
-            )
+            for claim in self._not_breathing(self.arbiter.claims(now, catching_up=True))
             if only is None or claim.binding.path in only
         ]
         for claim in claims:
@@ -1436,7 +1434,7 @@ class PlanRunner:
         now = self._clock()
         written = 0
         self._expire_warnings(now)
-        for claim in self._not_breathing(self.arbiter.claims(now), now):
+        for claim in self._not_breathing(self.arbiter.claims(now)):
             if self._closing.is_set():
                 # close() landed during another scope's write; finishing the
                 # pass would keep writing after the caller was told it stopped.

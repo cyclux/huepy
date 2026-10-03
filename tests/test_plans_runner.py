@@ -3905,8 +3905,8 @@ class TestBreathe:
 
         assert set(deferred) == {0}
         http.calls.clear()
-        assert await runner.tick() == 0  # still inside the grace
-        clock.advance(seconds=6)
+        # At once, not after the grace: the loop runs the rejoin the moment
+        # the breath ends, and held back then it was dropped for good.
         assert await runner.rejoin() == 1
         assert http.writes[0][1] == GROUP_PATH
 

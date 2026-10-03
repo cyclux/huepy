@@ -222,7 +222,10 @@ so the dark light keeps the level the plan stored. Two breaths at 1 s a half
 looked smooth and in step on three lights, lit and dark. Being real writes,
 a breath fences itself off: `PlanRunner._breathing` marks its lights, their
 reports are dropped unjudged until `BREATH_GRACE` after it ends, and
-`_not_breathing()` holds back the loop's writes to their scopes. It reads
+`_not_breathing()` holds back the loop's writes to their scopes while it
+runs -- only while it runs: the rejoin goes out the moment it ends, and held
+back through the grace too, as first written, it was dropped and a light
+caught mid-fade stayed where the breath had left it. It reads
 each light from the bridge first and ends where it read it, then rejoins
 each driven scope that is neither yielded nor dark, because its writes
 cancelled the fade the bridge was running. A hand at the dial during the

@@ -163,8 +163,9 @@ maths, or the executor.
   before judging, so a blink is never a hand. A scenario of effects only is
   not indexed as a scope (`Scenario.drives_scope`). A `breathe` is the one
   effect that writes state (the bridge's alert cannot count); its lights sit
-  in `PlanRunner._breathing`, unjudged and unwritten by the loop until
-  `BREATH_GRACE` after, and driven scopes rejoin when it ends.
+  in `PlanRunner._breathing`, unwritten by the loop while it runs and
+  unjudged until `BREATH_GRACE` after; driven scopes rejoin the moment it
+  ends, inside the grace.
 - **An app motion rule's warning dim is not a hand.** The bridge dims a room
   50.2 points 260 s after `motion=false`, then switches it off; the stream
   carries no provenance. `automation.is_warning_dim()` tests that signature,
