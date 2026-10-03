@@ -107,7 +107,9 @@ applyTo: '**'
 - Keep `resources/` independent of `client/base.py` to preserve the acyclic import graph
 - TLS is verified against Signify's bundled root CAs by default (`client/tls.py`), pinning the
   bridge-id common name when known; `TlsMode.INSECURE` is the explicit opt-out. Writes are paced
-  to the bridge's budget in `client/ratelimit.py`, gated at the top of `HueHttpClient._request`
+  to the bridge's budget in `client/ratelimit.py`, gated at the top of `HueHttpClient._request`;
+  `put_batch` paces a batch as a whole (`RateLimiter.acquire_batch`), same budget, no spacing
+  inside it, for writes that must land in step
 - Parse resource payloads through tolerant `HueModel` subclasses (`extra="allow"`)
 - Route v2 envelopes through `unwrap()` / `raise_for_errors()`; HTTP 207 is a transport success
   whose `errors[]` still needs classification

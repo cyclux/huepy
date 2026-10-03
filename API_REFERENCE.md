@@ -89,6 +89,14 @@ second to a light and one per second to the shared broadcast budget that
 each write so a burst — a `room.restore()` fanning out over many lights — cannot
 flood the bridge. Pass `rate_limit=False` to manage pacing yourself.
 
+Writes that must land together go through `hue.http.put_batch([(path, body),
+...])`. The batch spends the same budget as its writes one by one — three
+light writes cost three tenths of a second — but up front, so they start at
+once and the write after them waits for the whole share. Spaced a tenth
+apart, three lights fading together were visibly out of step; batched, they
+move as one. The bodies come back in order, and the first transport error is
+raised once every write has finished.
+
 Use the client as an async context manager. Normal startup opens the HTTP
 session and does no resource GETs:
 

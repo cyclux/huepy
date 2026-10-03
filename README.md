@@ -198,7 +198,9 @@ through it drops the colour temperature and leaves the room the wrong colour.
 Those per-light writes are still safe on a large room, because the client paces
 writes to the bridge's throughput budget (~10/s per light, ~1/s to the shared
 broadcast budget that groups and scene recalls draw from); pass
-`rate_limit=False` to `Hue(...)` to manage pacing yourself.
+`rate_limit=False` to `Hue(...)` to manage pacing yourself. Writes that must
+land in step go through `hue.http.put_batch(...)`, which spends the same
+budget up front instead of spacing them.
 
 A model you built by hand has no client to talk to, and says so rather than
 failing obscurely:

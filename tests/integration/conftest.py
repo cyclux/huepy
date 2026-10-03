@@ -14,7 +14,7 @@ restore.
 
 import asyncio
 import os
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass
 from types import TracebackType
 from typing import Any
@@ -204,6 +204,12 @@ def request_counter() -> Callable[[Hue], list[Sent]]:  # noqa: C901
             async def put(self, path: str, data: dict[str, Any]) -> JsonValue:
                 calls.append(Sent("PUT", path, data))
                 return await inner.put(path, data)
+
+            async def put_batch(
+                self, writes: Sequence[tuple[str, dict[str, Any]]]
+            ) -> list[JsonValue]:
+                calls.extend(Sent("PUT", path, data) for path, data in writes)
+                return await inner.put_batch(writes)
 
             async def post(self, path: str, data: dict[str, Any]) -> JsonValue:
                 calls.append(Sent("POST", path, data))

@@ -6,7 +6,7 @@ import graph acyclic: ``client.base`` imports ``resources``, and ``resources``
 must therefore not import ``client.base`` back.
 """
 
-from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from types import TracebackType
@@ -60,6 +60,12 @@ class Transport(Protocol):
 
     async def put(self, path: str, data: dict[str, Any]) -> JsonValue:
         """Send a PUT request and return the decoded body."""
+        ...
+
+    async def put_batch(
+        self, writes: Sequence[tuple[str, dict[str, Any]]]
+    ) -> list[JsonValue]:
+        """Send PUT requests that should land together; return their bodies."""
         ...
 
     async def post(self, path: str, data: dict[str, Any]) -> JsonValue:

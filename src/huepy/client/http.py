@@ -14,7 +14,7 @@ import asyncio
 import json
 import logging
 import socket
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import aclosing
 from datetime import UTC, datetime
 from types import TracebackType
@@ -239,6 +239,8 @@ class HueHttpClient:
         method: str,
         path: str,
         data: dict[str, Any] | None = None,
+        *,
+        already_paced: bool = False,
     ) -> JsonValue:
         """Perform one request and return the decoded body.
 
@@ -246,6 +248,8 @@ class HueHttpClient:
             method: The HTTP method.
             path: The API path, relative to the bridge root.
             data: A JSON body to send, if any.
+            already_paced: Skip the write pacing, because the caller paced
+                this write as part of a batch.
 
         Returns:
             The decoded JSON body, or None for responses without one.
@@ -257,7 +261,7 @@ class HueHttpClient:
         session = self._active_session
         # Pace writes before anything else: the gate may sleep, and a cancelled
         # request here has no pending record to reconcile yet.
-        if method == "PUT":
+        if method == "PUT" and not already_paced:
             await self._rate_limiter.acquire(path)
         pending: PendingWrite | None = None
         if method == "PUT" and data is not None:
@@ -389,6 +393,39 @@ class HueHttpClient:
 
         """
         return await self._request("PUT", path, data)
+
+    async def put_batch(
+        self, writes: Sequence[tuple[str, dict[str, Any]]]
+    ) -> list[JsonValue]:
+        """Send PUT requests that should land together.
+
+        The batch is paced as a whole (:meth:`RateLimiter.acquire_batch`):
+        the same budget as the writes one by one, spent up front, so they go
+        out at once and the lights they address move in step.
+
+        Args:
+            writes: Each request's API path and JSON body.
+
+        Returns:
+            The decoded JSON bodies, in the order the writes were given.
+
+        Raises:
+            BaseException: The first error any write raised, once every write
+                has finished -- none is abandoned half-sent.
+
+        """
+        await self._rate_limiter.acquire_batch([path for path, _ in writes])
+        results = await asyncio.gather(
+            *(
+                self._request("PUT", path, data, already_paced=True)
+                for path, data in writes
+            ),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        return cast("list[JsonValue]", results)
 
     async def post(self, path: str, data: dict[str, Any]) -> JsonValue:
         """Send a POST request.

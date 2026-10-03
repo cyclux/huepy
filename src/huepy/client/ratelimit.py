@@ -18,7 +18,8 @@ Typical usage example:
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable
+from collections import Counter
+from collections.abc import Awaitable, Callable, Sequence
 
 __all__ = ["GROUP_MIN_GAP", "LIGHT_MIN_GAP", "RateLimiter", "bucket_for"]
 
@@ -117,6 +118,39 @@ class RateLimiter:
         bucket = bucket_for(path)
         if bucket is None:
             return
+        await self._take(bucket, 1)
+
+    async def acquire_batch(self, paths: Sequence[str]) -> None:
+        """Wait until a batch of writes may start together.
+
+        The batch spends the same budget as the writes would one by one --
+        three light writes cost three gaps -- but up front: they start at
+        once, and the write after them waits for the whole batch's share. So
+        the average rate the bridge sees is unchanged, and only the spacing
+        *inside* the batch goes. That spacing is what put three lights a
+        tenth of a second apart each, visibly out of step in a breath;
+        sent together they moved as one (measured on three LTG002 spots).
+
+        Args:
+            paths: The request paths about to be sent together.
+
+        """
+        if not self.enabled:
+            return
+        counts = Counter(
+            bucket for path in paths if (bucket := bucket_for(path)) is not None
+        )
+        for bucket, count in sorted(counts.items()):
+            await self._take(bucket, count)
+
+    async def _take(self, bucket: str, count: int) -> None:
+        """Wait for a bucket's turn, then charge it for ``count`` writes.
+
+        Args:
+            bucket: The bucket key.
+            count: How many writes start now.
+
+        """
         gap = _GAPS[bucket]
         lock = self._locks.setdefault(bucket, asyncio.Lock())
         async with lock:
@@ -127,4 +161,6 @@ class RateLimiter:
                 if wait > 0:
                     await self._sleep(wait)
                     now = self._clock()
-            self._last[bucket] = now
+            # Recorded as the start of the batch's last write, had it been
+            # spaced, so the next write waits for every one of them.
+            self._last[bucket] = now + gap * (count - 1)

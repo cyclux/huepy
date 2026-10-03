@@ -48,7 +48,7 @@ deep enough to see in a lit room, short of going dark.
 """
 
 BREATH_FLOOR = 1.0
-"""The lowest level a breath writes: a dark light starts its rise here."""
+"""The lowest level a lit light dips to, however dim it already is."""
 
 STDERR_TAIL = 400
 """How many characters of a failed command's error output reach the log."""
@@ -67,15 +67,61 @@ def flash_seconds(blinks: int) -> float:
     return blinks * SECONDS_PER_BLINK
 
 
+async def put_together(
+    client: PlanClient, writes: Sequence[tuple[str, dict[str, Any]]], *, what: str
+) -> list[str]:
+    """Write several lights in one batch, so they move in step.
+
+    One batch, not one write each: the transport spaces single light writes
+    a tenth of a second apart across the bridge, and three lights each a
+    tenth behind the last were visibly out of step in a breath. A batch
+    spends the same budget up front and goes out at once (measured: in step
+    on three spots, lit and dark). A refusal is read per light, so one bulb
+    that cannot do it does not fail the others.
+
+    Args:
+        client: The client to write through.
+        writes: Each light's id and body.
+        what: What the writes were for, for the log.
+
+    Returns:
+        The ids of the lights whose write failed, each already logged.
+
+    """
+    if not writes:
+        return []
+    batch = [(f"/clip/v2/resource/light/{light_id}", body) for light_id, body in writes]
+    for path, body in batch:
+        logger.debug("PUT %s %s", path, body)
+    try:
+        bodies = await client.http.put_batch(batch)
+    except HueError:
+        logger.exception(
+            "%d light%s could not %s",
+            len(writes),
+            "" if len(writes) == 1 else "s",
+            what,
+        )
+        return [light_id for light_id, _ in writes]
+    failed: list[str] = []
+    for (light_id, _), body in zip(writes, bodies, strict=True):
+        try:
+            _ = unwrap(body, ResourceIdentifier)
+        except HueError:
+            logger.exception("light %s could not %s", light_id, what)
+            failed.append(light_id)
+    return failed
+
+
 async def flash(
     client: PlanClient, light_ids: Iterable[str], *, blinks: int
 ) -> list[str]:
     """Blink lights with the bridge's ``on_off`` signal.
 
-    Sent to each light, not to a room's ``grouped_light``: a light names the
-    signals it supports, a group does not, and one bulb that cannot signal
-    must not stop the others blinking. The writes go out together so the
-    lights blink in step; the transport paces them.
+    Sent to each light, not to a room's ``grouped_light``: the group allows
+    about one command a second, and one bulb that cannot signal must not
+    stop the others blinking. The writes go out as one batch, so the lights
+    blink in step.
 
     Args:
         client: The client to write through.
@@ -86,22 +132,10 @@ async def flash(
         The ids of the lights the bridge refused, each already logged.
 
     """
-    ids = tuple(dict.fromkeys(light_ids))
     duration = round(flash_seconds(blinks) * MILLISECONDS_PER_SECOND)
     payload = {"signaling": {"signal": str(Signal.ON_OFF), "duration": duration}}
-
-    async def one(light_id: str) -> bool:
-        path = f"/clip/v2/resource/light/{light_id}"
-        logger.debug("PUT %s %s", path, payload)
-        try:
-            _ = unwrap(await client.http.put(path, payload), ResourceIdentifier)
-        except HueError:
-            logger.exception("light %s could not flash", light_id)
-            return False
-        return True
-
-    sent = await asyncio.gather(*(one(light_id) for light_id in ids))
-    return [light_id for light_id, ok in zip(ids, sent, strict=True) if not ok]
+    writes = [(light_id, payload) for light_id in dict.fromkeys(light_ids)]
+    return await put_together(client, writes, what="flash")
 
 
 type Sleeper = Callable[[float], Awaitable[None]]
@@ -162,69 +196,45 @@ async def read_lights(client: PlanClient, light_ids: Iterable[str]) -> list[Rest
     return found
 
 
-async def _put(client: PlanClient, light_id: str, payload: dict[str, Any]) -> None:
-    """Write one light, raising on a refusal reported in the body.
+def _inhale(light: Resting, seconds: float) -> dict[str, Any]:
+    """Compose a breath in: a lit light dips, a dark one rises.
+
+    A dark light is switched on and faded to its level in the one write: the
+    bridge fades it in from dark (measured), so the rise needs no separate
+    switch-on that a batch's budget would hold back.
 
     Args:
-        client: The client to write through.
-        light_id: The light.
-        payload: The body.
-
-    """
-    path = f"/clip/v2/resource/light/{light_id}"
-    logger.debug("PUT %s %s", path, payload)
-    _ = unwrap(await client.http.put(path, payload), ResourceIdentifier)
-
-
-async def _inhale(client: PlanClient, light: Resting, seconds: float) -> None:
-    """Breathe in: dip a lit light, raise a dark one.
-
-    Args:
-        client: The client to write through.
         light: Where the light rests.
         seconds: How long the half takes.
+
+    Returns:
+        The light's body.
 
     """
     if light.on:
         low = max(BREATH_FLOOR, light.brightness * BREATH_DIP)
-        await _put(
-            client,
-            light.light_id,
-            build_light_payload(brightness=low, transition=seconds),
-        )
-        return
-    # Switched on at the floor first, so the rise starts from nothing
-    # rather than from the stored level.
-    await _put(
-        client,
-        light.light_id,
-        build_light_payload(on=True, brightness=BREATH_FLOOR, transition=0),
-    )
-    await _put(
-        client,
-        light.light_id,
-        build_light_payload(brightness=light.brightness, transition=seconds),
-    )
+        return build_light_payload(brightness=low, transition=seconds)
+    return build_light_payload(on=True, brightness=light.brightness, transition=seconds)
 
 
-async def _exhale(client: PlanClient, light: Resting, seconds: float) -> None:
-    """Breathe out: bring a lit light back to its level, a dark one out again.
+def _exhale(light: Resting, seconds: float) -> dict[str, Any]:
+    """Compose a breath out: a lit light comes back, a dark one goes out.
 
     A fade to off leaves ``dimming`` where it was (measured: three spots at
     100 % breathed twice from dark and read off at 100 % after), so a dark
     light keeps the level the plan stored for its next switch-on.
 
     Args:
-        client: The client to write through.
         light: Where the light rests.
         seconds: How long the half takes.
 
+    Returns:
+        The light's body.
+
     """
     if light.on:
-        payload = build_light_payload(brightness=light.brightness, transition=seconds)
-    else:
-        payload = build_light_payload(on=False, transition=seconds)
-    await _put(client, light.light_id, payload)
+        return build_light_payload(brightness=light.brightness, transition=seconds)
+    return build_light_payload(on=False, transition=seconds)
 
 
 async def breathe(
@@ -237,11 +247,11 @@ async def breathe(
 ) -> None:
     """Breathe lights together, then leave each where it rests.
 
-    Every light's half goes out at once and the bridge runs the fades, so the
-    lights move in step (measured: three spots, in sync). A light the bridge
-    refuses is logged, put back, and left out of the rest; the others go on.
-    Cancelled part-way -- the runner closing -- every light is put back at
-    once rather than left dipped, or lit when it was dark.
+    Each half is one batch of writes and the bridge runs the fades, so the
+    lights move in step. A light the bridge refuses is logged, put back, and
+    left out of the rest; the others go on. Cancelled part-way -- the runner
+    closing -- every light is put back at once rather than left dipped, or
+    lit when it was dark.
 
     Args:
         client: The client to write through.
@@ -254,24 +264,15 @@ async def breathe(
     half = period / 2
     active = list(lights)
 
-    async def phase(
-        step: Callable[[PlanClient, Resting, float], Awaitable[None]],
-    ) -> None:
+    async def phase(compose: Callable[[Resting, float], dict[str, Any]]) -> None:
         nonlocal active
-
-        async def one(light: Resting) -> bool:
-            try:
-                await step(client, light, half)
-            except HueError:
-                logger.exception("light %s could not breathe", light.light_id)
-                return False
-            return True
-
-        done = await asyncio.gather(*(one(light) for light in active))
-        failed = [light for light, ok in zip(active, done, strict=True) if not ok]
-        active = [light for light, ok in zip(active, done, strict=True) if ok]
+        writes = [(light.light_id, compose(light, half)) for light in active]
+        failed = set(await put_together(client, writes, what="breathe"))
         if failed:
-            await settle(client, failed)
+            await settle(
+                client, [light for light in active if light.light_id in failed]
+            )
+            active = [light for light in active if light.light_id not in failed]
 
     try:
         for _ in range(breaths):
@@ -292,19 +293,16 @@ async def settle(client: PlanClient, lights: Sequence[Resting]) -> None:
         lights: Where each light rests.
 
     """
-
-    async def one(light: Resting) -> None:
-        payload = (
+    writes = [
+        (
+            light.light_id,
             build_light_payload(brightness=light.brightness, transition=0)
             if light.on
-            else build_light_payload(on=False, transition=0)
+            else build_light_payload(on=False, transition=0),
         )
-        try:
-            await _put(client, light.light_id, payload)
-        except HueError:
-            logger.exception("light %s could not be put back", light.light_id)
-
-    _ = await asyncio.gather(*(one(light) for light in lights))
+        for light in lights
+    ]
+    _ = await put_together(client, writes, what="be put back")
 
 
 @dataclass(frozen=True, slots=True)

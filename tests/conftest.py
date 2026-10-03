@@ -8,7 +8,7 @@ exercised too.
 """
 
 import asyncio
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Callable, Sequence
 from datetime import UTC, datetime
 from types import TracebackType
 from typing import Any, Literal, Self, override
@@ -88,6 +88,10 @@ class FakeHttp:
         for observer in tuple(self._write_observers):
             observer(completed.model_copy(deep=True))
         return self.write_result
+
+    async def put_batch(self, writes: Sequence[tuple[str, dict[str, Any]]]) -> Any:
+        """Record each write of a batch as a PUT, in order."""
+        return [await self.put(path, data) for path, data in writes]
 
     async def post(self, path: str, data: dict[str, Any]) -> Any:
         self.calls.append(("POST", path, data))

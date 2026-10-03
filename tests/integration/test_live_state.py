@@ -1,7 +1,7 @@
 """End-to-end state-layer checks against an explicitly selected bridge."""
 
 import asyncio
-from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Sequence
 from contextlib import aclosing
 from types import TracebackType
 from typing import Any
@@ -37,6 +37,11 @@ class OverflowGapTransport:
 
     async def put(self, path: str, data: dict[str, Any]) -> JsonValue:
         return await self.inner.put(path, data)
+
+    async def put_batch(
+        self, writes: Sequence[tuple[str, dict[str, Any]]]
+    ) -> list[JsonValue]:
+        return await self.inner.put_batch(writes)
 
     async def post(self, path: str, data: dict[str, Any]) -> JsonValue:
         return await self.inner.post(path, data)

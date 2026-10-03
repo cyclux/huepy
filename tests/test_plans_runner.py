@@ -3825,13 +3825,13 @@ class TestBreathe:
         changes.deliver(button(clock.now, "initial_press"))
         await settle_effects(runner)
 
+        # One write to rise: the bridge fades a light in from dark (measured).
         breath = [
             {
                 "on": {"on": True},
-                "dimming": {"brightness": 1.0},
-                "dynamics": {"duration": 0},
+                "dimming": {"brightness": 70.0},
+                "dynamics": {"duration": 1000},
             },
-            {"dimming": {"brightness": 70.0}, "dynamics": {"duration": 1000}},
             {"on": {"on": False}, "dynamics": {"duration": 1000}},
         ]
         assert light_puts(http) == breath * 2
@@ -4008,3 +4008,27 @@ class TestBreathe:
 
         assert f"light {LIGHT} could not breathe" in caplog.text
         assert runner._effects == {}
+
+    async def test_each_half_goes_out_as_one_batch(
+        self, sensor_bridge, http, clock, monkeypatch
+    ):
+        # Paced one by one, three lights each a tenth behind the last were
+        # visibly out of step; a batch sends a half to all of them at once.
+        changes = FakeChanges()
+        runner = await rule_runner(
+            sensor_bridge, clock, changes, effect_plan(BREATHE_RULE)
+        )
+        http.queue(LIGHT_PATH, lamp(on=True, brightness=80))
+        batches: list[list[str]] = []
+        put_batch = http.put_batch
+
+        async def spy(writes):
+            batches.append([path for path, _ in writes])
+            return await put_batch(writes)
+
+        monkeypatch.setattr(http, "put_batch", spy)
+
+        changes.deliver(button(clock.now, "initial_press"))
+        await settle_effects(runner)
+
+        assert batches == [[LIGHT_PATH]] * 4

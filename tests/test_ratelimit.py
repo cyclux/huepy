@@ -163,3 +163,72 @@ class TestTransportIntegration:
         )
         client = HueHttpClient(config)
         assert client._rate_limiter.enabled is False
+
+
+class TestBatch:
+    async def test_a_batch_starts_together(self):
+        clock = Clock()
+        limiter = make_limiter(clock)
+
+        await limiter.acquire_batch([f"{LIGHT}/a", f"{LIGHT}/b", f"{LIGHT}/c"])
+
+        assert clock.sleeps == []
+
+    async def test_a_batch_spends_its_whole_share(self):
+        # The average rate is what protects the mesh, so the write after a
+        # batch of three waits as long as it would after three single writes.
+        clock = Clock()
+        limiter = make_limiter(clock)
+
+        await limiter.acquire_batch([f"{LIGHT}/a", f"{LIGHT}/b", f"{LIGHT}/c"])
+        await limiter.acquire(f"{LIGHT}/d")
+
+        assert clock.now == pytest.approx(3 * LIGHT_MIN_GAP)
+
+    async def test_a_batch_waits_for_the_write_before_it(self):
+        clock = Clock()
+        limiter = make_limiter(clock)
+
+        await limiter.acquire(f"{LIGHT}/a")
+        await limiter.acquire_batch([f"{LIGHT}/b", f"{LIGHT}/c"])
+
+        assert clock.sleeps == [pytest.approx(LIGHT_MIN_GAP)]
+
+    async def test_each_bucket_is_charged_for_its_own_writes(self):
+        clock = Clock()
+        limiter = make_limiter(clock)
+
+        await limiter.acquire_batch([f"{LIGHT}/a", f"{GROUPED}/g", "/api/config"])
+        await limiter.acquire(f"{GROUPED}/h")
+
+        assert clock.now == pytest.approx(GROUP_MIN_GAP)
+
+    async def test_a_disabled_limiter_never_waits(self):
+        clock = Clock()
+        limiter = make_limiter(clock, enabled=False)
+
+        await limiter.acquire_batch([f"{LIGHT}/a", f"{LIGHT}/b"])
+        await limiter.acquire(f"{LIGHT}/c")
+
+        assert clock.sleeps == []
+
+    async def test_put_batch_sends_every_write_unspaced(self, tmp_path):
+        clock = Clock()
+        config = HueConfig(
+            bridge_ip="10.0.0.1",
+            app_key="k",
+            bridge_id="001788fffe25b8f8",
+            config_path=tmp_path / "config.json",
+        )
+        client = HueHttpClient(config, rate_limiter=make_limiter(clock))
+        session = _RecordingSession()
+        client.session = cast("aiohttp.ClientSession", cast("object", session))
+
+        writes = [(f"{LIGHT}/{index}", {"on": {"on": True}}) for index in range(3)]
+        bodies = await client.put_batch(writes)
+
+        assert len(bodies) == 3
+        assert sorted(session.paths) == [path for path, _ in writes]
+        assert clock.sleeps == []
+        await client.put(f"{LIGHT}/next", {"on": {"on": True}})
+        assert clock.now == pytest.approx(3 * LIGHT_MIN_GAP)
