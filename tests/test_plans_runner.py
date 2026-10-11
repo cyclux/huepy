@@ -23,6 +23,7 @@ from huepy.plans.fields import raw_light_level
 from huepy.plans.runner import (
     DARK_REFRESH_SECONDS,
     MAX_SLEEP,
+    SETTLE_GRACE_SECONDS,
     PlanRunner,
     Threshold,
     _level_edge,
@@ -1584,7 +1585,7 @@ class TestRestart:
         await runner.close()
         await task
 
-        assert slept == [5.0]
+        assert slept == [5.0, SETTLE_GRACE_SECONDS]
         assert [w[2]["dimming"]["brightness"] for w in http.writes] == [60.0, 100.0]
         assert http.writes[1][2]["dynamics"]["duration"] == 1_800_000
 
@@ -2487,6 +2488,35 @@ class TestPowerIsNotAHandChange:
         assert "on" not in first[2]
         assert second[2]["dimming"]["brightness"] == 100
         assert second[2]["dynamics"]["duration"] == 900_000
+
+    async def test_dimming_by_hand_right_after_a_switch_on_stops_the_follow_up(
+        self, bridge, http, clock
+    ):
+        # A short press and straight on to a long press: the dimming reports
+        # arrive while the catch-up fade is still being waited for. The
+        # follow-up ramp must not go out over the hand's level.
+        changes = FakeChanges()
+        runner = await self.fading_at_nine(bridge, clock, changes)
+        clock.advance(minutes=30)
+        changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": False}}))
+        clock.advance(minutes=15)
+        http.calls.clear()
+        changes.deliver(change(LIGHT, None, clock.now, delta={"on": {"on": True}}))
+        calls = 0
+
+        async def hand_dims_after_the_fade(_seconds):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                clock.advance(seconds=5)
+                changes.report(LIGHT, 5.0, clock.now)
+
+        runner._sleep = hand_dims_after_the_fade
+        assert await runner.rejoin() == 1
+
+        assert calls == 2
+        assert len(http.writes) == 1
+        assert runner.arbiter.is_yielded(GROUP_PATH)
 
     async def test_a_switch_on_ends_a_yield(self, bridge, http, clock):
         # Dimmed by hand, then off, then on: the hand level does not survive

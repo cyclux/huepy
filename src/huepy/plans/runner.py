@@ -78,6 +78,16 @@ missed step then with its remaining ramp -- often nothing -- is a snap, and
 the beliefs about what is in flight are stale. A late wake is a catch-up.
 """
 
+SETTLE_GRACE_SECONDS = 2.0
+"""How long the catch-up's follow-up write waits after the catch-up fade lands.
+
+A person who switches a light on and goes straight on to dim it by holding
+the button is answered by progress reports that look like the catch-up fade's
+own, so the hand change is only recognised once the fade is over. The
+follow-up write has to wait for that verdict: sent at once, it set the level
+back mid-hold and the bridge ignored the button until the ramp ended.
+"""
+
 MAX_SLEEP = 900.0
 """Longest nap between wake-ups, in seconds.
 
@@ -1845,6 +1855,9 @@ class PlanRunner:
             if self._closing.is_set():
                 # close() returned while this was asleep; a tick now would
                 # write after the caller believes the runner has stopped.
+                return written
+            await self._sleep(SETTLE_GRACE_SECONDS)
+            if self._closing.is_set():
                 return written
         _ = await self.tick()
         return written
