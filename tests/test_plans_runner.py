@@ -1038,6 +1038,41 @@ class TestRules:
         assert await runner.tick() == 1
         assert http.writes[0][2]["dimming"]["brightness"] == 80
 
+    async def test_after_switches_the_scope_off_once_when_the_hold_lapses(
+        self, sensor_bridge, http, clock
+    ):
+        changes = FakeChanges()
+        plan = rule_plan(after={"on": False})
+        runner = await rule_runner(sensor_bridge, clock, changes, plan)
+        changes.deliver(motion(clock.now))
+        await runner.tick()
+        changes.deliver(motion(clock.now, detected=False))
+        http.calls.clear()
+
+        clock.advance(seconds=91)
+        assert await runner.tick() == 1
+        assert http.writes[0][2]["on"] == {"on": False}
+        assert http.writes[0][2]["dimming"]["brightness"] == 80
+
+        # Spent: the next tick hands over to the plain curve, without `on`.
+        http.calls.clear()
+        await runner.tick()
+        assert all("on" not in w[2] for w in http.writes)
+
+    async def test_without_after_the_hold_leaves_the_scope_lit(
+        self, sensor_bridge, http, clock
+    ):
+        changes = FakeChanges()
+        runner = await rule_runner(sensor_bridge, clock, changes)
+        changes.deliver(motion(clock.now))
+        await runner.tick()
+        changes.deliver(motion(clock.now, detected=False))
+        http.calls.clear()
+
+        clock.advance(seconds=91)
+        await runner.tick()
+        assert all("on" not in w[2] for w in http.writes)
+
     async def test_handing_back_never_snaps(self, sensor_bridge, http, clock):
         # The base step's own ramp finished hours ago, so "the remaining ramp"
         # is zero. Dropping from 15 to 80 in one frame when someone leaves the

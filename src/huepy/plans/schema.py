@@ -492,6 +492,12 @@ class Rule(BaseModel):
             fire. Exactly one of ``below`` and ``above`` on a ``light_level:``
             rule; neither on any other kind.
         set: The target state.
+        after: A state to go to once, when the hold lapses, before the scope
+            goes back to whatever is underneath. A scope under a day curve
+            that never sets ``on`` would otherwise stay lit for good, because
+            nothing underneath says to switch it off. Needs ``set``. The
+            curve's own levels still apply, so this is normally just
+            ``{ on = false }``.
         do: A one-shot effect instead of a target state. It claims nothing:
             the scope goes on doing whatever it was doing, which is why
             ``ramp`` and ``hold`` mean nothing here. Exactly one of ``set``
@@ -508,6 +514,7 @@ class Rule(BaseModel):
     below: Annotated[float, Field(gt=0)] | None = None
     above: Annotated[float, Field(gt=0)] | None = None
     set: Action | None = None
+    after: Action | None = None
     do: Effect | None = None
 
     @model_validator(mode="after")
@@ -536,6 +543,9 @@ class Rule(BaseModel):
                     f"means nothing: an effect claims no scope to fade or hold"
                 )
                 raise ValueError(msg)
+        if self.after is not None and self.set is None:
+            msg = f"the rule on {self.when} has an 'after' but no 'set' to hold first"
+            raise ValueError(msg)
         return self
 
     @property

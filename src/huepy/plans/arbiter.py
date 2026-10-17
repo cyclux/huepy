@@ -491,6 +491,9 @@ class ScopeState:
             when nothing covering the scope runs there is no next step to
             precompute, and the scope must still come back when one arrives.
         hold: The rule currently holding this scope, if one fired.
+        rest: A lapsed hold's ``after`` state and when the hold lapsed, until
+            the runner has driven it once. It rides on whatever claim wins the
+            scope, so the day curve underneath keeps its levels.
         switched_on_at: When a switch-on handed the scope back, until the
             rejoin's fade goes out. A ``last_on`` recall arrives as two
             reports -- ``on`` at the stored level, then a bare level -- and
@@ -510,6 +513,7 @@ class ScopeState:
     reported: Action | None = None
     yielded_at: datetime.datetime | None = None
     hold: Hold | None = None
+    rest: tuple[Action, datetime.datetime] | None = None
     switched_on_at: datetime.datetime | None = None
     dark: bool = False
 
@@ -625,7 +629,39 @@ class Arbiter:
                 claim = self._claim_for(scenario, binding, now, catching_up=catching_up)
                 if claim is not None:
                     best[binding.path] = claim
-        return list(best.values())
+        return [self._with_rest(claim) for claim in best.values()]
+
+    def _with_rest(self, claim: Claim) -> Claim:
+        """Add a lapsed hold's ``after`` state to the claim that took over.
+
+        One-shot: once the runner owns the scope under the combined claim the
+        rest is spent, and the next claim is the plain one again. A failed
+        write leaves the owner alone, so it is retried.
+
+        Args:
+            claim: The winning claim for one scope.
+
+        Returns:
+            The claim, with the rest folded into its target when one is due.
+
+        """
+        state = self.state_of(claim.binding.path)
+        if state.rest is None:
+            return claim
+        after, lapsed_at = state.rest
+        source = f"{claim.source}+after"
+        if state.owner is not None and state.owner.source == source:
+            state.rest = None
+            return claim
+        update = after.resolved().model_dump(exclude_none=True)
+        return Claim(
+            scenario=claim.scenario,
+            binding=claim.binding,
+            target=claim.target.model_copy(update=update),
+            ramp=max(claim.ramp, self.resolved.plan.defaults.catchup_ramp),
+            source=source,
+            since=lapsed_at,
+        )
 
     def _claim_for(
         self,
@@ -834,6 +870,7 @@ class Arbiter:
             # yield is decided where the claims are ranked: a hold that wins
             # the scope begins after the hand change and takes it back, one
             # outranked by an active mode changes nothing about it.
+            state.rest = None
             state.hold = Hold(
                 scenario=scenario.name, rule=rule, placed_at=now, until=until
             )
@@ -873,6 +910,9 @@ class Arbiter:
         """
         for state in self.scopes.values():
             if state.hold is not None and state.hold.expired(now):
+                after = state.hold.rule.after
+                if after is not None and state.yielded_at is None:
+                    state.rest = (after, state.hold.until or now)
                 state.hold = None
 
     def next_expiry(self, now: datetime.datetime) -> datetime.datetime | None:
@@ -993,6 +1033,7 @@ class Arbiter:
             # would rejoin at its next step by re-asserting a stale motion
             # rule rather than the schedule.
             state.hold = None
+            state.rest = None
         return "hand"
 
     @staticmethod

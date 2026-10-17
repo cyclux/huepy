@@ -327,7 +327,10 @@ Two corollaries for plan authors. A rule without `hold` lasts until the scope's
 next scheduled step, not forever, or a button press would switch a day curve
 off for good. And a scope claimed by nobody is left alone, so a motion light
 that should switch itself off needs a resting state underneath it — a flat
-`set = { on = false }` scenario at a lower priority.
+`set = { on = false }` scenario at a lower priority. Under a day curve that
+never sets `on` that does not work, because the curve always claims the scope;
+give the rule `after = { on = false }` instead. When the hold lapses, the curve
+takes the scope with `on = false` folded in once, and keeps its own levels.
 
 ### A fade is handed to the bridge whole
 
