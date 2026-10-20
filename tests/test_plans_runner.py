@@ -1073,6 +1073,28 @@ class TestRules:
         await runner.tick()
         assert all("on" not in w[2] for w in http.writes)
 
+    async def test_motion_lights_a_scope_switched_off_by_hand_under_its_hold(
+        self, sensor_bridge, http, clock
+    ):
+        changes = FakeChanges()
+        plan = rule_plan(set={"on": True, "brightness": 15}, after={"on": False})
+        runner = await rule_runner(sensor_bridge, clock, changes, plan)
+        changes.deliver(motion(clock.now))
+        await runner.tick()
+        changes.deliver(motion(clock.now, detected=False))
+
+        clock.advance(seconds=20)
+        changes.report(LIGHT, None, clock.now, delta={"on": {"on": False}})
+        http.calls.clear()
+        await runner.tick()
+        assert not http.writes
+
+        clock.advance(seconds=10)
+        changes.deliver(motion(clock.now))
+        http.calls.clear()
+        assert await runner.tick() == 1
+        assert http.writes[0][2]["on"] == {"on": True}
+
     async def test_handing_back_never_snaps(self, sensor_bridge, http, clock):
         # The base step's own ramp finished hours ago, so "the remaining ramp"
         # is zero. Dropping from 15 to 80 in one frame when someone leaves the

@@ -871,6 +871,13 @@ class Arbiter:
             # the scope begins after the hand change and takes it back, one
             # outranked by an active mode changes nothing about it.
             state.rest = None
+            if state.dark:
+                # Someone switched the light off while this very rule still
+                # owned it. The claim is unchanged, so the runner would call it
+                # still in force and send nothing: the room stayed dark for
+                # the next person to walk in. A fresh trigger is a new
+                # request, so forget the owner and let it be written again.
+                state.owner = None
             state.hold = Hold(
                 scenario=scenario.name, rule=rule, placed_at=now, until=until
             )
